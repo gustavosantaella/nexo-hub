@@ -16,15 +16,73 @@ import {
   todayIso,
 } from '../../core/constants/domain';
 import { BASE_CURRENCY } from '../../core/constants/currency';
+import {
+  CHART_COLORS,
+  chartColor,
+  currencyColor,
+  paymentMethodColor,
+} from '../../core/constants/chart';
+import type { ChartColor } from '../../core/constants/chart';
 import { StatsService } from '../../core/services/stats.service';
 import { moneyIn, number, toDateInput } from '../../core/utils/format';
 import { BarChartComponent } from '../../shared/components/bar-chart.component';
 import type { BarPoint } from '../../shared/components/bar-chart.component';
+import { BarListComponent } from '../../shared/components/bar-list.component';
+import type { BarRow } from '../../shared/components/bar-list.component';
+import { DonutChartComponent } from '../../shared/components/donut-chart.component';
+import type { DonutSlice } from '../../shared/components/donut-chart.component';
+import { LineChartComponent } from '../../shared/components/line-chart.component';
+import type { LineSeries } from '../../shared/components/line-chart.component';
 import { EmptyStateComponent, LoaderComponent } from '../../shared/components/feedback.component';
 import { IconComponent } from '../../shared/components/icon.component';
 import { PageHeaderComponent } from '../../shared/components/page-header.component';
 import { MoneyComponent } from '../../shared/components/money.component';
 import { StatCardComponent } from '../../shared/components/stat-card.component';
+
+/** Bloque de los graficos de composicion (anillo + ranking). */
+interface CompositionItem {
+  label: string;
+  value: number;
+  /** Dato extra junto al valor (ej. "24 unidades"). */
+  caption?: string;
+  color: ChartColor;
+}
+
+/**
+ * Datos de un anillo y su ranking: las porciones, las filas del ranking y el
+ * bloque mayor (para el dato central del anillo).
+ */
+interface Composition {
+  rows: BarRow[];
+  slices: DonutSlice[];
+  topLabel: string;
+  topShare: number;
+}
+
+/** Convierte los bloques de una composicion en porciones y filas del ranking. */
+function toComposition(items: CompositionItem[]): Composition {
+  const total = items.reduce((acc, item) => acc + (Number(item.value) || 0), 0);
+  const top = items.reduce<CompositionItem | null>(
+    (best, item) => (best === null || item.value > best.value ? item : best),
+    null,
+  );
+
+  return {
+    rows: items.map((item) => ({
+      label: item.label,
+      value: item.value,
+      caption: item.caption,
+      color: item.color,
+    })),
+    slices: items.map((item) => ({
+      label: item.label,
+      value: item.value,
+      color: item.color,
+    })),
+    topLabel: top?.label ?? '',
+    topShare: top && total > 0 ? (top.value / total) * 100 : 0,
+  };
+}
 
 /** Reportes: ventas, gastos, utilidad, métodos de pago, categorías y stock bajo. */
 @Component({
@@ -37,6 +95,9 @@ import { StatCardComponent } from '../../shared/components/stat-card.component';
     StatCardComponent,
     MoneyComponent,
     BarChartComponent,
+    BarListComponent,
+    DonutChartComponent,
+    LineChartComponent,
     EmptyStateComponent,
     LoaderComponent,
   ],
@@ -111,6 +172,35 @@ import { StatCardComponent } from '../../shared/components/stat-card.component';
           }
         </div>
       </section>
+
+      <section class="card mt-4">
+        <div class="card-header">
+          <div>
+            <h2 class="text-sm font-semibold text-slate-800">Tendencia del período</h2>
+            <p class="mt-0.5 text-xs text-slate-500">
+              Ventas, cobros y utilidad {{ granularityLabel() }}.
+            </p>
+          </div>
+          <div class="flex flex-wrap items-center gap-3 text-xs text-slate-500">
+            @for (serie of trendSeries(); track serie.label) {
+              <span class="flex items-center gap-1">
+                <span class="h-2.5 w-2.5 rounded-sm" [class]="serie.color.fill"></span>
+                {{ serie.label }}
+              </span>
+            }
+          </div>
+        </div>
+        <div class="card-body">
+          @if (chartLabels().length < 2) {
+            <p class="text-sm text-slate-500">
+              Elige un rango de al menos dos períodos para ver la tendencia.
+            </p>
+          } @else {
+            <app-line-chart [labels]="chartLabels()" [series]="trendSeries()" [isCurrency]="true" />
+          }
+        </div>
+      </section>
+
       <section class="card mt-4">
         <div class="card-header">
           <h2 class="text-sm font-semibold text-slate-800">Productos más vendidos</h2>
@@ -119,7 +209,13 @@ import { StatCardComponent } from '../../shared/components/stat-card.component';
         @if (topProducts().length === 0) {
           <app-empty-state title="Sin ventas" message="No hay productos vendidos en el rango seleccionado." icon="box" />
         } @else {
-          <div class="table-wrap">
+          <div class="card-body">
+            <p class="mb-3 text-xs font-semibold uppercase tracking-wide text-slate-500">
+              Ingresos por producto
+            </p>
+            <app-bar-list [rows]="topProductRows()" [isCurrency]="true" />
+          </div>
+          <div class="table-wrap border-t border-slate-100">
             <table class="table">
               <thead>
                 <tr>
@@ -156,22 +252,19 @@ import { StatCardComponent } from '../../shared/components/stat-card.component';
             <h2 class="text-sm font-semibold text-slate-800">Métodos de pago</h2>
             <app-money class="text-xs text-slate-500" [amount]="paymentMethods()?.total ?? 0" alignEnd="true" />
           </div>
-          <div class="card-body space-y-3">
+          <div class="card-body">
             @if ((paymentMethods()?.items?.length ?? 0) === 0) {
               <p class="text-sm text-slate-500">Sin pagos en el rango seleccionado.</p>
             } @else {
-              @for (row of paymentMethods()!.items; track row.method) {
-                <div>
-                  <div class="flex items-center justify-between text-sm">
-                    <span class="font-medium text-slate-700">{{ methodLabels[row.method] }}</span>
-                    <app-money class="text-slate-600" [amount]="row.amount" alignEnd="true" />
-                    <span class="text-[10px] text-slate-400">{{ number(row.count) }} cobros</span>
-                  </div>
-                  <div class="mt-1 h-2 w-full overflow-hidden rounded-full bg-slate-100">
-                    <div class="h-full rounded-full bg-brand-500" [style.width.%]="share(row.amount, paymentMethods()!.total)"></div>
-                  </div>
-                </div>
-              }
+              <div class="grid gap-5 sm:grid-cols-[auto_1fr] sm:items-center">
+                <app-donut-chart
+                  [slices]="paymentChart().slices"
+                  centerLabel="Mayor"
+                  [centerValue]="paymentCenter().value"
+                  [centerHint]="paymentCenter().hint"
+                />
+                <app-bar-list [rows]="paymentChart().rows" [isCurrency]="true" />
+              </div>
             }
           </div>
         </section>
@@ -186,43 +279,20 @@ import { StatCardComponent } from '../../shared/components/stat-card.component';
             </div>
             <app-money class="text-xs text-slate-500" [amount]="paymentsByCurrency()?.total ?? 0" alignEnd="true" />
           </div>
-          <div class="table-wrap">
-            <table class="table">
-              <thead>
-                <tr>
-                  <th>Moneda</th>
-                  <th class="text-right">Cobrado</th>
-                  <th class="text-right">Equivalente ({{ baseCurrency.code }})</th>
-                  <th class="text-right">Cobros</th>
-                </tr>
-              </thead>
-              <tbody>
-                @if ((paymentsByCurrency()?.items?.length ?? 0) === 0) {
-                  <tr>
-                    <td colspan="4" class="py-4 text-center text-sm text-slate-500">
-                      Sin cobros en el rango seleccionado.
-                    </td>
-                  </tr>
-                } @else {
-                  @for (row of paymentsByCurrency()!.items; track row.currency) {
-                    <tr>
-                      <td>
-                        <span class="badge bg-slate-100 text-slate-700">
-                          {{ row.currency }}
-                        </span>
-                      </td>
-                      <td class="text-right font-medium">
-                        {{ amountIn(row.amount, row.currency) }}
-                      </td>
-                      <td class="text-right text-slate-600">
-                        <app-money [amount]="row.baseAmount" alignEnd="true" />
-                      </td>
-                      <td class="text-right text-slate-500">{{ number(row.count) }}</td>
-                    </tr>
-                  }
-                }
-              </tbody>
-            </table>
+          <div class="card-body">
+            @if ((paymentsByCurrency()?.items?.length ?? 0) === 0) {
+              <p class="text-sm text-slate-500">Sin cobros en el rango seleccionado.</p>
+            } @else {
+              <div class="grid gap-5 sm:grid-cols-[auto_1fr] sm:items-center">
+                <app-donut-chart
+                  [slices]="currencyChart().slices"
+                  centerLabel="Mayor"
+                  [centerValue]="currencyCenter().value"
+                  [centerHint]="currencyCenter().hint"
+                />
+                <app-bar-list [rows]="currencyChart().rows" [isCurrency]="true" />
+              </div>
+            }
           </div>
         </section>
 
@@ -231,22 +301,19 @@ import { StatCardComponent } from '../../shared/components/stat-card.component';
             <h2 class="text-sm font-semibold text-slate-800">Ventas por categoría</h2>
             <app-money class="text-xs text-slate-500" [amount]="categories()?.total ?? 0" alignEnd="true" />
           </div>
-          <div class="card-body space-y-3">
+          <div class="card-body">
             @if ((categories()?.items?.length ?? 0) === 0) {
               <p class="text-sm text-slate-500">Sin ventas en el rango seleccionado.</p>
             } @else {
-              @for (row of categories()!.items; track row.name) {
-                <div>
-                  <div class="flex items-center justify-between text-sm">
-                    <span class="font-medium text-slate-700">{{ row.name }}</span>
-                    <app-money class="text-slate-600" [amount]="row.revenue" alignEnd="true" />
-                    <span class="text-[10px] text-slate-400">{{ number(row.quantity) }} unidades</span>
-                  </div>
-                  <div class="mt-1 h-2 w-full overflow-hidden rounded-full bg-slate-100">
-                    <div class="h-full rounded-full bg-emerald-500" [style.width.%]="share(row.revenue, categories()!.total)"></div>
-                  </div>
-                </div>
-              }
+              <div class="grid gap-5 sm:grid-cols-[auto_1fr] sm:items-center">
+                <app-donut-chart
+                  [slices]="categoryChart().slices"
+                  centerLabel="Mayor"
+                  [centerValue]="categoryCenter().value"
+                  [centerHint]="categoryCenter().hint"
+                />
+                <app-bar-list [rows]="categoryChart().rows" [isCurrency]="true" />
+              </div>
             }
           </div>
         </section>
@@ -260,7 +327,13 @@ import { StatCardComponent } from '../../shared/components/stat-card.component';
         @if (lowStock().length === 0) {
           <app-empty-state title="Todo en orden" message="No hay productos por debajo del stock mínimo." icon="box" />
         } @else {
-          <div class="table-wrap">
+          <div class="card-body">
+            <p class="mb-3 text-xs font-semibold uppercase tracking-wide text-slate-500">
+              Existencias vs. mínimo
+            </p>
+            <app-bar-list [rows]="lowStockRows()" [isCurrency]="false" markerLabel="Mínimo" />
+          </div>
+          <div class="table-wrap border-t border-slate-100">
             <table class="table">
               <thead>
                 <tr>
@@ -322,6 +395,97 @@ export class StatsPage implements OnInit {
       secondary: point.expenses,
     })),
   );
+
+  /** Etiquetas del eje horizontal de la tendencia. */
+  readonly chartLabels = computed(() =>
+    (this.sales()?.series ?? []).map((point) => this.shortPeriod(point.period)),
+  );
+
+  /** Tendencia del período: ventas, cobros y utilidad por período. */
+  readonly trendSeries = computed<LineSeries[]>(() => {
+    const points = this.sales()?.series ?? [];
+    if (points.length === 0) return [];
+    return [
+      { label: 'Ventas', color: CHART_COLORS.brand, values: points.map((point) => point.sales) },
+      { label: 'Cobrado', color: CHART_COLORS.sky, values: points.map((point) => point.collected) },
+      { label: 'Utilidad', color: CHART_COLORS.emerald, values: points.map((point) => point.profit) },
+    ];
+  });
+
+  /** Métodos de pago: anillo + ranking (con los colores fijos de cada método). */
+  readonly paymentChart = computed<Composition>(() =>
+    toComposition(
+      (this.paymentMethods()?.items ?? []).map((row, index) => ({
+        label: this.methodLabels[row.method] ?? row.method,
+        value: row.amount,
+        caption: `${number(row.count)} cobros`,
+        color: paymentMethodColor(row.method, index),
+      })),
+    ),
+  );
+
+  /** Dato central del anillo de métodos de pago. */
+  readonly paymentCenter = computed(() => this.centerOf(this.paymentChart()));
+
+  /** Productos más vendidos: ranking de ingresos sobre la tabla de detalle. */
+  readonly topProductRows = computed<BarRow[]>(() =>
+    this.topProducts().map((item) => ({
+      label: item.name,
+      value: item.revenue,
+      caption: `${number(item.quantity)} u.`,
+    })),
+  );
+
+  /** Cobros por moneda: el ranking muestra el equivalente y el monto original. */
+  readonly currencyChart = computed<Composition>(() =>
+    toComposition(
+      (this.paymentsByCurrency()?.items ?? []).map((row, index) => ({
+        label: row.currency,
+        value: row.baseAmount,
+        caption: `${this.amountIn(row.amount, row.currency)} · ${number(row.count)} cobros`,
+        color: currencyColor(row.currency, index),
+      })),
+    ),
+  );
+
+  /** Dato central del anillo de monedas. */
+  readonly currencyCenter = computed(() => this.centerOf(this.currencyChart()));
+
+  /** Ventas por categoría: anillo + ranking. */
+  readonly categoryChart = computed<Composition>(() =>
+    toComposition(
+      (this.categories()?.items ?? []).map((row, index) => ({
+        label: row.name,
+        value: row.revenue,
+        caption: `${number(row.quantity)} unidades`,
+        color: chartColor(index),
+      })),
+    ),
+  );
+
+  /** Dato central del anillo de categorías. */
+  readonly categoryCenter = computed(() => this.centerOf(this.categoryChart()));
+
+  /** Stock bajo: existencias con el mínimo marcado sobre cada barra. */
+  readonly lowStockRows = computed<BarRow[]>(() =>
+    this.lowStock().map((item) => ({
+      label: item.name,
+      value: item.stock,
+      valueText: `${number(item.stock)} ${item.unit}`,
+      caption: `mín. ${number(item.minStock)}`,
+      marker: item.minStock,
+      markerLabel: 'Mínimo',
+      color: CHART_COLORS.rose,
+    })),
+  );
+
+  /** Dato central de un anillo: porcentaje y nombre del bloque mayor. */
+  private centerOf(chart: Composition): { value: string; hint: string } {
+    return {
+      value: chart.topShare > 0 ? `${number(chart.topShare, 1)} %` : '—',
+      hint: chart.topLabel,
+    };
+  }
 
   readonly granularityLabel = computed(() => {
     const granularity = this.sales()?.range.granularity;
@@ -396,9 +560,5 @@ export class StatsPage implements OnInit {
     const date = new Date(period);
     if (Number.isNaN(date.getTime())) return period;
     return new Intl.DateTimeFormat('es-PE', { day: '2-digit', month: 'short' }).format(date);
-  }
-
-  share(value: number, total: number): number {
-    return total > 0 ? Math.max(2, Math.round((value / total) * 100)) : 0;
   }
 }

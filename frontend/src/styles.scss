@@ -221,6 +221,12 @@
     color: var(--nk-text-faint);
   }
 
+  /* Riel y rejilla de los graficos SVG: usan `text-slate-200` como color de
+     trazo (`currentColor`), asi que en oscuro se cambia por el chip del tema. */
+  html.dark .text-slate-200 {
+    color: var(--nk-chip);
+  }
+
   /* ---------------------- Bordes, separadores y hover ----------------- */
   html.dark .border-slate-100 {
     border-color: var(--nk-border-subtle);
