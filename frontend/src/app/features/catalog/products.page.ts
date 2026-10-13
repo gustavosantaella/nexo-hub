@@ -1,5 +1,6 @@
 import { ChangeDetectionStrategy, Component, OnInit, inject, signal } from '@angular/core';
 import { FormsModule } from '@angular/forms';
+import { BASE_CURRENCY } from '../../core/constants/currency';
 import { PRODUCT_UNIT_OPTIONS } from '../../core/constants/domain';
 import type {
   Category,
@@ -273,7 +274,7 @@ interface ProductForm {
             ></textarea>
           </div>
           <div>
-            <label class="label" for="prod-price">Precio (PEN) *</label>
+            <label class="label" for="prod-price">Precio ({{ baseCurrency.code }}) *</label>
             <input
               id="prod-price"
               name="price"
@@ -286,7 +287,7 @@ interface ProductForm {
             />
           </div>
           <div>
-            <label class="label" for="prod-cost">Costo (PEN)</label>
+            <label class="label" for="prod-cost">Costo ({{ baseCurrency.code }})</label>
             <input
               id="prod-cost"
               name="cost"
@@ -389,6 +390,11 @@ interface ProductForm {
 `,
 })
 export class ProductsPage implements OnInit {
+  /**
+   * Moneda base del sistema: los precios y costos del catálogo se guardan y se
+   * muestran en ella (no en soles peruanos).
+   */
+  readonly baseCurrency = BASE_CURRENCY;
   /** Helpers de formato expuestos a la plantilla. */
   readonly number = number;
   readonly auth = inject(AuthService);

@@ -76,6 +76,20 @@ const SNAPSHOT: RatesSnapshot = {
       bsPerUsd: 876.7976,
     },
   ],
+  reference: {
+    pair: 'USDT/VES',
+    label: 'Binance · P2P piso',
+    source: 'binance',
+    method: 'p2p_floor',
+    side: 'FLOOR',
+    paymentMethod: null,
+    price: 1005.8,
+    asOf: '2026-10-13T20:54:00.203Z',
+    fetchedAt: '2026-10-13T20:54:00.203Z',
+    stale: false,
+    sourceUrl:
+      'https://fx.vexwallet.co/api/v1/fx/latest?pair=USDT/VES&source=binance&method=p2p_floor',
+  },
 };
 
 /** Conversiones entre la moneda base (USD) y las monedas configuradas. */
@@ -138,5 +152,16 @@ describe('RatesService (conversión de monedas)', () => {
     expect(rates.currencyLabel('VES')).toBe('Bolívares (VES)');
     expect(rates.currencyLabel('COP')).toBe('Pesos colombianos (COP)');
     expect(rates.currencyLabel(undefined)).toBe('Dólares (USD)');
+  });
+
+  it('expone la tasa USDT de referencia sin usarla en las conversiones', () => {
+    const reference = rates.reference();
+    expect(reference?.pair).toBe('USDT/VES');
+    expect(reference?.label).toBe('Binance · P2P piso');
+    expect(reference?.price).toBe(1005.8);
+    expect(rates.referenceStale()).toBe(false);
+    // Manda el BCV (876.7976 Bs por USD), no los 1005.8 Bs del USDT.
+    expect(rates.bsPerUsd()).toBe(876.7976);
+    expect(rates.toBs(1)).toBe(876.7976);
   });
 });

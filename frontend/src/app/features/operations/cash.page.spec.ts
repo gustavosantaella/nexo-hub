@@ -95,6 +95,7 @@ const SNAPSHOT: RatesSnapshot = {
     currencyRate('VES', 'Bolivares', 1),
     currencyRate('EUR', 'Euros', BS_PER_EUR),
   ],
+  reference: null,
 };
 
 function session(partial: Partial<CashSession> = {}): CashSession {

@@ -78,6 +78,8 @@ const BCV_ONLY: RatesSnapshot = {
   ],
   activeKey: 'BCV_USD',
   currencies: currenciesFor(876.7976),
+  // Tasa USDT de referencia: informativa, no entra en las conversiones.
+  reference: null,
 };
 
 const WITH_CUSTOM: RatesSnapshot = {

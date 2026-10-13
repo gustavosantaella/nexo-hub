@@ -24,6 +24,13 @@ export interface AppConfig {
     cacheTtlSeconds: number;
     /** Tiempo maximo de espera de la consulta externa (ms). */
     timeoutMs: number;
+    /**
+     * Endpoint informativo con la tasa USDT/VES (no se usa para convertir
+     * montos; solo se muestra como referencia en Configuracion).
+     */
+    usdtUrl: string;
+    /** Segundos que se reutiliza la respuesta de la tasa USDT de referencia. */
+    usdtCacheTtlSeconds: number;
   };
 }
 
@@ -59,6 +66,13 @@ export default (): AppConfig => {
         'https://rates.dolarvzla.com/bcv/current.json',
       cacheTtlSeconds: parseInt(process.env.RATES_CACHE_TTL_SECONDS ?? '900', 10),
       timeoutMs: parseInt(process.env.RATES_TIMEOUT_MS ?? '8000', 10),
+      usdtUrl:
+        process.env.RATES_USDT_URL ??
+        'https://fx.vexwallet.co/api/v1/fx/latest?pair=USDT/VES&source=binance&method=p2p_floor',
+      usdtCacheTtlSeconds: parseInt(
+        process.env.RATES_USDT_CACHE_TTL_SECONDS ?? '300',
+        10,
+      ),
     },
   };
 };

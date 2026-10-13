@@ -23,11 +23,34 @@ describe('AppComponent (shell global)', () => {
 
   beforeEach(async () => {
     localStorage.clear();
-    saveSession('token-de-prueba', {
-      id: 'u1',
-      email: 'cajero@nexohub.com',
-      name: 'Cajero Test',
+    saveSession({
+      accessToken: 'token-de-prueba',
+      user: {
+        id: 'u1',
+        email: 'cajero@nexohub.com',
+        name: 'Cajero Test',
+        active: true,
+        createdAt: '2026-10-13T12:00:00.000Z',
+        updatedAt: '2026-10-13T12:00:00.000Z',
+      },
+      company: {
+        id: 'c1',
+        name: 'Empresa de prueba',
+        rif: 'J-12345678-9',
+        active: true,
+        createdAt: '2026-10-13T12:00:00.000Z',
+        updatedAt: '2026-10-13T12:00:00.000Z',
+      },
       role: 'CASHIER',
+      companies: [
+        {
+          id: 'c1',
+          name: 'Empresa de prueba',
+          rif: 'J-12345678-9',
+          role: 'CASHIER',
+          active: true,
+        },
+      ],
     });
 
     await TestBed.configureTestingModule({

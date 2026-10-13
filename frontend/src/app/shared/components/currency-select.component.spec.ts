@@ -77,6 +77,7 @@ const SNAPSHOT: RatesSnapshot = {
       bsPerUsd: 876.7976,
     },
   ],
+  reference: null,
 };
 
 @Component({

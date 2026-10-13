@@ -119,6 +119,15 @@ Para partir de cero: `npm run db:reset` (borra la base, la recrea y siembra).
   personalizada) todos los montos del sistema se muestran "al cambio" en
   bolívares. Los montos se guardan y se muestran en la moneda base del sistema
   (**USD**).
+- **Tasa USDT de referencia (solo informativa)**: junto a las anteriores,
+  `GET /api/rates` devuelve `reference` con la tasa **USDT/VES** publicada por
+  [Binance P2P](https://fx.vexwallet.co/api/v1/fx/latest?pair=USDT/VES&source=binance&method=p2p_floor)
+  (par, fuente, método, precio, `asOf` y `stale`). Se muestra en
+  `/panel/configuracion` para comparar con la tasa del local, pero **no
+  participa en ninguna conversión**: no aparece en los montos "al cambio", ni en
+  las monedas de pago, ni en el `activeKey`. Si la fuente falla se sirve la
+  última tasa conocida marcada como `stale` y, si nunca hubo dato, `reference`
+  es `null` (el resto de la pantalla de tasas sigue funcionando).
 - **Monedas de pago**: en Caja, al cobrar un pedido, al cobrar/pagar una cuenta
   y al registrar un gasto se elige la **moneda del pago**. El sistema trae por
   defecto **USD** (moneda base, tasa del BCV o la personalizada), **VES**
@@ -215,7 +224,7 @@ La URL base de la API se configura en `src/environments/environment.ts`.
 | `/panel/productos`, `/panel/categorias`, `/panel/proveedores`, `/panel/clientes` | Catálogo |
 | `/panel/gastos`, `/panel/cuentas-por-pagar`, `/panel/cuentas-por-cobrar` | Finanzas |
 | `/panel/reportes` | Series de ventas/gastos/utilidad, top productos, métodos de pago y cobros por moneda |
-| `/panel/configuracion` | Datos de la empresa, mis datos, tasas del BCV (dólar/euro, solo lectura), tasa personalizada, monedas aceptadas y vista previa |
+| `/panel/configuracion` | Datos de la empresa, mis datos, tasas del BCV (dólar/euro, solo lectura), tasa USDT de referencia (solo informativa), tasa personalizada, monedas aceptadas y vista previa |
 | `/panel/usuarios` | Usuarios de la empresa activa (solo ADMIN) |
 
 Todo el back-office vive bajo el prefijo `/panel` (protegido por `authGuard`);

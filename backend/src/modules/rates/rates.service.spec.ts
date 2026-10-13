@@ -47,6 +47,40 @@ const BCV_PAYLOAD = {
   changePercentage: { usd: 0.13099975389724816, eur: 0.14172932079829498 },
 };
 
+/** Respuesta real del endpoint informativo de la tasa USDT/VES. */
+const USDT_PAYLOAD = {
+  pair: 'USDT/VES',
+  source: 'binance',
+  method: 'p2p_floor',
+  price: 1005.8,
+  asOf: '2026-10-13T20:54:00.203Z',
+  fetchedAt: '2026-10-13T20:54:00.203Z',
+  side: 'FLOOR',
+  paymentMethod: null,
+};
+
+/** Respuesta HTTP simulada con un cuerpo JSON. */
+function okResponse(payload: unknown): {
+  ok: boolean;
+  status: number;
+  json: () => Promise<unknown>;
+} {
+  return { ok: true, status: 200, json: () => Promise.resolve(payload) };
+}
+
+/** `true` cuando la URL corresponde a la fuente informativa de la tasa USDT. */
+function isReferenceUrl(url: unknown): boolean {
+  return !String(url).includes('bcv');
+}
+
+/** `fetch` simulado que responde segun la URL consultada. */
+function fetchByUrl(
+  bcv: () => Promise<unknown> = () => Promise.resolve(okResponse(BCV_PAYLOAD)),
+  usdt: () => Promise<unknown> = () => Promise.resolve(okResponse(USDT_PAYLOAD)),
+): jest.Mock {
+  return jest.fn((url: unknown) => (isReferenceUrl(url) ? usdt() : bcv()));
+}
+
 interface SettingRow {
   key: string;
   value: string;
@@ -77,6 +111,8 @@ function buildService(options: {
       if (key === 'rates.bcvUrl') return 'https://rates.test/bcv/current.json';
       if (key === 'rates.cacheTtlSeconds') return options.cacheTtlSeconds ?? 900;
       if (key === 'rates.timeoutMs') return 5000;
+      if (key === 'rates.usdtUrl') return 'https://rates.test/usdt/latest';
+      if (key === 'rates.usdtCacheTtlSeconds') return 300;
       return undefined;
     }),
   };
@@ -102,12 +138,14 @@ describe('RatesService', () => {
   const originalFetch = global.fetch;
   let fetchMock: jest.Mock;
 
+  /** URLs consultadas por el `fetch` simulado que contienen `fragment`. */
+  const callsTo = (fragment: string): string[] =>
+    fetchMock.mock.calls
+      .map(([url]) => String(url))
+      .filter((url) => url.includes(fragment));
+
   beforeEach(() => {
-    fetchMock = jest.fn().mockResolvedValue({
-      ok: true,
-      status: 200,
-      json: () => Promise.resolve(BCV_PAYLOAD),
-    });
+    fetchMock = fetchByUrl();
   });
 
   afterEach(() => {
@@ -166,22 +204,24 @@ describe('RatesService', () => {
     );
   });
 
-  it('reutiliza la cache y no golpea el endpoint externo dos veces', async () => {
+  it('reutiliza la cache y no golpea los endpoints externos dos veces', async () => {
     const { service } = buildService({ fetchImpl: fetchMock });
 
     await service.snapshot(COMPANY_ID);
     await service.snapshot(COMPANY_ID);
 
-    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(callsTo('bcv')).toHaveLength(1);
+    expect(callsTo('usdt')).toHaveLength(1);
   });
 
-  it('vuelve a consultar el endpoint cuando se pide refresh', async () => {
+  it('vuelve a consultar los endpoints externos cuando se pide refresh', async () => {
     const { service } = buildService({ fetchImpl: fetchMock });
 
     await service.snapshot(COMPANY_ID);
     await service.snapshot(COMPANY_ID, true);
 
-    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(callsTo('bcv')).toHaveLength(2);
+    expect(callsTo('usdt')).toHaveLength(2);
   });
 
   it('devuelve la ultima tasa conocida marcada como stale si el BCV falla', async () => {
@@ -230,6 +270,78 @@ describe('RatesService', () => {
     // El borrado se limita a la empresa (clave compuesta del negocio).
     expect(prisma.deleteMany).toHaveBeenCalledWith({
       where: { companyId: COMPANY_ID, key: CUSTOM_RATE_KEY },
+    });
+  });
+
+  describe('tasa USDT de referencia (solo informativa)', () => {
+    it('publica la tasa de la fuente externa sin usarla en las conversiones', async () => {
+      const { service } = buildService({ fetchImpl: fetchMock });
+
+      const snapshot = await service.snapshot(COMPANY_ID);
+
+      expect(snapshot.reference).toMatchObject({
+        pair: 'USDT/VES',
+        label: 'Binance · P2P piso',
+        source: 'binance',
+        method: 'p2p_floor',
+        side: 'FLOOR',
+        paymentMethod: null,
+        price: 1005.8,
+        asOf: '2026-10-13T20:54:00.203Z',
+        stale: false,
+        sourceUrl: 'https://rates.test/usdt/latest',
+      });
+
+      // La referencia NO entra en las tasas utilizables ni en las conversiones.
+      expect(snapshot.rates.map((rate) => rate.rate)).toEqual([
+        876.7976,
+        982.00454402,
+      ]);
+      expect(snapshot.activeKey).toBe('BCV_USD');
+      expect(snapshot.currencies[0].bsPerUnit).toBe(876.7976);
+      // 876.7976 Bs = 1 USD con la tasa del BCV, no con los 1005.8 Bs del USDT.
+      await expect(
+        service.resolvePayment(COMPANY_ID, 876.7976, 'VES'),
+      ).resolves.toMatchObject({ baseAmount: 1, exchangeRate: 1 });
+    });
+
+    it('devuelve null cuando la fuente falla y no hay dato previo', async () => {
+      const failing = fetchByUrl(undefined, () =>
+        Promise.reject(new Error('timeout')),
+      );
+      const { service } = buildService({ fetchImpl: failing });
+
+      const snapshot = await service.snapshot(COMPANY_ID);
+
+      expect(snapshot.reference).toBeNull();
+      // El BCV sigue respondiendo: la pantalla de tasas no se cae.
+      expect(snapshot.rates[0].rate).toBe(876.7976);
+    });
+
+    it('reutiliza la ultima tasa USDT conocida (stale) si la fuente falla luego', async () => {
+      const { service } = buildService({ fetchImpl: fetchMock });
+      await service.snapshot(COMPANY_ID);
+
+      fetchMock.mockImplementation(
+        fetchByUrl(undefined, () => Promise.reject(new Error('timeout'))),
+      );
+      const snapshot = await service.snapshot(COMPANY_ID, true);
+
+      expect(snapshot.reference?.price).toBe(1005.8);
+      expect(snapshot.reference?.stale).toBe(true);
+    });
+
+    it('ignora respuestas de la fuente USDT sin precio valido', async () => {
+      fetchMock.mockImplementation(
+        fetchByUrl(undefined, () =>
+          Promise.resolve(okResponse({ ...USDT_PAYLOAD, price: 0 })),
+        ),
+      );
+      const { service } = buildService({ fetchImpl: fetchMock });
+
+      const snapshot = await service.snapshot(COMPANY_ID);
+
+      expect(snapshot.reference).toBeNull();
     });
   });
 

@@ -242,6 +242,66 @@ interface CurrencyRow {
         </section>
 
       </div>
+
+      <!-- Tasa USDT/VES de una fuente externa: solo informativa. -->
+      <section class="card mt-4">
+        <div class="card-header">
+          <div>
+            <h2 class="text-sm font-semibold text-slate-900">Tasa USDT de referencia</h2>
+            <p class="mt-0.5 text-xs text-slate-500">
+              Tasa del mercado (Binance P2P). Es solo informativa: no se usa para
+              calcular montos ni aparece en los montos al cambio.
+            </p>
+          </div>
+          @if (reference(); as ref) {
+            <span class="badge bg-slate-100 text-slate-600">{{ ref.label }}</span>
+          }
+        </div>
+
+        @if (reference(); as ref) {
+          <div class="card-body grid gap-4 sm:grid-cols-3">
+            <div>
+              <p class="text-xs text-slate-500">Par</p>
+              <p class="mt-1 text-sm font-semibold text-slate-900">{{ ref.pair }}</p>
+            </div>
+            <div>
+              <p class="text-xs text-slate-500">Tasa (Bs por USDT)</p>
+              <p class="mt-1 text-lg font-semibold text-slate-900">
+                {{ rate(ref.price) }}
+              </p>
+            </div>
+            <div>
+              <p class="text-xs text-slate-500">Publicada</p>
+              <p class="mt-1 text-sm text-slate-700">{{ referenceAsOf() }}</p>
+            </div>
+
+            @if (ref.stale) {
+              <div
+                class="flex items-start gap-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800 sm:col-span-3"
+              >
+                <app-icon name="alert" size="h-4 w-4 shrink-0" />
+                <p>
+                  No se pudo consultar la fuente en este momento: se muestra la
+                  última tasa conocida.
+                </p>
+              </div>
+            }
+
+            <p class="rounded-lg bg-slate-50 px-3 py-2 text-xs text-slate-500 sm:col-span-3">
+              Fuente: {{ ref.source }} · {{ ref.method }} — consultada el
+              {{ referenceFetchedAt() }}.
+              <a class="underline" [href]="ref.sourceUrl" target="_blank" rel="noopener">
+                Ver fuente
+              </a>
+            </p>
+          </div>
+        } @else {
+          <div class="card-body text-sm text-slate-500">
+            No se pudo obtener la tasa USDT de referencia en este momento.
+          </div>
+        }
+      </section>
+
       <div class="mt-4 grid gap-4 lg:grid-cols-3">
         <section class="card lg:col-span-2">
           <div class="card-header">
@@ -840,6 +900,8 @@ export class SettingsPage implements OnInit {
   readonly stale = this.ratesService.stale;
   readonly activeKey = this.ratesService.activeKey;
   readonly showConversions = this.ratesService.showConversions;
+  /** Tasa USDT/VES de referencia (informativa, no entra en los cálculos). */
+  readonly reference = this.ratesService.reference;
 
   // ----------------------------- Monedas aceptadas ---------------------------
   readonly currencySaving = this.currenciesService.saving;
@@ -859,6 +921,8 @@ export class SettingsPage implements OnInit {
 
   readonly customUpdatedAt = () => dateTime(this.custom()?.updatedAt);
   readonly lastUpdate = () => dateTime(this.bcv()?.fetchedAt);
+  readonly referenceAsOf = () => dateTime(this.reference()?.asOf);
+  readonly referenceFetchedAt = () => dateTime(this.reference()?.fetchedAt);
 
   // ------------------------------ Empresa activa -----------------------------
   /** Datos de la empresa activa (se sincronizan con la sesión). */

@@ -13,6 +13,7 @@ import type {
   RateConversion,
   RateKey,
   RatesSnapshot,
+  ReferenceRate,
 } from '../models/rates.model';
 import { bs, money } from '../utils/format';
 
@@ -38,6 +39,9 @@ function storedConversions(): boolean {
  * El backend consulta `https://rates.dolarvzla.com/bcv/current.json`, cachea la
  * respuesta y persiste la tasa personalizada; aquí solo se mantiene el estado
  * reactivo (signals) que usan `<app-money>` y el módulo de configuración.
+ *
+ * También expone la tasa **USDT/VES de referencia** publicada por Binance P2P:
+ * es informativa y no participa en ninguna conversión.
  */
 @Injectable({ providedIn: 'root' })
 export class RatesService {
@@ -62,6 +66,15 @@ export class RatesService {
   readonly custom = computed<CustomRate | null>(() => this._snapshot()?.custom ?? null);
   readonly hasCustom = computed(() => this.custom() !== null);
   readonly bcv = computed(() => this._snapshot()?.bcv ?? null);
+  /**
+   * Tasa USDT/VES de referencia (Binance P2P), solo para mostrar.
+   * No se usa en ninguna conversión del sistema.
+   */
+  readonly reference = computed<ReferenceRate | null>(
+    () => this._snapshot()?.reference ?? null,
+  );
+  /** `true` cuando la referencia viene de la última consulta válida. */
+  readonly referenceStale = computed(() => this.reference()?.stale ?? false);
   readonly activeKey = computed<RateKey | null>(
     () => this._snapshot()?.activeKey ?? null,
   );

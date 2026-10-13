@@ -68,6 +68,32 @@ export interface CurrencyRateOption {
   bsPerUsd: number;
 }
 
+/**
+ * Tasa USDT/VES de una fuente externa (Binance P2P).
+ *
+ * Es SOLO informativa: se muestra para comparar con las tasas del local y no
+ * participa en ninguna conversión de montos.
+ */
+export interface ReferenceRate {
+  /** Par consultado (ej. `USDT/VES`). */
+  pair: string;
+  /** Etiqueta legible de la fuente (ej. `Binance · P2P piso`). */
+  label: string;
+  source: string;
+  method: string;
+  side: string | null;
+  paymentMethod: string | null;
+  /** Bolívares por 1 USDT según la fuente. */
+  price: number;
+  /** Momento (ISO) del dato publicado por la fuente. */
+  asOf: string;
+  /** Momento (ISO) en que la fuente entregó la respuesta. */
+  fetchedAt: string;
+  /** `true` cuando la fuente falló y se muestra la última tasa conocida. */
+  stale: boolean;
+  sourceUrl: string;
+}
+
 /** Respuesta de `GET /api/rates`. */
 export interface RatesSnapshot {
   bcv: BcvSnapshot;
@@ -78,6 +104,11 @@ export interface RatesSnapshot {
   activeKey: RateKey;
   /** Monedas configurables con su tasa en bolivares. */
   currencies: CurrencyRateOption[];
+  /**
+   * Tasa USDT/VES de referencia, solo para mostrar en Configuración.
+   * `null` cuando la fuente no respondió y no hay dato previo.
+   */
+  reference: ReferenceRate | null;
 }
 
 /** Monto convertido con una tasa (lo que pinta `<app-money>`). */

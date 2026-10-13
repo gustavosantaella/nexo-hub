@@ -31,7 +31,10 @@ export class RatesController {
 
   @Get()
   @ApiOperation({
-    summary: 'Tasas BCV (dolar/euro) y tasa personalizada de la empresa',
+    summary:
+      'Tasas BCV (dolar/euro), tasa personalizada de la empresa y tasa USDT de referencia',
+    description:
+      '`reference` es la tasa USDT/VES publicada por Binance P2P y es solo informativa: no se usa para convertir montos.',
   })
   current(
     @CurrentUser('companyId') companyId: string,

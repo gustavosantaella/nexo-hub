@@ -56,6 +56,33 @@ export interface CustomRate {
   updatedBy: string | null;
 }
 
+/**
+ * Tasa USDT/VES de una fuente externa (Binance P2P).
+ *
+ * Es SOLO informativa: sirve para comparar la tasa del local con el mercado y
+ * no participa en ninguna conversion de montos (no alimenta `rates`,
+ * `activeKey` ni `currencies`).
+ */
+export interface ReferenceRate {
+  /** Par consultado (ej. `USDT/VES`). */
+  pair: string;
+  /** Etiqueta legible de la fuente (ej. `Binance · P2P piso`). */
+  label: string;
+  source: string;
+  method: string;
+  side: string | null;
+  paymentMethod: string | null;
+  /** Bolivares por 1 USDT segun la fuente. */
+  price: number;
+  /** Momento (ISO) del dato publicado por la fuente. */
+  asOf: string;
+  /** Momento (ISO) en que la fuente entrego la respuesta. */
+  fetchedAt: string;
+  /** `true` cuando la consulta fallo y se muestra la ultima tasa conocida. */
+  stale: boolean;
+  sourceUrl: string;
+}
+
 /** Una de las tasas que el frontend usa para mostrar los montos "al cambio". */
 export interface RateOption {
   key: RateKey;
@@ -95,6 +122,11 @@ export interface RatesSnapshot {
   activeKey: RateKey;
   /** Monedas configurables con su tasa en bolivares (para cobrar/pagar). */
   currencies: CurrencyRateOption[];
+  /**
+   * Tasa USDT/VES de referencia (Binance P2P), solo para mostrar.
+   * `null` cuando la fuente externa no respondio y no hay dato previo.
+   */
+  reference: ReferenceRate | null;
 }
 
 /**
@@ -107,6 +139,10 @@ export interface RatesSnapshot {
  *
  * La tasa personalizada del local se guarda en la tabla `Setting` y, cuando
  * existe, se agrega como tercera opcion (`CUSTOM_USD`).
+ *
+ * Ademas se consulta la tasa USDT/VES de Binance P2P
+ * (`https://fx.vexwallet.co/api/v1/fx/latest`) que se devuelve en `reference`
+ * SOLO para compararla en pantalla: no participa en ninguna conversion.
  */
 @Injectable()
 export class RatesService {
@@ -114,11 +150,17 @@ export class RatesService {
   private readonly bcvUrl: string;
   private readonly cacheTtlMs: number;
   private readonly timeoutMs: number;
+  private readonly usdtUrl: string;
+  private readonly usdtCacheTtlMs: number;
 
   /** Ultima respuesta valida del BCV (cache en memoria del proceso). */
   private cache: { fetchedAt: number; payload: BcvPayload } | null = null;
   /** Consulta en curso: evita peticiones duplicadas simultaneas. */
   private inflight: Promise<BcvPayload> | null = null;
+  /** Ultima tasa USDT de referencia valida (cache en memoria del proceso). */
+  private usdtCache: { fetchedAt: number; payload: ReferenceRate } | null = null;
+  /** Consulta en curso de la tasa de referencia. */
+  private usdtInflight: Promise<ReferenceRate> | null = null;
 
   constructor(
     private readonly prisma: PrismaService,
@@ -131,11 +173,21 @@ export class RatesService {
     this.cacheTtlMs =
       (config.get<number>('rates.cacheTtlSeconds') ?? 900) * 1000;
     this.timeoutMs = config.get<number>('rates.timeoutMs') ?? 8000;
+    this.usdtUrl =
+      config.get<string>('rates.usdtUrl') ??
+      'https://fx.vexwallet.co/api/v1/fx/latest?pair=USDT/VES&source=binance&method=p2p_floor';
+    this.usdtCacheTtlMs =
+      (config.get<number>('rates.usdtCacheTtlSeconds') ?? 300) * 1000;
   }
 
   /** Estado completo: BCV + tasa personalizada + tasas utilizables. */
   async snapshot(companyId: string, refresh = false): Promise<RatesSnapshot> {
-    const { payload, fetchedAt, stale } = await this.bcv(refresh);
+    // Las dos consultas externas van en paralelo: la de referencia nunca
+    // rechaza (si falla devuelve su ultima tasa conocida o null).
+    const [{ payload, fetchedAt, stale }, reference] = await Promise.all([
+      this.bcv(refresh),
+      this.reference(refresh),
+    ]);
     const custom = await this.customRate(companyId);
 
     const rates: RateOption[] = [
@@ -188,6 +240,7 @@ export class RatesService {
       currencies: configured.map((item) =>
         this.currencyOption(item, payload, bsPerUsd, custom !== null),
       ),
+      reference,
     };
   }
 
@@ -491,5 +544,128 @@ export class RatesService {
   private delta(from: number, to: number): number {
     if (!from) return 0;
     return ((to - from) / from) * 100;
+  }
+
+  // =========================================================================
+  //  TASA USDT DE REFERENCIA (SOLO INFORMATIVA)
+  // =========================================================================
+
+  /**
+   * Tasa USDT/VES publicada por la fuente externa (Binance P2P).
+   *
+   * Se cachea como el BCV, pero es **informativa**: no se usa para convertir
+   * montos. Si la fuente falla se devuelve la ultima tasa conocida marcada como
+   * `stale` y, si nunca hubo una respuesta valida, se devuelve `null` (la
+   * pantalla de tasas sigue funcionando con el BCV).
+   */
+  private async reference(refresh = false): Promise<ReferenceRate | null> {
+    const cached = this.usdtCache;
+    const isFresh =
+      cached !== null && Date.now() - cached.fetchedAt < this.usdtCacheTtlMs;
+
+    if (cached && isFresh && !refresh) return cached.payload;
+
+    try {
+      const payload = await this.fetchReference();
+      this.usdtCache = { fetchedAt: Date.now(), payload };
+      return payload;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (cached) {
+        this.logger.warn(
+          `No se pudo consultar la tasa USDT de referencia (${message}); se usa la ultima conocida (${new Date(cached.fetchedAt).toISOString()})`,
+        );
+        return { ...cached.payload, stale: true };
+      }
+
+      this.logger.warn(
+        `No se pudo consultar la tasa USDT de referencia: ${message}`,
+      );
+      return null;
+    }
+  }
+
+  /** Consulta el endpoint externo (deduplicando peticiones simultaneas). */
+  private fetchReference(): Promise<ReferenceRate> {
+    if (!this.usdtInflight) {
+      this.usdtInflight = this.requestReference().finally(() => {
+        this.usdtInflight = null;
+      });
+    }
+    return this.usdtInflight;
+  }
+
+  private async requestReference(): Promise<ReferenceRate> {
+    const response = await fetch(this.usdtUrl, {
+      headers: { accept: 'application/json' },
+      signal: AbortSignal.timeout(this.timeoutMs),
+    });
+
+    if (!response.ok) {
+      throw new Error(`la fuente USDT respondio ${response.status}`);
+    }
+
+    return this.parseReference(await response.json());
+  }
+
+  /** Valida/normaliza la respuesta de la fuente antes de cachearla. */
+  private parseReference(body: unknown): ReferenceRate {
+    const raw = body as {
+      pair?: unknown;
+      source?: unknown;
+      method?: unknown;
+      price?: unknown;
+      asOf?: unknown;
+      fetchedAt?: unknown;
+      side?: unknown;
+      paymentMethod?: unknown;
+    } | null;
+
+    const price = this.toNumber(raw?.price);
+    if (price === null || price <= 0) {
+      throw new Error('la respuesta de la fuente USDT no tiene el formato esperado');
+    }
+
+    const source = this.optionalText(raw?.source) ?? 'desconocida';
+    const method = this.optionalText(raw?.method) ?? 'sin metodo';
+
+    return {
+      pair: this.optionalText(raw?.pair) ?? 'USDT/VES',
+      label: this.referenceLabel(source, method),
+      source,
+      method,
+      side: this.optionalText(raw?.side),
+      paymentMethod: this.optionalText(raw?.paymentMethod),
+      price,
+      asOf: this.optionalText(raw?.asOf) ?? '',
+      fetchedAt: this.optionalText(raw?.fetchedAt) ?? new Date().toISOString(),
+      stale: false,
+      sourceUrl: this.usdtUrl,
+    };
+  }
+
+  /** Texto legible de la fuente, ej. `Binance · P2P piso`. */
+  private referenceLabel(source: string, method: string): string {
+    const sources: Record<string, string> = {
+      binance: 'Binance',
+      bybit: 'Bybit',
+      okx: 'OKX',
+    };
+    const methods: Record<string, string> = {
+      p2p_floor: 'P2P piso',
+      p2p_mean: 'P2P promedio',
+      p2p_median: 'P2P mediana',
+    };
+
+    const sourceLabel = sources[source.toLowerCase()] ?? source;
+    const methodLabel = methods[method.toLowerCase()] ?? method;
+    return `${sourceLabel} · ${methodLabel}`;
+  }
+
+  /** Texto no vacio o `null` (los campos opcionales vienen como `null`). */
+  private optionalText(value: unknown): string | null {
+    if (value === null || value === undefined) return null;
+    const text = String(value).trim();
+    return text === '' ? null : text;
   }
 }
