@@ -1,0 +1,802 @@
+import {
+  BadRequestException,
+  ConflictException,
+  Injectable,
+  NotFoundException,
+} from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
+import type { Prisma } from '@prisma/client';
+import {
+  CASH_OUT_CATEGORIES,
+  CashMovementCategory,
+  CashMovementType,
+  CashSessionStatus,
+  PaymentMethod,
+} from '../../common/constants/enums';
+import {
+  BASE_CURRENCY_CODE,
+  MIXED_CURRENCY_CODE,
+  normalizeCurrencyCode,
+} from '../../common/constants/currencies';
+import { buildPaginatedResult, toSkip } from '../../common/utils/pagination.util';
+import { buildCode } from '../../common/utils/code.util';
+import { buildDateRange } from '../../common/utils/date.util';
+import {
+  compareMoney,
+  money,
+  moneyFieldsFromCents,
+  moneyFieldsToCents,
+  toMoney,
+} from '../../common/utils/money.util';
+import { OPENING_LINE_MONEY_FIELDS } from '../../common/constants/money-columns';
+import { PrismaService, type PrismaClientLike } from '../../prisma/prisma.service';
+import { RatesService } from '../rates/rates.service';
+import { CashMovementQueryDto, CashSessionQueryDto } from './dto/cash-query.dto';
+import { CloseSessionDto } from './dto/close-session.dto';
+import { CreateCashMovementDto } from './dto/create-cash-movement.dto';
+import { OpenSessionDto } from './dto/open-session.dto';
+
+/** Datos minimos de un movimiento para calcular el arqueo. */
+export interface MovementLike {
+  type: string;
+  category: string;
+  paymentMethod: string;
+  /** Monto en la moneda del movimiento. */
+  amount: number;
+  /** Moneda en que entro/salio el dinero (por defecto USD). */
+  currency?: string | null;
+  /** Equivalente en USD (moneda base); 0 en registros anteriores. */
+  baseAmount?: number | null;
+}
+
+/** Totales de un movimiento, en la moneda original y en la moneda base. */
+export interface CurrencyBreakdown {
+  currency: string;
+  in: number;
+  out: number;
+  net: number;
+  /** Los mismos totales expresados en USD (moneda base). */
+  baseIn: number;
+  baseOut: number;
+  baseNet: number;
+}
+
+/** Una parte del fondo inicial: monto contado en su moneda + equivalente en USD. */
+export interface OpeningLine {
+  currency: string;
+  /** Monto que se conto fisicamente en `currency`. */
+  amount: number;
+  /** Bolivares por 1 unidad de `currency` (tasa usada al abrir). */
+  rate: number | null;
+  /** Equivalente en USD (moneda base) de `amount`. */
+  baseAmount: number;
+}
+
+/** Linea del fondo tal como llega en la peticion de apertura. */
+interface OpeningLineInput {
+  currency?: string;
+  amount?: number;
+}
+
+/** Fondo inicial resuelto a partir de la apertura (una o varias monedas). */
+interface OpeningFund {
+  /** Total del fondo en USD (moneda base). */
+  amount: number;
+  /** Moneda contada, o `MIX` cuando fueron varias. */
+  currency: string;
+  /** Tasa de la moneda contada (`null` si fueron varias o no hubo conversion). */
+  rate: number | null;
+  /** Desglose por moneda (vacio en aperturas antiguas de una sola moneda). */
+  lines: OpeningLine[];
+}
+
+/**
+ * Arqueo de caja.
+ *
+ * Todos los totales agregados (`cashIn`, `totalOut`, `expectedCash`, ...) se
+ * expresan en USD (moneda base del sistema) para que montos cobrados en
+ * distintas monedas sean comparables y sumables. El desglose `byCurrency`
+ * conserva los montos originales de cada moneda.
+ */
+export interface CashBreakdown {
+  /** Efectivo que entro a la caja (solo metodo CASH). */
+  cashIn: number;
+  /** Efectivo que salio de la caja (solo metodo CASH). */
+  cashOut: number;
+  /** Efectivo que deberia haber en la caja: apertura + cashIn - cashOut. */
+  expectedCash: number;
+  /** Totales por todos los metodos. */
+  totalIn: number;
+  totalOut: number;
+  net: number;
+  salesTotal: number;
+  movementCount: number;
+  byMethod: { method: string; in: number; out: number; net: number }[];
+  byCategory: { category: string; in: number; out: number; net: number }[];
+  /** Desglose por moneda (montos originales + equivalente en USD). */
+  byCurrency: CurrencyBreakdown[];
+  /** Como se conto el fondo inicial, moneda por moneda (vacio si es antiguo). */
+  openingByCurrency: OpeningLine[];
+  /** `true` cuando el fondo inicial se conto en mas de una moneda. */
+  openingMixed: boolean;
+}
+
+export interface RegisterMovementInput {
+  sessionId?: string;
+  type?: CashMovementType;
+  category: CashMovementCategory;
+  paymentMethod?: PaymentMethod;
+  amount: number;
+  /** Moneda del dinero que entra o sale (por defecto USD). */
+  currency?: string;
+  /**
+   * Equivalente en USD ya calculado por el llamador (para que el arqueo
+   * coincida exactamente con el documento de origen, ej. un cobro ajustado
+   * al saldo del pedido).
+   */
+  baseAmount?: number | null;
+  description?: string;
+  referenceType?: string;
+  referenceId?: string;
+  createdById?: string;
+}
+
+const SESSION_INCLUDE = {
+  openedBy: { select: { id: true, name: true, email: true } },
+  closedBy: { select: { id: true, name: true, email: true } },
+  movements: {
+    orderBy: { createdAt: 'desc' },
+    include: { createdBy: { select: { id: true, name: true } } },
+  },
+} satisfies Prisma.CashSessionInclude;
+
+type SessionWithRelations = Prisma.CashSessionGetPayload<{
+  include: typeof SESSION_INCLUDE;
+}>;
+
+@Injectable()
+export class CashService {
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly config: ConfigService,
+    private readonly rates: RatesService,
+  ) {}
+
+  // =========================================================================
+  //  APRQUEO / CALCULOS
+  // =========================================================================
+
+  /** Moneda del movimiento (registros antiguos sin moneda = USD). */
+  private currencyOf(row: MovementLike): string {
+    return normalizeCurrencyCode(row.currency) || BASE_CURRENCY_CODE;
+  }
+
+  /**
+   * Equivalente en USD (moneda base) de un movimiento.
+   * Los registros anteriores al soporte multimoneda no tienen `baseAmount`,
+   * por lo que su `amount` ya estaba expresado en dolares.
+   */
+  private baseOf(row: MovementLike): number {
+    const base = toMoney(row.baseAmount ?? 0);
+    return base > 0 ? base : toMoney(row.amount);
+  }
+
+  // =========================================================================
+  //  FONDO INICIAL (UNA O VARIAS MONEDAS)
+  // =========================================================================
+
+  /**
+   * Lee el desglose del fondo guardado en la sesion (JSON en `openingLines`).
+   * Los montos del JSON viven en centavos, igual que el resto del dinero, y se
+   * devuelven en decimales. Tolera valores vacios o corruptos (devuelve `[]`,
+   * nunca lanza).
+   */
+  private openingLinesOf(value: unknown): OpeningLine[] {
+    if (value === null || value === undefined) return [];
+    let parsed: unknown = value;
+    if (typeof value === 'string') {
+      const raw = value.trim();
+      if (!raw) return [];
+      try {
+        parsed = JSON.parse(raw);
+      } catch {
+        return [];
+      }
+    }
+    if (!Array.isArray(parsed)) return [];
+
+    const rows = moneyFieldsFromCents(
+      parsed as Record<string, unknown>[],
+      OPENING_LINE_MONEY_FIELDS,
+    );
+
+    const lines: OpeningLine[] = [];
+    for (const item of rows) {
+      if (!item || typeof item !== 'object') continue;
+      const currency = normalizeCurrencyCode(item.currency);
+      if (!currency) continue;
+      const amount = toMoney(item.amount);
+      const rate = Number(item.rate);
+      lines.push({
+        currency,
+        amount,
+        rate: Number.isFinite(rate) && rate > 0 ? rate : null,
+        baseAmount: toMoney(item.baseAmount ?? amount),
+      });
+    }
+    return lines;
+  }
+
+  /** Serializa el desglose del fondo con los montos en centavos. */
+  private encodeOpeningLines(lines: OpeningLine[]): string {
+    return JSON.stringify(moneyFieldsToCents(lines, OPENING_LINE_MONEY_FIELDS));
+  }
+
+  /**
+   * Une las lineas del fondo repetidas (misma moneda) y descarta las de monto 0.
+   * Asi el cajero puede dejar lineas en blanco sin romper la apertura.
+   */
+  private mergeOpeningLines(
+    input?: OpeningLineInput[],
+  ): { currency: string; amount: number }[] {
+    const merged = new Map<string, number>();
+    for (const line of input ?? []) {
+      const currency = normalizeCurrencyCode(line?.currency);
+      if (!currency) {
+        throw new BadRequestException('Cada linea del fondo debe indicar su moneda');
+      }
+      const amount = toMoney(line?.amount);
+      if (amount < 0) {
+        throw new BadRequestException(
+          `El monto del fondo en ${currency} no puede ser negativo`,
+        );
+      }
+      merged.set(currency, money.add(merged.get(currency) ?? 0, amount));
+    }
+
+    return [...merged.entries()]
+      .filter(([, amount]) => amount > 0)
+      .map(([currency, amount]) => ({ currency, amount }));
+  }
+
+  /**
+   * Resuelve el fondo inicial de la apertura.
+   *
+   * El dinero del cajon suele estar en varias monedas a la vez, por lo que el
+   * fondo se puede enviar como `openingLines` (moneda + monto por linea): cada
+   * linea se convierte a USD (moneda base) y los equivalentes se suman en
+   * `openingAmount`, que es el total que usa el arqueo. Cuando se envia una sola
+   * moneda (`openingAmount` + `openingCurrency`) el comportamiento es el de
+   * siempre y el desglose queda con una unica linea.
+   */
+  private async resolveOpeningFund(dto: OpenSessionDto): Promise<OpeningFund> {
+    const merged = this.mergeOpeningLines(dto.openingLines);
+    const currency =
+      normalizeCurrencyCode(dto.openingCurrency) || BASE_CURRENCY_CODE;
+
+    if (merged.length === 0) {
+      // Sin lineas con monto solo queda el fondo de una moneda (o fondo 0, que
+      // es valido: una caja puede abrir sin efectivo).
+      const lines = dto.openingLines ?? [];
+      if (
+        lines.length === 0 &&
+        (dto.openingAmount === null || dto.openingAmount === undefined)
+      ) {
+        throw new BadRequestException(
+          'Indica el fondo inicial (una moneda con monto o varias lineas de moneda + monto)',
+        );
+      }
+
+      const amount = toMoney(dto.openingAmount);
+      if (amount <= 0) {
+        // Caja sin fondo: se respeta la moneda indicada, sin tasa que aplicar.
+        return { amount: 0, currency, rate: null, lines: [] };
+      }
+
+      const conversion = await this.rates.resolvePayment(amount, currency);
+      return {
+        amount: conversion.baseAmount,
+        currency,
+        rate: conversion.exchangeRate,
+        lines: [
+          {
+            currency,
+            amount,
+            rate: conversion.exchangeRate,
+            baseAmount: conversion.baseAmount,
+          },
+        ],
+      };
+    }
+
+    const lines: OpeningLine[] = [];
+    for (const line of merged) {
+      const conversion = await this.rates.resolvePayment(
+        line.amount,
+        line.currency,
+      );
+      lines.push({
+        currency: conversion.currency,
+        amount: line.amount,
+        rate: conversion.exchangeRate,
+        baseAmount: conversion.baseAmount,
+      });
+    }
+
+    return {
+      amount: money.sum(lines.map((line) => line.baseAmount)),
+      // Una sola linea => se conserva la moneda tal cual; varias => fondo mixto.
+      currency: lines.length === 1 ? lines[0].currency : MIXED_CURRENCY_CODE,
+      rate: lines.length === 1 ? lines[0].rate : null,
+      lines,
+    };
+  }
+
+  /** Construye el resumen de arqueo a partir de la apertura y los movimientos. */
+  buildBreakdown(
+    openingAmount: number,
+    movements: MovementLike[],
+    /** Desglose del fondo guardado en la sesion (`CashSession.openingLines`). */
+    openingLines?: unknown,
+  ): CashBreakdown {
+    const opening = toMoney(openingAmount);
+    const fundLines = this.openingLinesOf(openingLines);
+    let cashIn = 0;
+    let cashOut = 0;
+    let totalIn = 0;
+    let totalOut = 0;
+    let salesTotal = 0;
+
+    const methods = new Map<string, { in: number; out: number }>();
+    const categories = new Map<string, { in: number; out: number }>();
+    const currencies = new Map<string, CurrencyBreakdown>();
+
+    for (const m of movements) {
+      const currency = this.currencyOf(m);
+      // `amount`: moneda original · `base`: equivalente en USD (moneda base).
+      const amount = toMoney(m.amount);
+      const base = this.baseOf(m);
+      const isIn = m.type === CashMovementType.IN;
+      const isCash = m.paymentMethod === PaymentMethod.CASH;
+      const side = isIn ? 'in' : 'out';
+
+      if (isIn) {
+        totalIn = money.add(totalIn, base);
+        if (isCash) cashIn = money.add(cashIn, base);
+      } else {
+        totalOut = money.add(totalOut, base);
+        if (isCash) cashOut = money.add(cashOut, base);
+      }
+
+      if (isIn && m.category === CashMovementCategory.SALE) {
+        salesTotal = money.add(salesTotal, base);
+      }
+
+      const methodEntry = methods.get(m.paymentMethod) ?? { in: 0, out: 0 };
+      methodEntry[side] = money.add(methodEntry[side], base);
+      methods.set(m.paymentMethod, methodEntry);
+
+      const catEntry = categories.get(m.category) ?? { in: 0, out: 0 };
+      catEntry[side] = money.add(catEntry[side], base);
+      categories.set(m.category, catEntry);
+
+      const entry = currencies.get(currency) ?? {
+        currency,
+        in: 0,
+        out: 0,
+        net: 0,
+        baseIn: 0,
+        baseOut: 0,
+        baseNet: 0,
+      };
+      entry[side] = money.add(entry[side], amount);
+      entry[side === 'in' ? 'baseIn' : 'baseOut'] = money.add(
+        entry[side === 'in' ? 'baseIn' : 'baseOut'],
+        base,
+      );
+      entry.net = money.sub(entry.in, entry.out);
+      entry.baseNet = money.sub(entry.baseIn, entry.baseOut);
+      currencies.set(currency, entry);
+    }
+
+    const expectedCash = money.sub(money.add(opening, cashIn), cashOut);
+    const net = money.sub(totalIn, totalOut);
+
+    return {
+      cashIn,
+      cashOut,
+      expectedCash,
+      totalIn,
+      totalOut,
+      net,
+      salesTotal,
+      movementCount: movements.length,
+      byMethod: [...methods.entries()].map(([method, v]) => ({
+        method,
+        in: v.in,
+        out: v.out,
+        net: money.sub(v.in, v.out),
+      })),
+      byCategory: [...categories.entries()].map(([category, v]) => ({
+        category,
+        in: v.in,
+        out: v.out,
+        net: money.sub(v.in, v.out),
+      })),
+      byCurrency: [...currencies.values()],
+      openingByCurrency: fundLines,
+      openingMixed: fundLines.length > 1,
+    };
+  }
+
+  /** Etiqueta legible del resultado del arqueo. */
+  private differenceLabel(difference: number | null | undefined): string {
+    if (difference == null) return 'PENDING';
+    const cmp = compareMoney(difference, 0);
+    if (cmp > 0) return 'SURPLUS'; // sobrante
+    if (cmp < 0) return 'SHORTAGE'; // faltante
+    return 'BALANCED';
+  }
+
+  /** Anexa el resumen de arqueo a una sesion. */
+  private serializeSession(session: SessionWithRelations) {
+    // El desglose del fondo viaja siempre parseado (y como lista vacia cuando la
+    // apertura fue de una sola moneda antes del soporte multimoneda).
+    const openingLines = this.openingLinesOf(session.openingLines);
+    const summary = this.buildBreakdown(
+      session.openingAmount,
+      session.movements,
+      session.openingLines,
+    );
+    const reconciliation =
+      session.status === CashSessionStatus.CLOSED
+        ? {
+            expectedAmount: toMoney(session.expectedAmount ?? summary.expectedCash),
+            countedAmount: toMoney(session.countedAmount ?? 0),
+            difference: toMoney(session.difference ?? 0),
+            result: this.differenceLabel(session.difference),
+            /** Moneda en la que se conto el efectivo al cerrar. */
+            countedCurrency: session.countedCurrency ?? BASE_CURRENCY_CODE,
+            countedRate: session.countedRate ?? null,
+          }
+        : null;
+
+    return {
+      ...session,
+      /** Todos los montos del arqueo estan en esta moneda (USD). */
+      baseCurrency: BASE_CURRENCY_CODE,
+      /** Desglose del fondo (moneda + monto contado + equivalente en USD). */
+      openingLines,
+      /** `true` cuando el fondo se conto en varias monedas a la vez. */
+      openingMixed: openingLines.length > 1,
+      summary,
+      reconciliation,
+    };
+  }
+
+  // =========================================================================
+  //  CONSULTAS
+  // =========================================================================
+
+  /** Devuelve la sesion de caja abierta actualmente (o null). */
+  async getCurrentSession() {
+    const session = await this.prisma.cashSession.findFirst({
+      where: { status: CashSessionStatus.OPEN },
+      include: SESSION_INCLUDE,
+      orderBy: { openedAt: 'desc' },
+    });
+
+    if (!session) return { session: null, summary: null, reconciliation: null };
+    return this.serializeSession(session);
+  }
+
+  async getSessionById(id: string) {
+    const session = await this.prisma.cashSession.findUnique({
+      where: { id },
+      include: SESSION_INCLUDE,
+    });
+    if (!session) throw new NotFoundException('Sesion de caja no encontrada');
+    return this.serializeSession(session);
+  }
+
+  async listSessions(query: CashSessionQueryDto) {
+    const where: Prisma.CashSessionWhereInput = query.status
+      ? { status: query.status }
+      : {};
+
+    const [items, total] = await this.prisma.$transaction([
+      this.prisma.cashSession.findMany({
+        where,
+        include: {
+          openedBy: { select: { id: true, name: true } },
+          closedBy: { select: { id: true, name: true } },
+          _count: { select: { movements: true, orders: true } },
+        },
+        orderBy: query.toOrderBy(['openedAt', 'closedAt'], { openedAt: 'desc' }),
+        skip: toSkip(query.page, query.limit),
+        take: query.limit,
+      }),
+      this.prisma.cashSession.count({ where }),
+    ]);
+
+    // El desglose del fondo se guarda como JSON en texto: se devuelve siempre
+    // parseado (lista) para que los listados no tengan que saber del formato.
+    const rows = items.map((row) => {
+      const openingLines = this.openingLinesOf(row.openingLines);
+      return {
+        ...row,
+        openingLines,
+        openingMixed: openingLines.length > 1,
+      };
+    });
+
+    return buildPaginatedResult(rows, total, query.page, query.limit);
+  }
+
+  async listMovements(query: CashMovementQueryDto) {
+    const dateFilter = buildDateRange(query.from, query.to);
+
+    const where: Prisma.CashMovementWhereInput = {
+      ...(query.sessionId ? { sessionId: query.sessionId } : {}),
+      ...(query.type ? { type: query.type } : {}),
+      ...(query.category ? { category: query.category } : {}),
+      ...(query.paymentMethod ? { paymentMethod: query.paymentMethod } : {}),
+      ...(query.currency
+        ? { currency: normalizeCurrencyCode(query.currency) }
+        : {}),
+      ...(query.from || query.to ? { createdAt: dateFilter } : {}),
+    };
+
+    const [items, total] = await this.prisma.$transaction([
+      this.prisma.cashMovement.findMany({
+        where,
+        include: {
+          createdBy: { select: { id: true, name: true } },
+          session: { select: { id: true, code: true, status: true } },
+        },
+        orderBy: query.toOrderBy(['createdAt', 'amount'], { createdAt: 'desc' }),
+        skip: toSkip(query.page, query.limit),
+        take: query.limit,
+      }),
+      this.prisma.cashMovement.count({ where }),
+    ]);
+
+    return buildPaginatedResult(items, total, query.page, query.limit);
+  }
+
+
+  // =========================================================================
+  //  APERTURA Y CIERRE
+  // =========================================================================
+
+  /**
+   * Abre una nueva sesion de caja.
+   * Regla: no puede existir otra sesion OPEN (global o por usuario segun config).
+   * Se ejecuta dentro de una transaccion para evitar dobles aperturas.
+   *
+   * El fondo inicial puede venir en una moneda (`openingAmount` +
+   * `openingCurrency`) o en varias a la vez (`openingLines`: USD, VES, EUR...).
+   * En ambos casos se guarda el total en USD (moneda base) y el desglose de
+   * monedas para poder compararlo contra el arqueo.
+   */
+  async openSession(dto: OpenSessionDto, userId: string) {
+    const fund = await this.resolveOpeningFund(dto);
+
+    const single = this.config.get<boolean>('cash.singleOpenSession') ?? true;
+
+    const session = await this.prisma.$transaction(async (tx) => {
+      const existing = await tx.cashSession.findFirst({
+        where: single
+          ? { status: CashSessionStatus.OPEN }
+          : { status: CashSessionStatus.OPEN, openedById: userId },
+      });
+
+      if (existing) {
+        throw new ConflictException(
+          `Ya existe una caja abierta (${existing.code}). Debes cerrarla antes de abrir otra.`,
+        );
+      }
+
+      const startOfDay = new Date();
+      startOfDay.setHours(0, 0, 0, 0);
+      const todayCount = await tx.cashSession.count({
+        where: { openedAt: { gte: startOfDay } },
+      });
+
+      return tx.cashSession.create({
+        data: {
+          code: buildCode('CJ', todayCount + 1),
+          status: CashSessionStatus.OPEN,
+          openedById: userId,
+          openingAmount: fund.amount,
+          openingCurrency: fund.currency,
+          openingRate: fund.rate,
+          // El desglose se guarda como JSON en texto (SQLite no tiene tipo Json
+          // nativo), con los montos en centavos.
+          ...(fund.lines.length > 0
+            ? { openingLines: this.encodeOpeningLines(fund.lines) }
+            : {}),
+          openingNotes: dto.openingNotes,
+        },
+        include: SESSION_INCLUDE,
+      });
+    });
+
+    return this.serializeSession(session);
+  }
+
+  /**
+   * Cierra la sesion abierta con arqueo.
+   * expected = apertura + ingresos(CASH) - egresos(CASH)
+   * difference = contado - expected  (sobrante > 0, faltante < 0)
+   */
+  async closeSession(dto: CloseSessionDto, userId: string) {
+    const entered = toMoney(dto.countedAmount);
+    const currency = normalizeCurrencyCode(dto.countedCurrency);
+
+    // El conteo fisico se ingresa en la moneda que el cajero tenga a mano y se
+    // guarda en USD (moneda base) para compararlo contra el arqueo esperado.
+    let countedAmount = entered;
+    let countedRate: number | null = null;
+    let countedCurrency: string | null = null;
+    if (entered > 0) {
+      const conversion = await this.rates.resolvePayment(
+        entered,
+        currency || BASE_CURRENCY_CODE,
+      );
+      countedAmount = conversion.baseAmount;
+      countedRate = conversion.exchangeRate;
+      countedCurrency = conversion.currency;
+    }
+
+    return this.prisma.$transaction(async (tx) => {
+      const session = await tx.cashSession.findFirst({
+        where: { status: CashSessionStatus.OPEN },
+        include: { movements: true },
+        orderBy: { openedAt: 'desc' },
+      });
+
+      if (!session) {
+        throw new BadRequestException('No hay ninguna caja abierta para cerrar');
+      }
+
+      const breakdown = this.buildBreakdown(
+        session.openingAmount,
+        session.movements,
+      );
+      const expectedAmount = breakdown.expectedCash;
+      const difference = money.sub(countedAmount, expectedAmount);
+
+      // updateMany con filtro de estado => cierre atomico (evita doble cierre).
+      const guard = await tx.cashSession.updateMany({
+        where: { id: session.id, status: CashSessionStatus.OPEN },
+        data: {
+          status: CashSessionStatus.CLOSED,
+          closedById: userId,
+          closedAt: new Date(),
+          countedAmount,
+          countedCurrency,
+          countedRate,
+          expectedAmount,
+          difference,
+          closingNotes: dto.closingNotes,
+        },
+      });
+
+      if (guard.count === 0) {
+        throw new ConflictException(
+          'La caja ya fue cerrada por otro usuario. Recarga la informacion.',
+        );
+      }
+
+      const closed = await tx.cashSession.findUniqueOrThrow({
+        where: { id: session.id },
+        include: SESSION_INCLUDE,
+      });
+
+      return this.serializeSession(closed);
+    });
+  }
+
+
+  // =========================================================================
+  //  MOVIMIENTOS
+  // =========================================================================
+
+  /** Deduce IN/OUT a partir de la categoria (ADJUSTMENT/OTHER requieren type). */
+  private inferType(category: string): CashMovementType {
+    if (
+      category === CashMovementCategory.SALE ||
+      category === CashMovementCategory.DEPOSIT
+    ) {
+      return CashMovementType.IN;
+    }
+    if ((CASH_OUT_CATEGORIES as readonly string[]).includes(category)) {
+      return CashMovementType.OUT;
+    }
+    throw new BadRequestException(
+      `Debes indicar el tipo (IN/OUT) para la categoria ${category}`,
+    );
+  }
+
+  /** Devuelve la sesion abierta o lanza error. Usado por pedidos/gastos. */
+  async getOpenSessionOrThrow(tx?: PrismaClientLike) {
+    const client = tx ?? this.prisma;
+    const session = await client.cashSession.findFirst({
+      where: { status: CashSessionStatus.OPEN },
+      orderBy: { openedAt: 'desc' },
+    });
+    if (!session) {
+      throw new BadRequestException(
+        'No hay una caja abierta. Debes abrir la caja antes de registrar esta operacion.',
+      );
+    }
+    return session;
+  }
+
+  /**
+   * Registra un movimiento en la sesion de caja (append-only).
+   * Si no se indica sessionId se usa la sesion abierta actual.
+   */
+  async registerMovement(
+    input: RegisterMovementInput,
+    tx?: PrismaClientLike,
+  ) {
+    const client = tx ?? this.prisma;
+    const amount = toMoney(input.amount);
+
+    if (amount <= 0) {
+      throw new BadRequestException('El monto del movimiento debe ser mayor a 0');
+    }
+
+    // El monto se registra en la moneda del pago; el equivalente en USD
+    // (`baseAmount`) es lo que se suma en los arqueos y reportes.
+    const conversion = await this.rates.resolvePayment(
+      amount,
+      input.currency ?? BASE_CURRENCY_CODE,
+    );
+    // El llamador puede fijar el equivalente en USD (montos ajustados al saldo).
+    const baseAmount =
+      input.baseAmount === null || input.baseAmount === undefined
+        ? conversion.baseAmount
+        : toMoney(input.baseAmount);
+
+    const sessionId =
+      input.sessionId ?? (await this.getOpenSessionOrThrow(client)).id;
+
+    const session = await client.cashSession.findUnique({
+      where: { id: sessionId },
+      select: { id: true, code: true, status: true },
+    });
+
+    if (!session) throw new NotFoundException('Sesion de caja no encontrada');
+    if (session.status !== CashSessionStatus.OPEN) {
+      throw new BadRequestException(
+        `La caja ${session.code} ya esta cerrada y no admite movimientos.`,
+      );
+    }
+
+    return client.cashMovement.create({
+      data: {
+        sessionId: session.id,
+        type: input.type ?? this.inferType(input.category),
+        category: input.category,
+        paymentMethod: input.paymentMethod ?? PaymentMethod.CASH,
+        amount,
+        currency: conversion.currency,
+        exchangeRate: conversion.exchangeRate,
+        baseAmount,
+        description: input.description,
+        referenceType: input.referenceType,
+        referenceId: input.referenceId,
+        createdById: input.createdById,
+      },
+    });
+  }
+
+  /** Endpoint manual: ingreso/egreso de caja. */
+  async addMovement(dto: CreateCashMovementDto, userId: string) {
+    return this.registerMovement({ ...dto, createdById: userId });
+  }
+
+}

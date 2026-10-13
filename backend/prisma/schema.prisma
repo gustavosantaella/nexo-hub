@@ -1,0 +1,431 @@
+// ---------------------------------------------------------------------------
+// Nexo Hub - Esquema de base de datos (Prisma)
+// ---------------------------------------------------------------------------
+// NOTA IMPORTANTE:
+//   - Se usa SQLite en desarrollo para poder ejecutar el proyecto sin instalar
+//     ningun motor de base de datos. Para produccion cambia:
+//         provider = "postgresql"  (o "mysql")
+//     y apunta DATABASE_URL a tu servidor. Prisma migrara los tipos.
+//   - Los "enums" se representan como String porque SQLite no soporta enums
+//     nativos. Los valores validos viven en src/common/constants/enums.ts.
+//   - El dinero se guarda como ENTERO de centavos (columnas `Int`), nunca como
+//     decimal: asi no existe deriva de punto flotante al sumar o agrupar. La
+//     conversion decimal <-> centavos ocurre solo en la frontera de Prisma
+//     (src/common/utils/money-codec.ts), de modo que los servicios, los DTOs,
+//     la API y el frontend siguen hablando de decimales (`194.34`).
+//     Las tasas de cambio (`exchangeRate`, `openingRate`, `countedRate`) siguen
+//     siendo Float porque no son montos.
+// ---------------------------------------------------------------------------
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+// ============================== Seguridad ==================================
+
+model User {
+  id           String    @id @default(cuid())
+  email        String    @unique
+  name         String
+  passwordHash String
+  role         String    @default("CASHIER") // ADMIN | MANAGER | CASHIER
+  active       Boolean   @default(true)
+  phone        String?
+  avatarUrl    String?
+  lastLoginAt  DateTime?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  cashSessionsOpened CashSession[]       @relation("CashSessionOpenedBy")
+  cashSessionsClosed CashSession[]       @relation("CashSessionClosedBy")
+  cashMovements      CashMovement[]
+  orders             Order[]             @relation("OrderCreatedBy")
+  stockMovements     StockMovement[]
+  expenses           Expense[]
+  payables           AccountPayable[]
+  receivablePayments ReceivablePayment[]
+  payablePayments    PayablePayment[]
+  settingsUpdated    Setting[]           @relation("SettingUpdatedBy")
+
+  @@map("users")
+}
+
+// ============================== Catalogo ===================================
+
+model Category {
+  id          String   @id @default(cuid())
+  name        String   @unique
+  description String?
+  active      Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  products Product[]
+
+  @@map("categories")
+}
+
+model Supplier {
+  id          String   @id @default(cuid())
+  name        String
+  contactName String?
+  phone       String?
+  email       String?
+  address     String?
+  taxId       String?
+  notes       String?
+  active      Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  products Product[]
+  payables AccountPayable[]
+  expenses Expense[]
+
+  @@index([name])
+  @@map("suppliers")
+}
+
+model Customer {
+  id        String   @id @default(cuid())
+  name      String
+  phone     String?
+  email     String?
+  address   String?
+  docNumber String?
+  notes     String?
+  active    Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  orders      Order[]
+  receivables AccountReceivable[]
+
+  @@index([name])
+  @@map("customers")
+}
+
+model Product {
+  id          String   @id @default(cuid())
+  sku         String   @unique
+  name        String
+  description String?
+  price       Int      @default(0)
+  cost        Int      @default(0)
+  stock       Int      @default(0)
+  minStock    Int      @default(0)
+  unit        String   @default("UND") // UND | KG | LT | CAJA | PAQUETE
+  trackStock  Boolean  @default(true)
+  active      Boolean  @default(true)
+  categoryId  String?
+  supplierId  String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  category   Category?       @relation(fields: [categoryId], references: [id], onDelete: SetNull)
+  supplier   Supplier?       @relation(fields: [supplierId], references: [id], onDelete: SetNull)
+  movements  StockMovement[]
+  orderItems OrderItem[]
+
+  @@index([name])
+  @@index([categoryId])
+  @@index([supplierId])
+  @@map("products")
+}
+
+// ============================== Inventario =================================
+
+model StockMovement {
+  id            String   @id @default(cuid())
+  productId     String
+  type          String // IN | OUT | ADJUSTMENT
+  quantity      Int // siempre positivo, la direccion la da "type"
+  stockBefore   Int
+  stockAfter    Int
+  unitCost      Int?
+  reason        String?
+  referenceType String? // ORDER | PURCHASE | MANUAL | ADJUSTMENT
+  referenceId   String?
+  createdById   String?
+  createdAt     DateTime @default(now())
+
+  product   Product @relation(fields: [productId], references: [id], onDelete: Cascade)
+  createdBy User?   @relation(fields: [createdById], references: [id], onDelete: SetNull)
+
+  @@index([productId])
+  @@index([createdAt])
+  @@map("stock_movements")
+}
+
+// ================================ Pedidos ==================================
+
+model Order {
+  id            String   @id @default(cuid())
+  code          String   @unique
+  customerId    String?
+  type          String   @default("DINE_IN") // DINE_IN | TAKEAWAY | DELIVERY
+  status        String   @default("PENDING") // PENDING | CONFIRMED | PREPARING | READY | COMPLETED | CANCELLED
+  tableNumber   String?
+  notes         String?
+  subtotal      Int      @default(0)
+  discount      Int      @default(0)
+  tax           Int      @default(0)
+  total         Int      @default(0)
+  paidAmount    Int      @default(0)
+  paymentStatus String   @default("UNPAID") // UNPAID | PARTIAL | PAID
+  cashSessionId String?
+  createdById   String?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  customer    Customer?      @relation(fields: [customerId], references: [id], onDelete: SetNull)
+  cashSession CashSession?   @relation(fields: [cashSessionId], references: [id], onDelete: SetNull)
+  createdBy   User?          @relation("OrderCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
+  items       OrderItem[]
+  payments    OrderPayment[]
+
+  @@index([status])
+  @@index([createdAt])
+  @@index([cashSessionId])
+  @@map("orders")
+}
+
+model OrderItem {
+  id        String @id @default(cuid())
+  orderId   String
+  productId String
+  name      String // snapshot del nombre al momento de la venta
+  quantity  Int
+  unitPrice Int
+  total     Int
+
+  order   Order   @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  product Product @relation(fields: [productId], references: [id], onDelete: Restrict)
+
+  @@index([orderId])
+  @@map("order_items")
+}
+
+model OrderPayment {
+  id             String   @id @default(cuid())
+  orderId        String
+  amount         Int // Monto en la moneda del pago (`currency`)
+  method         String // CASH | CARD | TRANSFER | YAPE | PLIN | MIXED
+  currency       String   @default("USD") // Moneda en que pago el cliente
+  exchangeRate   Float? // Bolivares por 1 unidad de `currency` (tasa usada)
+  baseAmount     Int      @default(0) // Equivalente en USD (moneda base del sistema)
+  cashMovementId String?  @unique
+  note           String?
+  createdById    String?
+  createdAt      DateTime @default(now())
+
+  order Order @relation(fields: [orderId], references: [id], onDelete: Cascade)
+
+  @@index([orderId])
+  @@map("order_payments")
+}
+
+// =============================== Finanzas ==================================
+
+model Expense {
+  id            String   @id @default(cuid())
+  category      String // OPERATIVO | SERVICIOS | SUELDOS | COMPRAS | MANTENIMIENTO | IMPUESTOS | OTROS
+  description   String
+  amount        Int // Monto en la moneda del gasto (`currency`)
+  currency      String   @default("USD") // Moneda en que se pago el gasto
+  exchangeRate  Float? // Bolivares por 1 unidad de `currency` (tasa usada)
+  baseAmount    Int      @default(0) // Equivalente en USD (moneda base del sistema)
+  date          DateTime @default(now())
+  paymentMethod String   @default("CASH") // CASH | CARD | TRANSFER | YAPE | PLIN | CREDIT
+  supplierId    String?
+  cashSessionId String?
+  createdById   String?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  supplier    Supplier?    @relation(fields: [supplierId], references: [id], onDelete: SetNull)
+  createdBy   User?        @relation(fields: [createdById], references: [id], onDelete: SetNull)
+  cashSession CashSession? @relation(fields: [cashSessionId], references: [id], onDelete: SetNull)
+
+  @@index([date])
+  @@index([category])
+  @@index([cashSessionId])
+  @@map("expenses")
+}
+
+model AccountPayable {
+  id          String    @id @default(cuid())
+  supplierId  String?
+  description String
+  amount      Int // Monto en la moneda de la cuenta (`currency`)
+  currency    String    @default("USD") // Moneda en la que se registro la cuenta
+  exchangeRate Float? // Bolivares por 1 unidad de `currency` (tasa usada)
+  baseAmount  Int       @default(0) // Equivalente en USD (moneda base del sistema)
+  paidAmount  Int       @default(0) // Abonado en USD (moneda base)
+  dueDate     DateTime?
+  status      String    @default("PENDING") // PENDING | PARTIAL | PAID | CANCELLED
+  reference   String?
+  notes       String?
+  createdById String?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  supplier  Supplier?        @relation(fields: [supplierId], references: [id], onDelete: SetNull)
+  createdBy User?            @relation(fields: [createdById], references: [id], onDelete: SetNull)
+  payments  PayablePayment[]
+
+  @@index([status])
+  @@map("accounts_payable")
+}
+
+model PayablePayment {
+  id           String   @id @default(cuid())
+  payableId    String
+  amount       Int // Monto en la moneda del pago (`currency`)
+  method       String   @default("CASH")
+  currency     String   @default("USD") // Moneda en que se pago la cuenta
+  exchangeRate Float? // Bolivares por 1 unidad de `currency` (tasa usada)
+  baseAmount   Int      @default(0) // Equivalente en USD (moneda base del sistema)
+  note         String?
+  createdById  String?
+  createdAt    DateTime @default(now())
+
+  payable   AccountPayable @relation(fields: [payableId], references: [id], onDelete: Cascade)
+  createdBy User?          @relation(fields: [createdById], references: [id], onDelete: SetNull)
+
+  @@index([payableId])
+  @@map("payable_payments")
+}
+
+model AccountReceivable {
+  id          String    @id @default(cuid())
+  customerId  String?
+  orderId     String?
+  description String
+  amount      Int // Monto en la moneda de la cuenta (`currency`)
+  currency    String    @default("USD") // Moneda en la que se registro la cuenta
+  exchangeRate Float? // Bolivares por 1 unidad de `currency` (tasa usada)
+  baseAmount  Int       @default(0) // Equivalente en USD (moneda base del sistema)
+  paidAmount  Int       @default(0) // Cobrado en USD (moneda base)
+  dueDate     DateTime?
+  status      String    @default("PENDING") // PENDING | PARTIAL | PAID | CANCELLED
+  reference   String?
+  notes       String?
+  createdById String?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  customer Customer?           @relation(fields: [customerId], references: [id], onDelete: SetNull)
+  payments ReceivablePayment[]
+
+  @@index([status])
+  @@map("accounts_receivable")
+}
+
+model ReceivablePayment {
+  id           String   @id @default(cuid())
+  receivableId String
+  amount       Int // Monto en la moneda del pago (`currency`)
+  method       String   @default("CASH")
+  currency     String   @default("USD") // Moneda en que cobro el cliente
+  exchangeRate Float? // Bolivares por 1 unidad de `currency` (tasa usada)
+  baseAmount   Int      @default(0) // Equivalente en USD (moneda base del sistema)
+  note         String?
+  createdById  String?
+  createdAt    DateTime @default(now())
+
+  receivable AccountReceivable @relation(fields: [receivableId], references: [id], onDelete: Cascade)
+  createdBy  User?             @relation(fields: [createdById], references: [id], onDelete: SetNull)
+
+  @@index([receivableId])
+  @@map("receivable_payments")
+}
+
+// ================================= Caja ====================================
+// Nucleo del sistema. Reglas:
+//   - Solo puede existir UNA sesion OPEN a la vez (configurable con env).
+//   - Los movimientos solo se pueden registrar en sesiones OPEN (append-only).
+//   - El cierre calcula: expected = opening + IN(CASH) - OUT(CASH).
+//   - difference = counted - expected  (sobrante > 0, faltante < 0).
+//   - Una sesion CLOSED es inmutable.
+// ---------------------------------------------------------------------------
+
+model CashSession {
+  id              String    @id @default(cuid())
+  code            String    @unique
+  status          String    @default("OPEN") // OPEN | CLOSED
+  openedById      String
+  openedAt        DateTime  @default(now())
+  openingAmount   Int       @default(0) // Fondo inicial expresado en USD (moneda base)
+  openingCurrency String    @default("USD") // Moneda en que se conto el fondo ("MIX" si fueron varias)
+  openingRate     Float? // Bolivares por 1 unidad de `openingCurrency` (tasa usada)
+  // Desglose del fondo cuando se conto en varias monedas a la vez, en JSON:
+  // [{"currency":"USD","amount":100,"rate":900,"baseAmount":100}, ...].
+  // Vacio = fondo de una sola moneda (`openingAmount`/`openingCurrency`).
+  openingLines    String?
+  openingNotes    String?
+  closedById      String?
+  closedAt        DateTime?
+  countedAmount   Int? // Efectivo contado expresado en USD (moneda base)
+  countedCurrency String? // Moneda en que se conto el efectivo al cerrar
+  countedRate     Float? // Bolivares por 1 unidad de `countedCurrency` (tasa usada)
+  expectedAmount  Int?
+  difference      Int?
+  closingNotes    String?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  openedBy User  @relation("CashSessionOpenedBy", fields: [openedById], references: [id], onDelete: Restrict)
+  closedBy User? @relation("CashSessionClosedBy", fields: [closedById], references: [id], onDelete: SetNull)
+
+  movements CashMovement[]
+  orders    Order[]
+  expenses  Expense[]
+
+  @@index([status])
+  @@index([openedAt])
+  @@map("cash_sessions")
+}
+
+model CashMovement {
+  id            String   @id @default(cuid())
+  sessionId     String
+  type          String // IN | OUT
+  category      String // SALE | EXPENSE | WITHDRAWAL | DEPOSIT | REFUND | PAYMENT | ADJUSTMENT | OTHER
+  paymentMethod String   @default("CASH") // CASH | CARD | TRANSFER | YAPE | PLIN
+  amount        Int // Monto en la moneda del movimiento (`currency`)
+  currency      String   @default("USD") // Moneda en que entro/salio el dinero
+  exchangeRate  Float? // Bolivares por 1 unidad de `currency` (tasa usada)
+  baseAmount    Int      @default(0) // Equivalente en USD (moneda base del sistema)
+  description   String?
+  referenceType String? // ORDER | EXPENSE | PAYABLE | RECEIVABLE | MANUAL
+  referenceId   String?
+  createdById   String?
+  createdAt     DateTime @default(now())
+
+  session   CashSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  createdBy User?       @relation(fields: [createdById], references: [id], onDelete: SetNull)
+
+  @@index([sessionId])
+  @@index([createdAt])
+  @@map("cash_movements")
+}
+
+// ============================== Configuracion ==============================
+// Tabla clave/valor para ajustes del sistema que no merecen su propio modelo
+// (por ahora: `rates.custom_usd`, la tasa personalizada Bs/USD del local).
+model Setting {
+  key         String   @id
+  value       String
+  updatedById String?
+  updatedAt   DateTime @updatedAt
+
+  updatedBy User? @relation("SettingUpdatedBy", fields: [updatedById], references: [id], onDelete: SetNull)
+
+  @@map("settings")
+}
