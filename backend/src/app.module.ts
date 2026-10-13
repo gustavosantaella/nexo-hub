@@ -9,6 +9,7 @@ import configuration from './config/configuration';
 import { AuthModule } from './modules/auth/auth.module';
 import { CashModule } from './modules/cash/cash.module';
 import { CategoriesModule } from './modules/categories/categories.module';
+import { CompaniesModule } from './modules/companies/companies.module';
 import { CurrenciesModule } from './modules/currencies/currencies.module';
 import { CustomersModule } from './modules/customers/customers.module';
 import { ExpensesModule } from './modules/expenses/expenses.module';
@@ -41,6 +42,7 @@ import { PrismaModule } from './prisma/prisma.module';
     HealthModule,
     AuthModule,
     UsersModule,
+    CompaniesModule,
     CategoriesModule,
     SuppliersModule,
     CustomersModule,

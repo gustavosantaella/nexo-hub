@@ -104,7 +104,7 @@ const NEXT_STATUS: Partial<Record<OrderStatus, OrderStatus>> = {
       >
         <app-icon name="alert" size="h-4 w-4" />
         <span>No hay una caja abierta: los cobros requieren una sesión de caja activa.</span>
-        <a routerLink="/caja" class="ml-auto font-semibold underline">Abrir caja</a>
+        <a routerLink="/panel/caja" class="ml-auto font-semibold underline">Abrir caja</a>
       </div>
     }
 

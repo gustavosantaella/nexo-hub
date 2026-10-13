@@ -34,95 +34,118 @@ export class OrdersController {
   @Post()
   @Roles(...ORDER_ROLES)
   @ApiOperation({ summary: 'Crear pedido (descuenta stock)' })
-  create(@Body() dto: CreateOrderDto, @CurrentUser() user: AuthenticatedUser) {
-    return this.ordersService.create(dto, user.id);
+  create(
+    @CurrentUser('companyId') companyId: string,
+    @Body() dto: CreateOrderDto,
+    @CurrentUser() user: AuthenticatedUser,
+  ) {
+    return this.ordersService.create(companyId, dto, user.id);
   }
 
   @Get()
   @ApiOperation({ summary: 'Listar pedidos (paginado + filtros)' })
-  findAll(@Query() query: OrderQueryDto) {
-    return this.ordersService.findAll(query);
+  findAll(
+    @CurrentUser('companyId') companyId: string,
+    @Query() query: OrderQueryDto,
+  ) {
+    return this.ordersService.findAll(companyId, query);
   }
 
   @Get('active')
   @ApiOperation({ summary: 'Pedidos activos (tablero de cocina/salon)' })
-  active() {
-    return this.ordersService.findActiveOrders();
+  active(@CurrentUser('companyId') companyId: string) {
+    return this.ordersService.findActiveOrders(companyId);
   }
 
   @Get(':id')
   @ApiOperation({ summary: 'Detalle del pedido (items y pagos)' })
-  findOne(@Param('id') id: string) {
-    return this.ordersService.findOne(id);
+  findOne(
+    @CurrentUser('companyId') companyId: string,
+    @Param('id') id: string,
+  ) {
+    return this.ordersService.findOne(companyId, id);
   }
 
   @Patch(':id')
   @Roles(...ORDER_ROLES)
   @ApiOperation({ summary: 'Actualizar datos y recalcular totales' })
-  update(@Param('id') id: string, @Body() dto: UpdateOrderDto) {
-    return this.ordersService.update(id, dto);
+  update(
+    @CurrentUser('companyId') companyId: string,
+    @Param('id') id: string,
+    @Body() dto: UpdateOrderDto,
+  ) {
+    return this.ordersService.update(companyId, id, dto);
   }
 
   @Post(':id/items')
   @Roles(...ORDER_ROLES)
   @ApiOperation({ summary: 'Agregar productos a un pedido (descuenta stock)' })
   addItems(
+    @CurrentUser('companyId') companyId: string,
     @Param('id') id: string,
     @Body() dto: AddOrderItemsDto,
     @CurrentUser() user: AuthenticatedUser,
   ) {
-    return this.ordersService.addItems(id, dto, user.id);
+    return this.ordersService.addItems(companyId, id, dto, user.id);
   }
 
   @Patch(':id/items/:itemId')
   @Roles(...ORDER_ROLES)
   @ApiOperation({ summary: 'Corregir la cantidad de un producto (ajusta el stock)' })
   updateItem(
+    @CurrentUser('companyId') companyId: string,
     @Param('id') id: string,
     @Param('itemId') itemId: string,
     @Body() dto: UpdateOrderItemDto,
     @CurrentUser() user: AuthenticatedUser,
   ) {
-    return this.ordersService.updateItem(id, itemId, dto, user.id);
+    return this.ordersService.updateItem(companyId, id, itemId, dto, user.id);
   }
 
   @Delete(':id/items/:itemId')
   @Roles(...ORDER_ROLES)
   @ApiOperation({ summary: 'Quitar un producto del pedido (devuelve stock)' })
   removeItem(
+    @CurrentUser('companyId') companyId: string,
     @Param('id') id: string,
     @Param('itemId') itemId: string,
     @CurrentUser() user: AuthenticatedUser,
   ) {
-    return this.ordersService.removeItem(id, itemId, user.id);
+    return this.ordersService.removeItem(companyId, id, itemId, user.id);
   }
 
   @Patch(':id/status')
   @Roles(...ORDER_ROLES)
   @ApiOperation({ summary: 'Cambiar estado (cancelar devuelve stock)' })
   updateStatus(
+    @CurrentUser('companyId') companyId: string,
     @Param('id') id: string,
     @Body() dto: UpdateOrderStatusDto,
     @CurrentUser() user: AuthenticatedUser,
   ) {
-    return this.ordersService.updateStatus(id, dto, user.id);
+    return this.ordersService.updateStatus(companyId, id, dto, user.id);
   }
 
   @Post(':id/payments')
   @Roles(...ORDER_ROLES)
   @ApiOperation({ summary: 'Registrar cobro (entra a caja como SALE)' })
   pay(
+    @CurrentUser('companyId') companyId: string,
     @Param('id') id: string,
     @Body() dto: AddOrderPaymentDto,
     @CurrentUser() user: AuthenticatedUser,
   ) {
-    return this.ordersService.addPayment(id, dto, user.id);
+    return this.ordersService.addPayment(companyId, id, dto, user.id);
   }
 
   @Delete(':id')
   @Roles(Role.ADMIN, Role.MANAGER)
   @ApiOperation({ summary: 'Eliminar pedido sin pagos (devuelve stock)' })
-  remove(@Param('id') id: string, @CurrentUser() user: AuthenticatedUser) {
-    return this.ordersService.remove(id, user.id);
+  remove(
+    @CurrentUser('companyId') companyId: string,
+    @Param('id') id: string,
+    @CurrentUser() user: AuthenticatedUser,
+  ) {
+    return this.ordersService.remove(companyId, id, user.id);
   }
 }

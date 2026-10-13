@@ -1,23 +1,43 @@
 import { ChangeDetectionStrategy, Component, inject, signal } from '@angular/core';
 import { FormsModule } from '@angular/forms';
-import { Router } from '@angular/router';
+import { Router, RouterLink } from '@angular/router';
 import { AuthService } from '../../core/services/auth.service';
 import { ToastService } from '../../core/services/toast.service';
+import { apiErrorMessage, isCompanyUnderReview } from '../../core/utils/format';
 import { IconComponent } from '../../shared/components/icon.component';
+
+/** Cuenta de demostracion sugerida en la pantalla de acceso. */
+interface DemoAccount {
+  label: string;
+  email: string;
+  password: string;
+}
 
 /** Pantalla de inicio de sesion. */
 @Component({
   selector: 'app-login',
   standalone: true,
-  imports: [FormsModule, IconComponent],
+  imports: [FormsModule, RouterLink, IconComponent],
   changeDetection: ChangeDetectionStrategy.OnPush,
   template: `
-    <div class="flex min-h-screen items-center justify-center bg-slate-100 p-4">
-      <div class="grid w-full max-w-4xl overflow-hidden rounded-2xl bg-white shadow-xl lg:grid-cols-2">
+    <div
+      class="relative flex min-h-screen items-center justify-center overflow-hidden bg-gradient-to-br from-brand-900 via-brand-700 to-brand-500 p-4"
+    >
+      <!-- Halos decorativos -->
+      <div class="pointer-events-none absolute -left-24 -top-24 h-72 w-72 rounded-full bg-white/10 blur-3xl"></div>
+      <div class="pointer-events-none absolute -bottom-32 -right-20 h-80 w-80 rounded-full bg-brand-300/20 blur-3xl"></div>
+
+      <div
+        class="relative grid w-full max-w-4xl overflow-hidden rounded-3xl bg-white shadow-2xl ring-1 ring-black/5 lg:grid-cols-2"
+      >
         <!-- Panel de marca -->
-        <div class="hidden flex-col justify-between bg-brand-700 p-10 text-white lg:flex">
+        <div
+          class="hidden flex-col justify-between bg-gradient-to-b from-brand-800 to-brand-950 p-10 text-white lg:flex"
+        >
           <div class="flex items-center gap-3">
-            <span class="flex h-11 w-11 items-center justify-center rounded-xl bg-white/15">
+            <span
+              class="flex h-11 w-11 items-center justify-center rounded-xl bg-white/15 ring-1 ring-inset ring-white/20"
+            >
               <app-icon name="building" size="h-6 w-6" />
             </span>
             <div>
@@ -26,22 +46,39 @@ import { IconComponent } from '../../shared/components/icon.component';
             </div>
           </div>
 
-          <div class="space-y-4">
+          <div class="space-y-5">
+            <span
+              class="inline-flex items-center gap-1.5 rounded-full bg-white/10 px-3 py-1 text-[11px] font-semibold uppercase tracking-wide text-white/80"
+            >
+              <app-icon name="building" size="h-3 w-3" /> Multi-empresa
+            </span>
             <h2 class="text-2xl font-semibold leading-snug">
               Controla ventas, inventario y finanzas en un solo lugar.
             </h2>
-            <ul class="space-y-2 text-sm text-white/80">
-              <li class="flex items-center gap-2">
-                <app-icon name="check" size="h-4 w-4" /> Caja con arqueo y cierre
+            <ul class="space-y-3 text-sm text-white/80">
+              <li class="flex items-center gap-3">
+                <span class="flex h-7 w-7 items-center justify-center rounded-lg bg-white/10">
+                  <app-icon name="wallet" size="h-4 w-4" />
+                </span>
+                Caja con arqueo y cierre
               </li>
-              <li class="flex items-center gap-2">
-                <app-icon name="check" size="h-4 w-4" /> Pedidos y control de stock
+              <li class="flex items-center gap-3">
+                <span class="flex h-7 w-7 items-center justify-center rounded-lg bg-white/10">
+                  <app-icon name="receipt" size="h-4 w-4" />
+                </span>
+                Pedidos y control de stock
               </li>
-              <li class="flex items-center gap-2">
-                <app-icon name="check" size="h-4 w-4" /> Cuentas por cobrar y pagar
+              <li class="flex items-center gap-3">
+                <span class="flex h-7 w-7 items-center justify-center rounded-lg bg-white/10">
+                  <app-icon name="trend-up" size="h-4 w-4" />
+                </span>
+                Cuentas por cobrar y pagar
               </li>
-              <li class="flex items-center gap-2">
-                <app-icon name="check" size="h-4 w-4" /> Reportes de utilidad
+              <li class="flex items-center gap-3">
+                <span class="flex h-7 w-7 items-center justify-center rounded-lg bg-white/10">
+                  <app-icon name="chart" size="h-4 w-4" />
+                </span>
+                Reportes de utilidad
               </li>
             </ul>
           </div>
@@ -51,16 +88,41 @@ import { IconComponent } from '../../shared/components/icon.component';
 
         <!-- Formulario -->
         <div class="p-8 sm:p-10">
-          <div class="mb-8 lg:hidden">
-            <span class="flex h-11 w-11 items-center justify-center rounded-xl bg-brand-600 text-white">
+          <div class="mb-8 flex items-center gap-3 lg:hidden">
+            <span
+              class="flex h-11 w-11 items-center justify-center rounded-xl bg-brand-600 text-white"
+            >
               <app-icon name="building" size="h-6 w-6" />
             </span>
+            <div class="leading-tight">
+              <p class="text-sm font-semibold text-slate-900">Nexo Hub</p>
+              <p class="text-xs text-slate-500">Sistema de gestión</p>
+            </div>
           </div>
 
           <h1 class="text-xl font-semibold text-slate-900">Iniciar sesión</h1>
           <p class="mt-1 text-sm text-slate-500">
             Ingresa tus credenciales para acceder al panel.
           </p>
+
+          @if (errorMessage(); as message) {
+            <div
+              class="mt-5 flex items-start gap-2 rounded-xl border px-3 py-2.5 text-sm"
+              [class]="
+                underReview()
+                  ? 'border-amber-200 bg-amber-50 text-amber-800'
+                  : 'border-rose-200 bg-rose-50 text-rose-700'
+              "
+              role="alert"
+            >
+              <app-icon
+                [name]="underReview() ? 'clock' : 'alert'"
+                size="h-4 w-4"
+                class="mt-0.5 shrink-0"
+              />
+              <span>{{ message }}</span>
+            </div>
+          }
 
           <form class="mt-6 space-y-4" (ngSubmit)="submit()" #form="ngForm">
             <div>
@@ -73,32 +135,41 @@ import { IconComponent } from '../../shared/components/icon.component';
                 placeholder="usuario@nexohub.com"
                 autocomplete="email"
                 required
-                [(ngModel)]="email"
+                [ngModel]="email"
+                (ngModelChange)="email = $event; clearError()"
                 [disabled]="submitting()"
               />
             </div>
 
             <div>
               <label class="label" for="password">Contraseña</label>
-              <input
-                id="password"
-                name="password"
-                type="password"
-                class="input"
-                placeholder="••••••••"
-                autocomplete="current-password"
-                required
-                minlength="6"
-                [(ngModel)]="password"
-                [disabled]="submitting()"
-              />
+              <div class="relative">
+                <input
+                  id="password"
+                  name="password"
+                  [type]="showPassword ? 'text' : 'password'"
+                  class="input pr-10"
+                  placeholder="••••••••"
+                  autocomplete="current-password"
+                  required
+                  minlength="6"
+                  [ngModel]="password"
+                  (ngModelChange)="password = $event; clearError()"
+                  [disabled]="submitting()"
+                />
+                <button
+                  type="button"
+                  class="absolute inset-y-0 right-0 flex items-center px-3 text-slate-400 transition hover:text-slate-600"
+                  (click)="showPassword = !showPassword"
+                  [attr.aria-label]="showPassword ? 'Ocultar contraseña' : 'Mostrar contraseña'"
+                  tabindex="-1"
+                >
+                  <app-icon [name]="showPassword ? 'eye-off' : 'eye'" size="h-4 w-4" />
+                </button>
+              </div>
             </div>
 
-            <button
-              type="submit"
-              class="btn-primary w-full"
-              [disabled]="submitting() || form.invalid"
-            >
+            <button type="submit" class="btn-primary w-full" [disabled]="submitting() || form.invalid">
               @if (submitting()) {
                 <span class="h-4 w-4 animate-spin rounded-full border-2 border-white/40 border-t-white"></span>
                 Ingresando…
@@ -109,11 +180,34 @@ import { IconComponent } from '../../shared/components/icon.component';
             </button>
           </form>
 
-          <div class="mt-6 rounded-xl border border-dashed border-slate-300 bg-slate-50 p-4 text-xs text-slate-600">
-            <p class="font-semibold text-slate-700">Accesos de prueba</p>
-            <p class="mt-1">Administrador: <span class="font-mono">admin{{ '@' }}nexohub.com</span> / <span class="font-mono">Admin123!</span></p>
-            <p>Encargado: <span class="font-mono">manager{{ '@' }}nexohub.com</span> / <span class="font-mono">Manager123!</span></p>
-            <p>Cajero: <span class="font-mono">cashier{{ '@' }}nexohub.com</span> / <span class="font-mono">Cashier123!</span></p>
+          <p class="mt-6 text-center text-sm text-slate-500">
+            ¿No tienes empresa en Nexo Hub?
+            <a routerLink="/registro" class="font-semibold text-brand-700 hover:underline">
+              Regístrala
+            </a>
+          </p>
+
+          <div class="mt-6 rounded-xl border border-dashed border-slate-300 bg-slate-50 p-4">
+            <p class="text-xs font-semibold uppercase tracking-wide text-slate-500">
+              Accesos de prueba
+            </p>
+            <p class="mt-1 text-[11px] text-slate-500">Toca un perfil para completar el formulario.</p>
+            <div class="mt-3 space-y-2">
+              @for (demo of demoAccounts; track demo.email) {
+                <button
+                  type="button"
+                  class="flex w-full items-center justify-between gap-3 rounded-lg border border-slate-200 bg-white px-3 py-2 text-left transition hover:border-brand-300 hover:bg-brand-50/60 disabled:opacity-60"
+                  [disabled]="submitting()"
+                  (click)="useDemo(demo)"
+                >
+                  <span class="min-w-0">
+                    <span class="block text-xs font-semibold text-slate-700">{{ demo.label }}</span>
+                    <span class="block truncate font-mono text-[11px] text-slate-400">{{ demo.email }}</span>
+                  </span>
+                  <app-icon name="chevron-right" size="h-4 w-4" class="shrink-0 text-slate-400" />
+                </button>
+              }
+            </div>
           </div>
         </div>
       </div>
@@ -125,14 +219,39 @@ export class LoginPage {
   private readonly router = inject(Router);
   private readonly toast = inject(ToastService);
 
+  readonly demoAccounts: readonly DemoAccount[] = [
+    { label: 'Administrador', email: 'admin@nexohub.com', password: 'Admin123!' },
+    { label: 'Encargado', email: 'manager@nexohub.com', password: 'Manager123!' },
+    { label: 'Cajero', email: 'cashier@nexohub.com', password: 'Cashier123!' },
+  ];
+
   email = 'admin@nexohub.com';
   password = '';
+  showPassword = false;
   readonly submitting = signal(false);
+  readonly errorMessage = signal<string | null>(null);
+  /** True cuando el bloqueo es por empresa en revisión (aviso, no error). */
+  readonly underReview = signal(false);
   readonly year = new Date().getFullYear();
+
+  /** Limpia la alerta cuando el usuario corrige los datos. */
+  clearError(): void {
+    this.errorMessage.set(null);
+    this.underReview.set(false);
+  }
+
+  /** Rellena el formulario con una cuenta de prueba. */
+  useDemo(account: DemoAccount): void {
+    if (this.submitting()) return;
+    this.email = account.email;
+    this.password = account.password;
+    this.clearError();
+  }
 
   submit(): void {
     if (this.submitting() || !this.email || !this.password) return;
     this.submitting.set(true);
+    this.clearError();
 
     this.auth.login(this.email.trim(), this.password).subscribe({
       next: (response) => {
@@ -140,7 +259,11 @@ export class LoginPage {
         this.toast.success(`Bienvenido, ${response.user.name}`, 'Sesión iniciada');
         void this.router.navigate(['/panel']);
       },
-      error: () => this.submitting.set(false),
+      error: (error: unknown) => {
+        this.submitting.set(false);
+        this.underReview.set(isCompanyUnderReview(error));
+        this.errorMessage.set(apiErrorMessage(error));
+      },
     });
   }
 }

@@ -14,16 +14,24 @@ export const routes: Routes = [
       import('./features/auth/login.page').then((m) => m.LoginPage),
   },
   {
-    path: '',
+    path: 'registro',
+    title: 'Registrar empresa · Nexo Hub',
+    loadComponent: () =>
+      import('./features/auth/register.page').then((m) => m.RegisterPage),
+  },
+  // Todo el back-office vive bajo el prefijo `/panel`.
+  { path: '', pathMatch: 'full', redirectTo: 'panel' },
+  {
+    path: 'panel',
     canActivate: [authGuard],
     loadComponent: () =>
       import('./layout/main-layout.component').then(
         (m) => m.MainLayoutComponent,
       ),
     children: [
-      { path: '', pathMatch: 'full', redirectTo: 'panel' },
       {
-        path: 'panel',
+        path: '',
+        pathMatch: 'full',
         title: 'Panel · Nexo Hub',
         loadComponent: () =>
           import('./features/dashboard/dashboard.page').then(
@@ -127,5 +135,5 @@ export const routes: Routes = [
       },
     ],
   },
-  { path: '**', redirectTo: '' },
+  { path: '**', redirectTo: 'panel' },
 ];

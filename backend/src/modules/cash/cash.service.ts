@@ -21,6 +21,7 @@ import {
 import { buildPaginatedResult, toSkip } from '../../common/utils/pagination.util';
 import { buildCode } from '../../common/utils/code.util';
 import { buildDateRange } from '../../common/utils/date.util';
+import { tenantWhere } from '../../common/utils/tenant.util';
 import {
   compareMoney,
   money,
@@ -269,7 +270,10 @@ export class CashService {
    * moneda (`openingAmount` + `openingCurrency`) el comportamiento es el de
    * siempre y el desglose queda con una unica linea.
    */
-  private async resolveOpeningFund(dto: OpenSessionDto): Promise<OpeningFund> {
+  private async resolveOpeningFund(
+    companyId: string,
+    dto: OpenSessionDto,
+  ): Promise<OpeningFund> {
     const merged = this.mergeOpeningLines(dto.openingLines);
     const currency =
       normalizeCurrencyCode(dto.openingCurrency) || BASE_CURRENCY_CODE;
@@ -293,7 +297,11 @@ export class CashService {
         return { amount: 0, currency, rate: null, lines: [] };
       }
 
-      const conversion = await this.rates.resolvePayment(amount, currency);
+      const conversion = await this.rates.resolvePayment(
+        companyId,
+        amount,
+        currency,
+      );
       return {
         amount: conversion.baseAmount,
         currency,
@@ -312,6 +320,7 @@ export class CashService {
     const lines: OpeningLine[] = [];
     for (const line of merged) {
       const conversion = await this.rates.resolvePayment(
+        companyId,
         line.amount,
         line.currency,
       );
@@ -479,9 +488,9 @@ export class CashService {
   // =========================================================================
 
   /** Devuelve la sesion de caja abierta actualmente (o null). */
-  async getCurrentSession() {
+  async getCurrentSession(companyId: string) {
     const session = await this.prisma.cashSession.findFirst({
-      where: { status: CashSessionStatus.OPEN },
+      where: { status: CashSessionStatus.OPEN, ...tenantWhere(companyId) },
       include: SESSION_INCLUDE,
       orderBy: { openedAt: 'desc' },
     });
@@ -490,19 +499,20 @@ export class CashService {
     return this.serializeSession(session);
   }
 
-  async getSessionById(id: string) {
-    const session = await this.prisma.cashSession.findUnique({
-      where: { id },
+  async getSessionById(companyId: string, id: string) {
+    const session = await this.prisma.cashSession.findFirst({
+      where: { id, ...tenantWhere(companyId) },
       include: SESSION_INCLUDE,
     });
     if (!session) throw new NotFoundException('Sesion de caja no encontrada');
     return this.serializeSession(session);
   }
 
-  async listSessions(query: CashSessionQueryDto) {
-    const where: Prisma.CashSessionWhereInput = query.status
-      ? { status: query.status }
-      : {};
+  async listSessions(companyId: string, query: CashSessionQueryDto) {
+    const where: Prisma.CashSessionWhereInput = {
+      ...tenantWhere(companyId),
+      ...(query.status ? { status: query.status } : {}),
+    };
 
     const [items, total] = await this.prisma.$transaction([
       this.prisma.cashSession.findMany({
@@ -533,10 +543,11 @@ export class CashService {
     return buildPaginatedResult(rows, total, query.page, query.limit);
   }
 
-  async listMovements(query: CashMovementQueryDto) {
+  async listMovements(companyId: string, query: CashMovementQueryDto) {
     const dateFilter = buildDateRange(query.from, query.to);
 
     const where: Prisma.CashMovementWhereInput = {
+      ...tenantWhere(companyId),
       ...(query.sessionId ? { sessionId: query.sessionId } : {}),
       ...(query.type ? { type: query.type } : {}),
       ...(query.category ? { category: query.category } : {}),
@@ -579,16 +590,20 @@ export class CashService {
    * En ambos casos se guarda el total en USD (moneda base) y el desglose de
    * monedas para poder compararlo contra el arqueo.
    */
-  async openSession(dto: OpenSessionDto, userId: string) {
-    const fund = await this.resolveOpeningFund(dto);
+  async openSession(companyId: string, dto: OpenSessionDto, userId: string) {
+    const fund = await this.resolveOpeningFund(companyId, dto);
 
     const single = this.config.get<boolean>('cash.singleOpenSession') ?? true;
 
     const session = await this.prisma.$transaction(async (tx) => {
       const existing = await tx.cashSession.findFirst({
         where: single
-          ? { status: CashSessionStatus.OPEN }
-          : { status: CashSessionStatus.OPEN, openedById: userId },
+          ? { status: CashSessionStatus.OPEN, ...tenantWhere(companyId) }
+          : {
+              status: CashSessionStatus.OPEN,
+              openedById: userId,
+              ...tenantWhere(companyId),
+            },
       });
 
       if (existing) {
@@ -600,11 +615,12 @@ export class CashService {
       const startOfDay = new Date();
       startOfDay.setHours(0, 0, 0, 0);
       const todayCount = await tx.cashSession.count({
-        where: { openedAt: { gte: startOfDay } },
+        where: { openedAt: { gte: startOfDay }, ...tenantWhere(companyId) },
       });
 
       return tx.cashSession.create({
         data: {
+          companyId,
           code: buildCode('CJ', todayCount + 1),
           status: CashSessionStatus.OPEN,
           openedById: userId,
@@ -630,7 +646,7 @@ export class CashService {
    * expected = apertura + ingresos(CASH) - egresos(CASH)
    * difference = contado - expected  (sobrante > 0, faltante < 0)
    */
-  async closeSession(dto: CloseSessionDto, userId: string) {
+  async closeSession(companyId: string, dto: CloseSessionDto, userId: string) {
     const entered = toMoney(dto.countedAmount);
     const currency = normalizeCurrencyCode(dto.countedCurrency);
 
@@ -641,6 +657,7 @@ export class CashService {
     let countedCurrency: string | null = null;
     if (entered > 0) {
       const conversion = await this.rates.resolvePayment(
+        companyId,
         entered,
         currency || BASE_CURRENCY_CODE,
       );
@@ -651,7 +668,7 @@ export class CashService {
 
     return this.prisma.$transaction(async (tx) => {
       const session = await tx.cashSession.findFirst({
-        where: { status: CashSessionStatus.OPEN },
+        where: { status: CashSessionStatus.OPEN, ...tenantWhere(companyId) },
         include: { movements: true },
         orderBy: { openedAt: 'desc' },
       });
@@ -669,7 +686,11 @@ export class CashService {
 
       // updateMany con filtro de estado => cierre atomico (evita doble cierre).
       const guard = await tx.cashSession.updateMany({
-        where: { id: session.id, status: CashSessionStatus.OPEN },
+        where: {
+          id: session.id,
+          status: CashSessionStatus.OPEN,
+          ...tenantWhere(companyId),
+        },
         data: {
           status: CashSessionStatus.CLOSED,
           closedById: userId,
@@ -690,7 +711,7 @@ export class CashService {
       }
 
       const closed = await tx.cashSession.findUniqueOrThrow({
-        where: { id: session.id },
+        where: { id: session.id, ...tenantWhere(companyId) },
         include: SESSION_INCLUDE,
       });
 
@@ -720,10 +741,10 @@ export class CashService {
   }
 
   /** Devuelve la sesion abierta o lanza error. Usado por pedidos/gastos. */
-  async getOpenSessionOrThrow(tx?: PrismaClientLike) {
+  async getOpenSessionOrThrow(companyId: string, tx?: PrismaClientLike) {
     const client = tx ?? this.prisma;
     const session = await client.cashSession.findFirst({
-      where: { status: CashSessionStatus.OPEN },
+      where: { status: CashSessionStatus.OPEN, ...tenantWhere(companyId) },
       orderBy: { openedAt: 'desc' },
     });
     if (!session) {
@@ -739,6 +760,7 @@ export class CashService {
    * Si no se indica sessionId se usa la sesion abierta actual.
    */
   async registerMovement(
+    companyId: string,
     input: RegisterMovementInput,
     tx?: PrismaClientLike,
   ) {
@@ -752,6 +774,7 @@ export class CashService {
     // El monto se registra en la moneda del pago; el equivalente en USD
     // (`baseAmount`) es lo que se suma en los arqueos y reportes.
     const conversion = await this.rates.resolvePayment(
+      companyId,
       amount,
       input.currency ?? BASE_CURRENCY_CODE,
     );
@@ -762,10 +785,10 @@ export class CashService {
         : toMoney(input.baseAmount);
 
     const sessionId =
-      input.sessionId ?? (await this.getOpenSessionOrThrow(client)).id;
+      input.sessionId ?? (await this.getOpenSessionOrThrow(companyId, client)).id;
 
-    const session = await client.cashSession.findUnique({
-      where: { id: sessionId },
+    const session = await client.cashSession.findFirst({
+      where: { id: sessionId, ...tenantWhere(companyId) },
       select: { id: true, code: true, status: true },
     });
 
@@ -778,6 +801,7 @@ export class CashService {
 
     return client.cashMovement.create({
       data: {
+        companyId,
         sessionId: session.id,
         type: input.type ?? this.inferType(input.category),
         category: input.category,
@@ -795,8 +819,12 @@ export class CashService {
   }
 
   /** Endpoint manual: ingreso/egreso de caja. */
-  async addMovement(dto: CreateCashMovementDto, userId: string) {
-    return this.registerMovement({ ...dto, createdById: userId });
+  async addMovement(
+    companyId: string,
+    dto: CreateCashMovementDto,
+    userId: string,
+  ) {
+    return this.registerMovement(companyId, { ...dto, createdById: userId });
   }
 
 }

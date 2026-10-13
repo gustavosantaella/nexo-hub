@@ -29,39 +29,60 @@ export class ExpensesController {
   @Post()
   @Roles(...EXPENSE_ROLES)
   @ApiOperation({ summary: 'Registrar gasto (egreso automatico si es efectivo)' })
-  create(@Body() dto: CreateExpenseDto, @CurrentUser() user: AuthenticatedUser) {
-    return this.expensesService.create(dto, user.id);
+  create(
+    @CurrentUser('companyId') companyId: string,
+    @Body() dto: CreateExpenseDto,
+    @CurrentUser() user: AuthenticatedUser,
+  ) {
+    return this.expensesService.create(companyId, dto, user.id);
   }
 
   @Get()
   @ApiOperation({ summary: 'Listar gastos (paginado + filtros)' })
-  findAll(@Query() query: ExpenseQueryDto) {
-    return this.expensesService.findAll(query);
+  findAll(
+    @CurrentUser('companyId') companyId: string,
+    @Query() query: ExpenseQueryDto,
+  ) {
+    return this.expensesService.findAll(companyId, query);
   }
 
   @Get('summary')
   @ApiOperation({ summary: 'Totales por categoria y metodo de pago' })
-  summary(@Query() query: ExpenseQueryDto) {
-    return this.expensesService.summary(query);
+  summary(
+    @CurrentUser('companyId') companyId: string,
+    @Query() query: ExpenseQueryDto,
+  ) {
+    return this.expensesService.summary(companyId, query);
   }
 
   @Get(':id')
   @ApiOperation({ summary: 'Detalle del gasto' })
-  findOne(@Param('id') id: string) {
-    return this.expensesService.findOne(id);
+  findOne(
+    @CurrentUser('companyId') companyId: string,
+    @Param('id') id: string,
+  ) {
+    return this.expensesService.findOne(companyId, id);
   }
 
   @Patch(':id')
   @Roles(Role.ADMIN, Role.MANAGER)
   @ApiOperation({ summary: 'Actualizar gasto (solo si la caja sigue abierta)' })
-  update(@Param('id') id: string, @Body() dto: UpdateExpenseDto) {
-    return this.expensesService.update(id, dto);
+  update(
+    @CurrentUser('companyId') companyId: string,
+    @Param('id') id: string,
+    @Body() dto: UpdateExpenseDto,
+  ) {
+    return this.expensesService.update(companyId, id, dto);
   }
 
   @Delete(':id')
   @Roles(Role.ADMIN, Role.MANAGER)
   @ApiOperation({ summary: 'Eliminar gasto (solo si la caja sigue abierta)' })
-  remove(@Param('id') id: string) {
-    return this.expensesService.remove(id);
+  remove(
+    @CurrentUser('companyId') companyId: string,
+    @Param('id') id: string,
+  ) {
+    return this.expensesService.remove(companyId, id);
   }
 }
+

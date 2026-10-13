@@ -13,19 +13,21 @@ import { apiErrorMessage } from '../utils/format';
 export const errorInterceptor: HttpInterceptorFn = (request, next) => {
   const toast = inject(ToastService);
   const router = inject(Router);
-  const isAuthEndpoint = request.url.includes('/auth/login');
+  /** Las pantallas de acceso muestran el error en línea (su propia alerta). */
+  const isAuthScreen =
+    request.url.includes('/auth/login') || request.url.includes('/auth/register');
 
   return next(request).pipe(
     catchError((error: unknown) => {
       const status = (error as { status?: number })?.status ?? 0;
 
-      if (status === 401 && !isAuthEndpoint) {
+      if (status === 401 && !isAuthScreen) {
         clearSession();
         toast.error('Tu sesión expiró. Vuelve a iniciar sesión.', 'Sesión finalizada');
         void router.navigate(['/login']);
-      } else if (status === 403) {
+      } else if (status === 403 && !isAuthScreen) {
         toast.error('No tienes permisos para realizar esta acción.', 'Acceso denegado');
-      } else if (status !== 401) {
+      } else if (status !== 401 && status !== 403) {
         toast.error(apiErrorMessage(error), 'Error');
       }
 

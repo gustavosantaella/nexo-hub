@@ -10,71 +10,80 @@ import {
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { Role } from '../../common/constants/enums';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
-import { Public } from '../../common/decorators/public.decorator';
 import { Roles } from '../../common/decorators/roles.decorator';
 import { RolesGuard } from '../../common/guards/roles.guard';
+import type { AuthenticatedUser } from '../../common/interfaces/authenticated-user.interface';
 import { CurrenciesService } from './currencies.service';
 import { CurrencySettingDto, UpdateCurrenciesDto } from './dto/currency.dto';
 
 /**
- * Monedas aceptadas por el local.
+ * Monedas aceptadas por la empresa.
  *
- * - `GET /currencies` es publico (la lista de monedas es informacion del local
- *   que la interfaz necesita para pintar los selectores de cobro).
- * - Guardar/cambiar tasas queda restringido a ADMIN/MANAGER.
+ * Las monedas se configuran POR EMPRESA (viven en `Setting`) y el endpoint
+ * esta autenticado: la lista depende de la empresa activa del token.
  */
 @ApiTags('Monedas')
+@ApiBearerAuth()
 @Controller('currencies')
 export class CurrenciesController {
   constructor(private readonly currenciesService: CurrenciesService) {}
 
-  @Public()
   @Get()
   @ApiOperation({ summary: 'Monedas configuradas (habilitadas y su tasa)' })
-  async list() {
-    return { currencies: await this.currenciesService.list() };
+  async list(@CurrentUser('companyId') companyId: string) {
+    return { currencies: await this.currenciesService.list(companyId) };
   }
 
-  @ApiBearerAuth()
   @Put()
   @UseGuards(RolesGuard)
   @Roles(Role.ADMIN, Role.MANAGER)
   @ApiOperation({ summary: 'Reemplazar la configuracion de monedas' })
   async save(
+    @CurrentUser() user: AuthenticatedUser,
     @Body() dto: UpdateCurrenciesDto,
-    @CurrentUser('id') userId: string,
   ) {
     return {
-      currencies: await this.currenciesService.save(dto.currencies, userId),
+      currencies: await this.currenciesService.save(
+        user.companyId,
+        dto.currencies,
+        user.id,
+      ),
     };
   }
 
-  @ApiBearerAuth()
   @Put(':code')
   @UseGuards(RolesGuard)
   @Roles(Role.ADMIN, Role.MANAGER)
   @ApiOperation({ summary: 'Crear o actualizar una moneda' })
   async upsert(
+    @CurrentUser() user: AuthenticatedUser,
     @Param('code') code: string,
     @Body() dto: CurrencySettingDto,
-    @CurrentUser('id') userId: string,
   ) {
     return {
-      currencies: await this.currenciesService.upsert(code, dto, userId),
+      currencies: await this.currenciesService.upsert(
+        user.companyId,
+        code,
+        dto,
+        user.id,
+      ),
     };
   }
 
-  @ApiBearerAuth()
   @Delete(':code')
   @UseGuards(RolesGuard)
   @Roles(Role.ADMIN, Role.MANAGER)
   @ApiOperation({ summary: 'Quitar una moneda de la configuracion' })
   async remove(
+    @CurrentUser() user: AuthenticatedUser,
     @Param('code') code: string,
-    @CurrentUser('id') userId: string,
   ) {
     return {
-      currencies: await this.currenciesService.remove(code, userId),
+      currencies: await this.currenciesService.remove(
+        user.companyId,
+        code,
+        user.id,
+      ),
     };
   }
 }

@@ -5,6 +5,8 @@ import type { ReceivablesService } from '../receivables/receivables.service';
 import { StatsQueryDto } from './dto/stats-query.dto';
 import { StatsService } from './stats.service';
 
+const COMPANY_ID = 'company-1';
+
 /** Fila cruda de un `groupBy` por moneda (mismo formato que devuelve Prisma). */
 function groupRow(
   currency: string,
@@ -98,10 +100,23 @@ function createService(options: { session?: unknown } = {}) {
 
 describe('StatsService (panel)', () => {
   describe('dashboard', () => {
+    it('filtra los agregados por la empresa activa', async () => {
+      const { service, prisma } = createService();
+
+      await service.dashboard(COMPANY_ID);
+
+      expect(prisma.order.aggregate).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: expect.objectContaining({ companyId: COMPANY_ID }),
+        }),
+      );
+    });
+
+
     it('expone los totales del día en moneda base y su utilidad', async () => {
       const { service } = createService();
 
-      const result = await service.dashboard();
+      const result = await service.dashboard(COMPANY_ID);
 
       expect(result.today).toEqual({
         sales: 100,
@@ -127,7 +142,7 @@ describe('StatsService (panel)', () => {
     it('resume el día por moneda con los totales en USD', async () => {
       const { service } = createService();
 
-      const { currencies } = await service.dashboard();
+      const { currencies } = await service.dashboard(COMPANY_ID);
 
       expect(currencies.totals).toEqual({
         sales: 100,
@@ -165,7 +180,7 @@ describe('StatsService (panel)', () => {
       const { service } = createService();
 
       const { paymentsTodayByCurrency, paymentsToday } =
-        await service.dashboard();
+        await service.dashboard(COMPANY_ID);
 
       expect(paymentsToday).toEqual([{ method: 'CASH', amount: 40, count: 3 }]);
       expect(paymentsTodayByCurrency).toHaveLength(4);
@@ -175,7 +190,7 @@ describe('StatsService (panel)', () => {
     it('no falla cuando no hay sesión de caja abierta', async () => {
       const { service } = createService();
 
-      const result = await service.dashboard();
+      const result = await service.dashboard(COMPANY_ID);
 
       expect(result.cash).toBeNull();
     });
@@ -218,7 +233,7 @@ describe('StatsService (panel)', () => {
       query.from = '2026-10-13';
       query.to = '2026-10-13';
 
-      const result = await service.salesSeries(query);
+      const result = await service.salesSeries(COMPANY_ID, query);
 
       expect(result.totals).toEqual({
         orders: 1,

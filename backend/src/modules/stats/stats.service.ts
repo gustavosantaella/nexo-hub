@@ -2,6 +2,7 @@ import { Injectable } from '@nestjs/common';
 import { BASE_CURRENCY_CODE } from '../../common/constants/currencies';
 import { CashSessionStatus, OrderStatus } from '../../common/constants/enums';
 import { parseDateBoundary } from '../../common/utils/date.util';
+import { tenantWhere } from '../../common/utils/tenant.util';
 import { money, toMoney } from '../../common/utils/money.util';
 import { PrismaService } from '../../prisma/prisma.service';
 import { CashService } from '../cash/cash.service';
@@ -118,9 +119,10 @@ export class StatsService {
   // =========================================================================
 
   /** Serie temporal de ventas, gastos y utilidad operativa. */
-  async salesSeries(query: StatsQueryDto) {
+  async salesSeries(companyId: string, query: StatsQueryDto) {
     const range = this.resolveRange(query);
     const where = {
+      ...tenantWhere(companyId),
       status: { in: SALE_STATUSES },
       createdAt: { gte: range.from, lte: range.to },
     };
@@ -131,7 +133,10 @@ export class StatsService {
         select: { total: true, paidAmount: true, createdAt: true },
       }),
       this.prisma.expense.findMany({
-        where: { date: { gte: range.from, lte: range.to } },
+        where: {
+          date: { gte: range.from, lte: range.to },
+          ...tenantWhere(companyId),
+        },
         select: { amount: true, baseAmount: true, date: true },
       }),
     ]);
@@ -208,12 +213,13 @@ export class StatsService {
   }
 
   /** Productos mas vendidos del rango (con utilidad estimada por costo actual). */
-  async topProducts(query: StatsQueryDto) {
+  async topProducts(companyId: string, query: StatsQueryDto) {
     const range = this.resolveRange(query);
 
     const grouped = await this.prisma.orderItem.groupBy({
       by: ['productId'],
       where: {
+        ...tenantWhere(companyId),
         order: {
           status: { in: SALE_STATUSES },
           createdAt: { gte: range.from, lte: range.to },
@@ -225,7 +231,10 @@ export class StatsService {
     });
 
     const products = await this.prisma.product.findMany({
-      where: { id: { in: grouped.map((row) => row.productId) } },
+      where: {
+        id: { in: grouped.map((row) => row.productId) },
+        ...tenantWhere(companyId),
+      },
       select: { id: true, name: true, sku: true, cost: true },
     });
     const byId = new Map(products.map((product) => [product.id, product]));
@@ -248,12 +257,15 @@ export class StatsService {
   }
 
   /** Totales cobrados por metodo de pago. */
-  async paymentsByMethod(query: StatsQueryDto) {
+  async paymentsByMethod(companyId: string, query: StatsQueryDto) {
     const range = this.resolveRange(query);
 
     const grouped = await this.prisma.orderPayment.groupBy({
       by: ['method'],
-      where: { createdAt: { gte: range.from, lte: range.to } },
+      where: {
+        createdAt: { gte: range.from, lte: range.to },
+        ...tenantWhere(companyId),
+      },
       orderBy: { method: 'asc' },
       // Se agrupa en la moneda base (USD) para poder sumar/comparar montos
       // cobrados en distintas monedas; el desglose por moneda se expone aparte.
@@ -283,12 +295,15 @@ export class StatsService {
    * Desglose por moneda de los cobros de pedidos del rango: cuanto entro en
    * cada moneda (monto original) y su equivalente en USD (moneda base).
    */
-  async paymentsByCurrency(query: StatsQueryDto) {
+  async paymentsByCurrency(companyId: string, query: StatsQueryDto) {
     const range = this.resolveRange(query);
 
     const grouped = await this.prisma.orderPayment.groupBy({
       by: ['currency'],
-      where: { createdAt: { gte: range.from, lte: range.to } },
+      where: {
+        createdAt: { gte: range.from, lte: range.to },
+        ...tenantWhere(companyId),
+      },
       orderBy: { currency: 'asc' },
       _sum: { amount: true, baseAmount: true },
       _count: { _all: true },
@@ -313,12 +328,13 @@ export class StatsService {
   }
 
   /** Ventas agrupadas por categoria de producto. */
-  async salesByCategory(query: StatsQueryDto) {
+  async salesByCategory(companyId: string, query: StatsQueryDto) {
     const range = this.resolveRange(query);
 
     const grouped = await this.prisma.orderItem.groupBy({
       by: ['productId'],
       where: {
+        ...tenantWhere(companyId),
         order: {
           status: { in: SALE_STATUSES },
           createdAt: { gte: range.from, lte: range.to },
@@ -328,7 +344,10 @@ export class StatsService {
     });
 
     const products = await this.prisma.product.findMany({
-      where: { id: { in: grouped.map((row) => row.productId) } },
+      where: {
+        id: { in: grouped.map((row) => row.productId) },
+        ...tenantWhere(companyId),
+      },
       select: { id: true, category: { select: { id: true, name: true } } },
     });
     const categoryByProduct = new Map(
@@ -365,9 +384,9 @@ export class StatsService {
    * Productos con stock bajo (stock <= minStock). SQLite no permite comparar
    * dos columnas en un `where` de Prisma, por eso se filtra en memoria.
    */
-  async lowStockProducts(limit = 20) {
+  async lowStockProducts(companyId: string, limit = 20) {
     const products = await this.prisma.product.findMany({
-      where: { active: true, trackStock: true },
+      where: { active: true, trackStock: true, ...tenantWhere(companyId) },
       select: {
         id: true,
         sku: true,
@@ -387,7 +406,7 @@ export class StatsService {
   /**
    * Tarjetas y resumenes del panel principal (un solo round-trip).
    */
-  async dashboard() {
+  async dashboard(companyId: string) {
     const now = new Date();
     const todayFrom = startOfDay(now);
     const todayTo = endOfDay(now);
@@ -421,6 +440,7 @@ export class StatsService {
     ] = await Promise.all([
       this.prisma.order.aggregate({
         where: {
+          ...tenantWhere(companyId),
           status: { in: SALE_STATUSES },
           createdAt: { gte: todayFrom, lte: todayTo },
         },
@@ -429,6 +449,7 @@ export class StatsService {
       }),
       this.prisma.order.aggregate({
         where: {
+          ...tenantWhere(companyId),
           status: { in: SALE_STATUSES },
           createdAt: { gte: monthFrom, lte: todayTo },
         },
@@ -437,21 +458,28 @@ export class StatsService {
       }),
       this.prisma.order.aggregate({
         where: {
+          ...tenantWhere(companyId),
           status: { in: SALE_STATUSES },
           createdAt: { gte: prevMonthFrom, lte: prevMonthTo },
         },
         _sum: { total: true },
       }),
       this.prisma.expense.aggregate({
-        where: { date: { gte: todayFrom, lte: todayTo } },
+        where: {
+          date: { gte: todayFrom, lte: todayTo },
+          ...tenantWhere(companyId),
+        },
         _sum: { baseAmount: true },
       }),
       this.prisma.expense.aggregate({
-        where: { date: { gte: monthFrom, lte: todayTo } },
+        where: {
+          date: { gte: monthFrom, lte: todayTo },
+          ...tenantWhere(companyId),
+        },
         _sum: { baseAmount: true },
       }),
       this.prisma.cashSession.findFirst({
-        where: { status: CashSessionStatus.OPEN },
+        where: { status: CashSessionStatus.OPEN, ...tenantWhere(companyId) },
         orderBy: { openedAt: 'desc' },
         select: {
           id: true,
@@ -464,6 +492,7 @@ export class StatsService {
       }),
       this.prisma.order.count({
         where: {
+          ...tenantWhere(companyId),
           status: {
             in: [
               OrderStatus.PENDING,
@@ -474,29 +503,44 @@ export class StatsService {
           },
         },
       }),
-      this.lowStockProducts(5),
-      this.payables.outstandingBalance(),
-      this.receivables.outstandingBalance(),
-      this.prisma.product.count({ where: { active: true } }),
-      this.prisma.customer.count({ where: { active: true } }),
-      this.prisma.supplier.count({ where: { active: true } }),
+      this.lowStockProducts(companyId, 5),
+      this.payables.outstandingBalance(companyId),
+      this.receivables.outstandingBalance(companyId),
+      this.prisma.product.count({
+        where: { active: true, ...tenantWhere(companyId) },
+      }),
+      this.prisma.customer.count({
+        where: { active: true, ...tenantWhere(companyId) },
+      }),
+      this.prisma.supplier.count({
+        where: { active: true, ...tenantWhere(companyId) },
+      }),
       this.prisma.orderPayment.groupBy({
         by: ['method'],
-        where: { createdAt: { gte: todayFrom, lte: todayTo } },
+        where: {
+          createdAt: { gte: todayFrom, lte: todayTo },
+          ...tenantWhere(companyId),
+        },
         orderBy: { method: 'asc' },
         _sum: { baseAmount: true },
         _count: { _all: true },
       }),
       this.prisma.orderPayment.groupBy({
         by: ['currency'],
-        where: { createdAt: { gte: todayFrom, lte: todayTo } },
+        where: {
+          createdAt: { gte: todayFrom, lte: todayTo },
+          ...tenantWhere(companyId),
+        },
         orderBy: { currency: 'asc' },
         _sum: { amount: true, baseAmount: true },
         _count: { _all: true },
       }),
       this.prisma.expense.groupBy({
         by: ['currency'],
-        where: { date: { gte: todayFrom, lte: todayTo } },
+        where: {
+          date: { gte: todayFrom, lte: todayTo },
+          ...tenantWhere(companyId),
+        },
         orderBy: { currency: 'asc' },
         _sum: { amount: true, baseAmount: true },
         _count: { _all: true },

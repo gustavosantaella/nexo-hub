@@ -40,36 +40,38 @@ export interface CurrencyInput {
 export class CurrenciesService {
   constructor(private readonly prisma: PrismaService) {}
 
-  /** Monedas configuradas (la moneda base siempre presente). */
-  async list(): Promise<CurrencySetting[]> {
+  /** Monedas configuradas en la empresa (la moneda base siempre presente). */
+  async list(companyId: string): Promise<CurrencySetting[]> {
     const row = await this.prisma.setting.findUnique({
-      where: { key: CURRENCIES_KEY },
+      where: { companyId_key: { companyId, key: CURRENCIES_KEY } },
     });
     return this.merge(this.parse(row?.value));
   }
 
-  /** Solo las monedas habilitadas para cobrar/pagar. */
-  async enabled(): Promise<CurrencySetting[]> {
-    return (await this.list()).filter((item) => item.enabled);
+  /** Solo las monedas habilitadas para cobrar/pagar en la empresa. */
+  async enabled(companyId: string): Promise<CurrencySetting[]> {
+    return (await this.list(companyId)).filter((item) => item.enabled);
   }
 
-  /** Guarda la configuracion completa (valida y normaliza). */
+  /** Guarda la configuracion completa de la empresa (valida y normaliza). */
   async save(
+    companyId: string,
     inputs: CurrencyInput[],
     userId?: string,
   ): Promise<CurrencySetting[]> {
     const normalized = this.normalizeInputs(inputs);
-    await this.persist(normalized, userId);
+    await this.persist(companyId, normalized, userId);
     return this.merge(normalized);
   }
 
   /** Crea o actualiza una sola moneda sin tocar las demas. */
   async upsert(
+    companyId: string,
     code: string,
     input: Omit<CurrencyInput, 'code'>,
     userId?: string,
   ): Promise<CurrencySetting[]> {
-    const current = await this.list();
+    const current = await this.list(companyId);
     const target = normalizeCurrencyCode(code);
     const map = new Map(current.map((item) => [item.code, item]));
     const base = map.get(target) ?? defaultCurrencySetting(target);
@@ -80,15 +82,20 @@ export class CurrenciesService {
       ...(input.enabled === undefined ? {} : { enabled: input.enabled }),
       ...(input.rate === undefined ? {} : { rate: input.rate }),
     });
-    return this.save([...map.values()], userId);
+    return this.save(companyId, [...map.values()], userId);
   }
 
   /** Quita una moneda de la configuracion (las monedas por defecto no se quitan). */
-  async remove(code: string, userId?: string): Promise<CurrencySetting[]> {
+  async remove(
+    companyId: string,
+    code: string,
+    userId?: string,
+  ): Promise<CurrencySetting[]> {
     const target = normalizeCurrencyCode(code);
     this.assertMutable(target);
-    const current = await this.list();
+    const current = await this.list(companyId);
     return this.save(
+      companyId,
       current.filter((item) => item.code !== target),
       userId,
     );
@@ -97,14 +104,15 @@ export class CurrenciesService {
   // ------------------------------------------------------------------ interno
 
   private async persist(
+    companyId: string,
     settings: CurrencySetting[],
     userId?: string,
   ): Promise<void> {
     const value = JSON.stringify(settings);
     await this.prisma.setting.upsert({
-      where: { key: CURRENCIES_KEY },
+      where: { companyId_key: { companyId, key: CURRENCIES_KEY } },
       update: { value, updatedById: userId },
-      create: { key: CURRENCIES_KEY, value, updatedById: userId },
+      create: { companyId, key: CURRENCIES_KEY, value, updatedById: userId },
     });
   }
 

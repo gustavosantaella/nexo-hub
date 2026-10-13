@@ -5,11 +5,12 @@ Monorepo con **backend NestJS + Prisma (SQLite en desarrollo)** y **frontend Ang
 ```
 nexo-hub/
 ├── backend/                 API REST (NestJS + Prisma + Swagger)
-│   ├── prisma/schema.prisma Modelo de datos
+│   ├── prisma/schema.prisma Modelo de datos (multi-empresa)
 │   ├── prisma/seed.ts       Datos demo (maestros + historial de 30 días)
-│   └── src/modules/         auth, users, categories, suppliers, customers,
-│                            inventory, products, orders, cash, expenses,
-│                            payables, receivables, stats, rates, health
+│   └── src/modules/         auth, companies, users, categories, suppliers,
+│                            customers, inventory, products, orders, cash,
+│                            expenses, payables, receivables, stats, rates,
+│                            health
 └── frontend/                SPA Angular 18
     └── src/app/
         ├── core/            modelos, servicios HTTP, interceptores, guards
@@ -39,12 +40,24 @@ npm run start:dev           # http://localhost:3000/api
 
 ### Usuarios demo (`npm run prisma:seed`)
 
-| Rol | Email | Contraseña |
-| --- | --- | --- |
-| ADMIN | `admin@nexohub.com` | `Admin123!` |
-| MANAGER | `manager@nexohub.com` | `Manager123!` |
-| CASHIER | `caja@nexohub.com` | `Caja123!` |
-| CASHIER | `cashier@nexohub.com` | `Cashier123!` |
+Los **roles son por empresa**: cada usuario tiene una *membresía* en cada
+empresa a la que pertenece (`ADMIN`, `MANAGER` o `CASHIER`), y una misma cuenta
+puede trabajar en varias empresas con roles distintos.
+
+| Email | Contraseña | Rol en la empresa principal | Rol en la segunda empresa |
+| --- | --- | --- | --- |
+| `admin@nexohub.com` | `Admin123!` | ADMIN | MANAGER |
+| `manager@nexohub.com` | `Manager123!` | MANAGER | ADMIN |
+| `caja@nexohub.com` | `Caja123!` | CASHIER | - |
+| `cashier@nexohub.com` | `Cashier123!` | CASHIER | - |
+
+`admin@nexohub.com` y `manager@nexohub.com` pertenecen a las dos empresas a
+propósito (y con roles distintos en cada una): al entrar se elige la primera
+empresa activa y desde la cabecera (selector de empresa) se puede cambiar de una
+a otra sin volver a iniciar sesión.
+
+Si la base es anterior a la versión multi-empresa, `npm run db:reset` la
+recrea y la vuelve a sembrar (los datos de demo se regeneran siempre).
 
 ### Datos de demo que genera el seed
 
@@ -54,6 +67,10 @@ El seed deja la base lista para probar **todo** el sistema:
   categorías, 5 proveedores, 8 clientes, 24 productos, la configuración de
   monedas (`USD`, `VES`, `EUR`, `COP` activas y `PEN` desactivada) y la **tasa
   personalizada** del dólar.
+- **Dos empresas** (`Nexo Hub Demo, C.A.` y `Bodegon La Esquina, C.A.`): la
+  principal recibe todo el historial; la segunda queda con su configuración y su
+  catálogo (sin operaciones) para probar el aislamiento entre empresas y el
+  cambio de empresa activa.
 - **Historial de operación de los últimos 30 días** (se borra y se regenera en
   cada ejecución, de forma determinista):
   - ~44 sesiones de caja: fondo inicial en una moneda (USD/VES) o **mixto**
@@ -119,6 +136,60 @@ Para partir de cero: `npm run db:reset` (borra la base, la recrea y siembra).
   (reemplaza la configuración), `PUT|DELETE /api/currencies/:code` y
   `GET /api/stats/currencies` (cobros agrupados por moneda).
 
+## Multi-empresa (multi-tenant)
+
+Nexo Hub es **multi-empresa**: una instalación atiende varias empresas a la vez
+y los datos de cada una quedan aislados entre sí.
+
+- **Registro** (`/registro` o `POST /api/auth/register`): crea la empresa
+  (nombre, RIF, teléfono, correo, dirección) y su primer usuario **ADMIN**
+  (nombre, cédula, correo, teléfono y contraseña) en una sola operación, y
+  devuelve la sesión ya iniciada.
+- **Empresa y membresía**: `Company` guarda los datos de la empresa (el `rif` es
+  único en todo el sistema) y `Membership` une un usuario con una empresa
+  aportando su **rol** (`ADMIN`/`MANAGER`/`CASHIER`) y su estado **en esa
+  empresa**. La cuenta (`User`) es global: el mismo correo puede pertenecer a
+  varias empresas y darse de baja en una no borra la cuenta.
+- **Empresa en revisión** (`Company.active = false`): la empresa todavía no fue
+  activada, así que **no se puede iniciar sesión** con ella. El login responde
+  `403` con el código `COMPANY_UNDER_REVIEW` y el mensaje *"Su empresa aun sigue
+  estando en revision. por favor espere a que lo contactemos"* (el mismo aviso se
+  aplica a `POST /api/auth/switch-company`). Si el usuario pertenece a otra
+  empresa activa, entra normalmente con esa; la empresa en revisión tampoco
+  aparece en el selector de empresas. Para activarla:
+  `UPDATE companies SET active = 1 WHERE rif = '<RIF>';`.
+- **Aislamiento de datos**: todos los modelos de dominio (`categories`,
+  `suppliers`, `customers`, `products`, `stock_movements`, `orders`,
+  `order_items`, `order_payments`, `expenses`, `accounts_payable`,
+  `payable_payments`, `accounts_receivable`, `receivable_payments`,
+  `cash_sessions`, `cash_movements`) llevan `companyId`: cada consulta filtra
+  por la empresa del token y las unicidades pasan a ser **por empresa** (nombre
+  de categoría, `sku`, código de pedido y código de sesión de caja). La regla
+  "una sola sesión de caja abierta" también es por empresa.
+- **Sesión**: el JWT incluye la **empresa activa** (`companyId`) y el rol en
+  ella. `POST /api/auth/switch-company` reemite el token para cambiar de empresa
+  sin volver a iniciar sesión; `GET /api/auth/me` devuelve la sesión completa
+  (usuario, empresa activa, rol y empresas del usuario).
+- **Configuración por empresa**: `Setting` tiene clave compuesta
+  `[companyId, key]`, así que las **monedas aceptadas** y la **tasa
+  personalizada** son de cada empresa. Lo que es *por defecto* del sistema
+  (monedas por defecto, tasas oficiales del BCV) es común a todas.
+- **API relevante**: `POST /api/auth/register`, `GET /api/auth/me`,
+  `POST /api/auth/switch-company`, `PATCH /api/auth/profile` (mis datos),
+  `GET /api/companies/mine`, `POST /api/companies` (crear otra empresa para la
+  misma cuenta), `GET|PATCH /api/companies/current` (datos de la empresa activa)
+  y `/api/users` (usuarios de la **empresa activa**, solo ADMIN). Desde esta
+  versión, `GET /api/rates` y `GET /api/currencies` requieren token.
+- **Base de datos existente**: el proyecto usa `prisma db push` (no hay carpeta
+  `migrations`), así que una base creada antes de esta versión no puede rellenar
+  sola el `companyId` de las filas antiguas. Para una base con datos reales:
+  registra la empresa, crea su membresía ADMIN y asigna ese `companyId` a las
+  filas previas con `UPDATE` en cada tabla (`categories`, `suppliers`,
+  `customers`, `products`, `stock_movements`, `orders`, `order_items`,
+  `order_payments`, `expenses`, `accounts_payable`, `payable_payments`,
+  `accounts_receivable`, `receivable_payments`, `cash_sessions`,
+  `cash_movements` y `settings`). En desarrollo basta `npm run db:reset`.
+
 ## Frontend
 
 ```bash
@@ -135,16 +206,23 @@ La URL base de la API se configura en `src/environments/environment.ts`.
 
 | Ruta | Pantalla |
 | --- | --- |
-| `/login` | Inicio de sesión |
+| `/login` | Inicio de sesión (accesos de prueba con un clic) |
+| `/registro` | Registro de una empresa nueva con su usuario administrador |
 | `/panel` | Panel con KPIs, caja, cobros del día y stock crítico |
-| `/pedidos` | Tablero operativo + historial, creación de pedidos, cobros, y agregar/corregir/quitar productos a un pedido en curso |
-| `/caja` | Apertura/cierre con arqueo, movimientos e historial de sesiones |
-| `/inventario` | Niveles de stock, movimientos y ajustes |
-| `/productos`, `/categorias`, `/proveedores`, `/clientes` | Catálogo |
-| `/gastos`, `/cuentas-por-pagar`, `/cuentas-por-cobrar` | Finanzas |
-| `/reportes` | Series de ventas/gastos/utilidad, top productos, métodos de pago y cobros por moneda |
-| `/configuracion` | Tasas del BCV (dólar/euro, solo lectura), tasa personalizada, monedas aceptadas y vista previa |
-| `/usuarios` | Administración de usuarios (solo ADMIN) |
+| `/panel/pedidos` | Tablero operativo + historial, creación de pedidos, cobros, y agregar/corregir/quitar productos a un pedido en curso |
+| `/panel/caja` | Apertura/cierre con arqueo, movimientos e historial de sesiones |
+| `/panel/inventario` | Niveles de stock, movimientos y ajustes |
+| `/panel/productos`, `/panel/categorias`, `/panel/proveedores`, `/panel/clientes` | Catálogo |
+| `/panel/gastos`, `/panel/cuentas-por-pagar`, `/panel/cuentas-por-cobrar` | Finanzas |
+| `/panel/reportes` | Series de ventas/gastos/utilidad, top productos, métodos de pago y cobros por moneda |
+| `/panel/configuracion` | Datos de la empresa, mis datos, tasas del BCV (dólar/euro, solo lectura), tasa personalizada, monedas aceptadas y vista previa |
+| `/panel/usuarios` | Usuarios de la empresa activa (solo ADMIN) |
+
+Todo el back-office vive bajo el prefijo `/panel` (protegido por `authGuard`);
+`/` redirige a `/panel` y cualquier ruta desconocida también.
+
+La cabecera muestra la **empresa activa** y, cuando el usuario pertenece a más
+de una, un selector para cambiar de empresa sin volver a iniciar sesión.
 
 ## Notas
 

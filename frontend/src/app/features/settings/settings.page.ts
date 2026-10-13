@@ -4,6 +4,7 @@ import {
   OnInit,
   effect,
   inject,
+  signal,
 } from '@angular/core';
 import { FormsModule } from '@angular/forms';
 import {
@@ -17,13 +18,20 @@ import {
 } from '../../core/constants/currency';
 import type { CurrencySettingPayload } from '../../core/models/currencies.model';
 import type { CurrencyRateOption, CurrencyRateSource, RateKey } from '../../core/models/rates.model';
+import type {
+  Company,
+  CompanyPayload,
+  UpdateProfilePayload,
+} from '../../core/models/api.model';
 import { AuthService } from '../../core/services/auth.service';
+import { CompaniesService } from '../../core/services/companies.service';
 import { CurrenciesService } from '../../core/services/currencies.service';
 import { RatesService } from '../../core/services/rates.service';
 import { ToastService } from '../../core/services/toast.service';
 import { bs, dateTime, rate, signedPercent } from '../../core/utils/format';
 import { EmptyStateComponent, LoaderComponent } from '../../shared/components/feedback.component';
 import { IconComponent } from '../../shared/components/icon.component';
+import { ModalComponent } from '../../shared/components/modal.component';
 import { MoneyComponent } from '../../shared/components/money.component';
 import { PageHeaderComponent } from '../../shared/components/page-header.component';
 import { ConfirmService } from '../../shared/services/confirm.service';
@@ -63,6 +71,7 @@ interface CurrencyRow {
     MoneyComponent,
     LoaderComponent,
     EmptyStateComponent,
+    ModalComponent,
   ],
   changeDetection: ChangeDetectionStrategy.OnPush,
   template: `
@@ -506,6 +515,303 @@ interface CurrencyRow {
 
 
     }
+    <!-- Datos de la empresa -->
+    <section class="card mt-4">
+      <div class="card-header">
+        <div>
+          <h2 class="text-sm font-semibold text-slate-900">Datos de la empresa</h2>
+          <p class="mt-0.5 text-xs text-slate-500">
+            Nombre comercial, RIF y datos de contacto de la empresa activa.
+          </p>
+        </div>
+        @if (!canManage()) {
+          <span class="badge bg-slate-100 text-slate-600">Solo lectura</span>
+        }
+      </div>
+
+      <form class="card-body space-y-4" (ngSubmit)="saveCompany()" #companyFormEl="ngForm">
+        <div class="grid grid-cols-1 gap-4 sm:grid-cols-2">
+          <div>
+            <label class="label" for="company-name">Nombre *</label>
+            <input
+              id="company-name"
+              name="companyName"
+              class="input"
+              required
+              minlength="2"
+              [readonly]="!canManage()"
+              [(ngModel)]="companyForm.name"
+            />
+          </div>
+          <div>
+            <label class="label" for="company-rif">RIF *</label>
+            <input
+              id="company-rif"
+              name="companyRif"
+              class="input"
+              required
+              [readonly]="!canManage()"
+              [(ngModel)]="companyForm.rif"
+            />
+          </div>
+          <div>
+            <label class="label" for="company-phone">Teléfono</label>
+            <input
+              id="company-phone"
+              name="companyPhone"
+              type="tel"
+              class="input"
+              [readonly]="!canManage()"
+              [(ngModel)]="companyForm.phone"
+            />
+          </div>
+          <div>
+            <label class="label" for="company-email">Correo</label>
+            <input
+              id="company-email"
+              name="companyEmail"
+              type="email"
+              class="input"
+              [readonly]="!canManage()"
+              [(ngModel)]="companyForm.email"
+            />
+          </div>
+          <div class="sm:col-span-2">
+            <label class="label" for="company-address">Dirección</label>
+            <input
+              id="company-address"
+              name="companyAddress"
+              class="input"
+              [readonly]="!canManage()"
+              [(ngModel)]="companyForm.address"
+            />
+          </div>
+        </div>
+
+        <div class="flex flex-wrap items-center justify-between gap-2 border-t border-slate-200 pt-4">
+          <button type="button" class="btn-secondary" (click)="openCompanyModal()">
+            <app-icon name="plus" size="h-4 w-4" />
+            Crear otra empresa
+          </button>
+          @if (canManage()) {
+            <button
+              type="submit"
+              class="btn-primary"
+              [disabled]="companySaving() || companyFormEl.invalid"
+            >
+              <app-icon name="check" size="h-4 w-4" />
+              {{ companySaving() ? 'Guardando…' : 'Guardar empresa' }}
+            </button>
+          }
+        </div>
+      </form>
+    </section>
+
+    <!-- Mis datos -->
+    <section class="card mt-4">
+      <div class="card-header">
+        <div>
+          <h2 class="text-sm font-semibold text-slate-900">Mis datos</h2>
+          <p class="mt-0.5 text-xs text-slate-500">
+            Tu información personal y credenciales de acceso.
+          </p>
+        </div>
+      </div>
+
+      <form class="card-body space-y-4" (ngSubmit)="saveProfile()" #profileFormEl="ngForm">
+        <div class="grid grid-cols-1 gap-4 sm:grid-cols-2">
+          <div>
+            <label class="label" for="profile-name">Nombre completo *</label>
+            <input
+              id="profile-name"
+              name="profileName"
+              class="input"
+              required
+              minlength="2"
+              [(ngModel)]="profileForm.name"
+            />
+          </div>
+          <div>
+            <label class="label" for="profile-document">Cédula</label>
+            <input
+              id="profile-document"
+              name="profileDocument"
+              class="input"
+              [(ngModel)]="profileForm.documentId"
+            />
+          </div>
+          <div>
+            <label class="label" for="profile-email">Correo *</label>
+            <input
+              id="profile-email"
+              name="profileEmail"
+              type="email"
+              class="input"
+              required
+              [(ngModel)]="profileForm.email"
+            />
+          </div>
+          <div>
+            <label class="label" for="profile-phone">Teléfono</label>
+            <input
+              id="profile-phone"
+              name="profilePhone"
+              type="tel"
+              class="input"
+              [(ngModel)]="profileForm.phone"
+            />
+          </div>
+        </div>
+
+        <label class="flex items-center gap-2 text-sm text-slate-600">
+          <input
+            type="checkbox"
+            name="changePassword"
+            class="h-4 w-4"
+            [(ngModel)]="changePassword"
+          />
+          Cambiar mi contraseña
+        </label>
+
+        @if (changePassword) {
+          <div class="grid grid-cols-1 gap-4 rounded-xl border border-slate-200 bg-slate-50 p-4 sm:grid-cols-3">
+            <div>
+              <label class="label" for="profile-current">Contraseña actual *</label>
+              <input
+                id="profile-current"
+                name="currentPassword"
+                type="password"
+                class="input"
+                autocomplete="current-password"
+                [required]="changePassword"
+                [(ngModel)]="passwordForm.current"
+              />
+            </div>
+            <div>
+              <label class="label" for="profile-new">Nueva contraseña *</label>
+              <input
+                id="profile-new"
+                name="newPassword"
+                type="password"
+                class="input"
+                autocomplete="new-password"
+                minlength="6"
+                [required]="changePassword"
+                [(ngModel)]="passwordForm.next"
+              />
+            </div>
+            <div>
+              <label class="label" for="profile-confirm">Repetir contraseña *</label>
+              <input
+                id="profile-confirm"
+                name="confirmPassword"
+                type="password"
+                class="input"
+                autocomplete="new-password"
+                minlength="6"
+                [required]="changePassword"
+                [(ngModel)]="passwordForm.confirm"
+              />
+            </div>
+            @if (newPasswordMismatch()) {
+              <p class="text-xs text-rose-600 sm:col-span-3">Las contraseñas no coinciden.</p>
+            }
+          </div>
+        }
+
+        <div class="flex justify-end border-t border-slate-200 pt-4">
+          <button
+            type="submit"
+            class="btn-primary"
+            [disabled]="profileSaving() || profileFormEl.invalid"
+          >
+            <app-icon name="check" size="h-4 w-4" />
+            {{ profileSaving() ? 'Guardando…' : 'Guardar mis datos' }}
+          </button>
+        </div>
+      </form>
+    </section>
+
+    <!-- Crear otra empresa -->
+    <app-modal
+      [open]="companyModalOpen()"
+      title="Crear otra empresa"
+      subtitle="Registra una empresa nueva y pásate a ella"
+      size="lg"
+      (closed)="closeCompanyModal()"
+    >
+      <form class="space-y-4" (ngSubmit)="createCompany()" #newCompanyForm="ngForm">
+        <div class="grid grid-cols-1 gap-4 sm:grid-cols-2">
+          <div class="sm:col-span-2">
+            <label class="label" for="new-company-name">Nombre *</label>
+            <input
+              id="new-company-name"
+              name="newCompanyName"
+              class="input"
+              required
+              minlength="3"
+              placeholder="Ej. Sucursal Centro"
+              [(ngModel)]="companyDraft.name"
+            />
+          </div>
+          <div>
+            <label class="label" for="new-company-rif">RIF *</label>
+            <input
+              id="new-company-rif"
+              name="newCompanyRif"
+              class="input"
+              required
+              minlength="5"
+              placeholder="J-12345678-9"
+              [(ngModel)]="companyDraft.rif"
+            />
+          </div>
+          <div>
+            <label class="label" for="new-company-phone">Teléfono</label>
+            <input
+              id="new-company-phone"
+              name="newCompanyPhone"
+              type="tel"
+              class="input"
+              [(ngModel)]="companyDraft.phone"
+            />
+          </div>
+          <div>
+            <label class="label" for="new-company-email">Correo</label>
+            <input
+              id="new-company-email"
+              name="newCompanyEmail"
+              type="email"
+              class="input"
+              [(ngModel)]="companyDraft.email"
+            />
+          </div>
+          <div>
+            <label class="label" for="new-company-address">Dirección</label>
+            <input
+              id="new-company-address"
+              name="newCompanyAddress"
+              class="input"
+              [(ngModel)]="companyDraft.address"
+            />
+          </div>
+        </div>
+
+        <div modalFooter class="flex w-full justify-end gap-2">
+          <button type="button" class="btn-secondary" (click)="closeCompanyModal()">
+            Cancelar
+          </button>
+          <button
+            type="submit"
+            class="btn-primary"
+            [disabled]="companyCreating() || newCompanyForm.invalid"
+          >
+            {{ companyCreating() ? 'Creando…' : 'Crear empresa' }}
+          </button>
+        </div>
+      </form>
+    </app-modal>
+
   `,
 })
 export class SettingsPage implements OnInit {
@@ -513,6 +819,7 @@ export class SettingsPage implements OnInit {
   private readonly currenciesService = inject(CurrenciesService);
   private readonly toast = inject(ToastService);
   private readonly confirm = inject(ConfirmService);
+  private readonly companiesService = inject(CompaniesService);
   readonly auth = inject(AuthService);
 
   readonly rateMeta = RATE_META;
@@ -553,6 +860,21 @@ export class SettingsPage implements OnInit {
   readonly customUpdatedAt = () => dateTime(this.custom()?.updatedAt);
   readonly lastUpdate = () => dateTime(this.bcv()?.fetchedAt);
 
+  // ------------------------------ Empresa activa -----------------------------
+  /** Datos de la empresa activa (se sincronizan con la sesión). */
+  companyForm = { name: '', rif: '', phone: '', email: '', address: '' };
+  readonly companySaving = signal(false);
+  readonly companyCreating = signal(false);
+  readonly companyModalOpen = signal(false);
+  /** Borrador para crear otra empresa. */
+  companyDraft = { name: '', rif: '', phone: '', email: '', address: '' };
+
+  // -------------------------------- Mis datos --------------------------------
+  profileForm = { name: '', documentId: '', email: '', phone: '' };
+  passwordForm = { current: '', next: '', confirm: '' };
+  changePassword = false;
+  readonly profileSaving = signal(false);
+
   constructor() {
     effect(() => {
       const custom = this.custom();
@@ -563,10 +885,150 @@ export class SettingsPage implements OnInit {
       const currencies = this.ratesService.currencies();
       if (!this.currencyDirty) this.currencyRows = this.toRows(currencies);
     });
+
+    // La empresa activa puede cambiar de empresa desde la cabecera; el
+    // formulario siempre refleja la sesión vigente.
+    effect(() => {
+      const company = this.auth.company();
+      if (company) this.applyCompany(company);
+    });
+
+    // Igual con los datos del usuario (se repintan al refrescar la sesión).
+    effect(() => {
+      const user = this.auth.user();
+      if (user) {
+        this.profileForm = {
+          name: user.name,
+          documentId: user.documentId ?? '',
+          email: user.email,
+          phone: user.phone ?? '',
+        };
+      }
+    });
+  }
+
+  newPasswordMismatch(): boolean {
+    return !!this.passwordForm.next && this.passwordForm.next !== this.passwordForm.confirm;
+  }
+
+  // ------------------------------ Datos de empresa ---------------------------
+
+  private applyCompany(company: Company): void {
+    this.companyForm = {
+      name: company.name,
+      rif: company.rif,
+      phone: company.phone ?? '',
+      email: company.email ?? '',
+      address: company.address ?? '',
+    };
+  }
+
+  private loadCompany(): void {
+    this.companiesService.current().subscribe({
+      next: (company) => this.applyCompany(company),
+    });
+  }
+
+  saveCompany(): void {
+    if (!this.canManage() || this.companySaving()) return;
+
+    this.companySaving.set(true);
+    this.companiesService
+      .updateCurrent({
+        name: this.companyForm.name.trim(),
+        rif: this.companyForm.rif.trim(),
+        phone: this.companyForm.phone.trim(),
+        email: this.companyForm.email.trim(),
+        address: this.companyForm.address.trim(),
+      })
+      .subscribe({
+        next: () => {
+          this.companySaving.set(false);
+          this.toast.success('Datos de la empresa actualizados');
+          this.auth.refreshProfile().subscribe();
+        },
+        error: () => this.companySaving.set(false),
+      });
+  }
+
+  openCompanyModal(): void {
+    this.companyDraft = { name: '', rif: '', phone: '', email: '', address: '' };
+    this.companyModalOpen.set(true);
+  }
+
+  closeCompanyModal(): void {
+    this.companyModalOpen.set(false);
+  }
+
+  /** Crea la empresa y pasa la sesión a ella (token y tasas nuevas). */
+  createCompany(): void {
+    if (this.companyCreating()) return;
+
+    const payload: CompanyPayload = {
+      name: this.companyDraft.name.trim(),
+      rif: this.companyDraft.rif.trim(),
+      phone: this.companyDraft.phone.trim() || undefined,
+      email: this.companyDraft.email.trim() || undefined,
+      address: this.companyDraft.address.trim() || undefined,
+    };
+
+    this.companyCreating.set(true);
+    this.companiesService.create(payload).subscribe({
+      next: (response) => {
+        this.companyCreating.set(false);
+        this.closeCompanyModal();
+        this.toast.success(`${response.company.name} creada`, 'Nueva empresa');
+        this.auth.switchCompany(response.company.id).subscribe();
+      },
+      error: () => this.companyCreating.set(false),
+    });
+  }
+
+  // -------------------------------- Mis datos --------------------------------
+
+  saveProfile(): void {
+    if (this.profileSaving()) return;
+
+    const payload: UpdateProfilePayload = {
+      name: this.profileForm.name.trim(),
+      documentId: this.profileForm.documentId.trim(),
+      email: this.profileForm.email.trim().toLowerCase(),
+      phone: this.profileForm.phone.trim(),
+    };
+
+    if (this.changePassword && this.passwordForm.next) {
+      if (this.passwordForm.next.length < 6) {
+        this.toast.warning('La nueva contraseña debe tener al menos 6 caracteres.');
+        return;
+      }
+      if (this.passwordForm.next !== this.passwordForm.confirm) {
+        this.toast.warning('Las contraseñas no coinciden.');
+        return;
+      }
+      if (!this.passwordForm.current) {
+        this.toast.warning('Ingresa tu contraseña actual para poder cambiarla.');
+        return;
+      }
+      payload.password = this.passwordForm.next;
+      payload.currentPassword = this.passwordForm.current;
+    }
+
+    this.profileSaving.set(true);
+    this.auth.updateProfile(payload).subscribe({
+      next: () => {
+        this.profileSaving.set(false);
+        this.changePassword = false;
+        this.passwordForm = { current: '', next: '', confirm: '' };
+        this.toast.success('Tus datos se actualizaron');
+        this.auth.refreshProfile().subscribe();
+      },
+      error: () => this.profileSaving.set(false),
+    });
   }
 
   ngOnInit(): void {
     this.ratesService.ensureLoaded();
+    this.loadCompany();
   }
 
   refresh(): void {

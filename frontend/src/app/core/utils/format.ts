@@ -116,6 +116,23 @@ export function apiErrorMessage(error: unknown): string {
   return 'Ocurrió un error inesperado';
 }
 
+/** Código que devuelve el backend cuando la empresa aún está en revisión. */
+export const COMPANY_UNDER_REVIEW_CODE = 'COMPANY_UNDER_REVIEW';
+
+/**
+ * True si el error es el aviso de "empresa en revisión": la pantalla de acceso
+ * lo muestra como advertencia (no como credenciales inválidas).
+ */
+export function isCompanyUnderReview(error: unknown): boolean {
+  if (!(error instanceof HttpErrorResponse)) return false;
+  const payload = error.error as { code?: string } | null;
+  return (
+    !!payload &&
+    typeof payload === 'object' &&
+    payload.code === COMPANY_UNDER_REVIEW_CODE
+  );
+}
+
 /** Suma segura de montos (evita los decimales de punto flotante). */
 export function sumMoney(values: number[]): number {
   return Math.round(values.reduce((acc, v) => acc + Number(v || 0), 0) * 100) / 100;

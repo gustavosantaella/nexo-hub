@@ -6,6 +6,7 @@ import {
   toSkip,
   type PaginatedResult,
 } from '../../common/utils/pagination.util';
+import { tenantWhere } from '../../common/utils/tenant.util';
 import { PrismaService } from '../../prisma/prisma.service';
 import { CreateSupplierDto } from './dto/create-supplier.dto';
 import { UpdateSupplierDto } from './dto/update-supplier.dto';
@@ -14,28 +15,42 @@ import { UpdateSupplierDto } from './dto/update-supplier.dto';
 export class SuppliersService {
   constructor(private readonly prisma: PrismaService) {}
 
-  create(dto: CreateSupplierDto) {
+  create(companyId: string, dto: CreateSupplierDto) {
     return this.prisma.supplier.create({
-      data: { ...dto, active: dto.active ?? true },
+      data: { ...dto, companyId, active: dto.active ?? true },
     });
   }
 
-  async findAll(query: PaginationQueryDto): Promise<PaginatedResult<unknown>> {
-    const where: Prisma.SupplierWhereInput = query.search
-      ? {
-          OR: [
-            { name: { contains: query.search } },
-            { contactName: { contains: query.search } },
-            { phone: { contains: query.search } },
-            { taxId: { contains: query.search } },
-          ],
-        }
-      : {};
+  async findAll(
+    companyId: string,
+    query: PaginationQueryDto,
+  ): Promise<PaginatedResult<unknown>> {
+    const where: Prisma.SupplierWhereInput = {
+      ...tenantWhere(companyId),
+      ...(query.search
+        ? {
+            OR: [
+              { name: { contains: query.search } },
+              { contactName: { contains: query.search } },
+              { phone: { contains: query.search } },
+              { taxId: { contains: query.search } },
+            ],
+          }
+        : {}),
+    };
 
     const [items, total] = await this.prisma.$transaction([
       this.prisma.supplier.findMany({
         where,
-        include: { _count: { select: { products: true, payables: true } } },
+        // Los conteos anidados tambien se aíslan a la empresa activa.
+        include: {
+          _count: {
+            select: {
+              products: { where: tenantWhere(companyId) },
+              payables: { where: tenantWhere(companyId) },
+            },
+          },
+        },
         orderBy: query.toOrderBy(['name', 'createdAt'], { name: 'asc' }),
         skip: toSkip(query.page, query.limit),
         take: query.limit,
@@ -46,29 +61,35 @@ export class SuppliersService {
     return buildPaginatedResult(items, total, query.page, query.limit);
   }
 
-  findOptions() {
+  findOptions(companyId: string) {
     return this.prisma.supplier.findMany({
-      where: { active: true },
+      where: { active: true, ...tenantWhere(companyId) },
       select: { id: true, name: true },
       orderBy: { name: 'asc' },
     });
   }
 
-  async findOne(id: string) {
-    const supplier = await this.prisma.supplier.findUnique({ where: { id } });
+  async findOne(companyId: string, id: string) {
+    const supplier = await this.prisma.supplier.findFirst({
+      where: { id, ...tenantWhere(companyId) },
+    });
     if (!supplier) throw new NotFoundException('Proveedor no encontrado');
     return supplier;
   }
 
-  async update(id: string, dto: UpdateSupplierDto) {
-    await this.findOne(id);
-    return this.prisma.supplier.update({ where: { id }, data: dto });
+  async update(companyId: string, id: string, dto: UpdateSupplierDto) {
+    await this.findOne(companyId, id);
+    await this.prisma.supplier.updateMany({
+      where: { id, ...tenantWhere(companyId) },
+      data: dto,
+    });
+    return this.findOne(companyId, id);
   }
 
-  async remove(id: string) {
-    await this.findOne(id);
-    return this.prisma.supplier.update({
-      where: { id },
+  async remove(companyId: string, id: string) {
+    await this.findOne(companyId, id);
+    return this.prisma.supplier.updateMany({
+      where: { id, ...tenantWhere(companyId) },
       data: { active: false },
     });
   }

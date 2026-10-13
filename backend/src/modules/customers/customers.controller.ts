@@ -10,6 +10,7 @@ import {
 } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { Role } from '../../common/constants/enums';
+import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { Roles } from '../../common/decorators/roles.decorator';
 import { PaginationQueryDto } from '../../common/dto/pagination-query.dto';
 import { CustomersService } from './customers.service';
@@ -24,38 +25,54 @@ export class CustomersController {
 
   @Post()
   @ApiOperation({ summary: 'Crear cliente' })
-  create(@Body() dto: CreateCustomerDto) {
-    return this.customersService.create(dto);
+  create(
+    @CurrentUser('companyId') companyId: string,
+    @Body() dto: CreateCustomerDto,
+  ) {
+    return this.customersService.create(companyId, dto);
   }
 
   @Get()
   @ApiOperation({ summary: 'Listar clientes (paginado)' })
-  findAll(@Query() query: PaginationQueryDto) {
-    return this.customersService.findAll(query);
+  findAll(
+    @CurrentUser('companyId') companyId: string,
+    @Query() query: PaginationQueryDto,
+  ) {
+    return this.customersService.findAll(companyId, query);
   }
 
   @Get('options')
   @ApiOperation({ summary: 'Clientes activos para selects' })
-  findOptions() {
-    return this.customersService.findOptions();
+  findOptions(@CurrentUser('companyId') companyId: string) {
+    return this.customersService.findOptions(companyId);
   }
 
   @Get(':id')
   @ApiOperation({ summary: 'Obtener cliente por id' })
-  findOne(@Param('id') id: string) {
-    return this.customersService.findOne(id);
+  findOne(
+    @CurrentUser('companyId') companyId: string,
+    @Param('id') id: string,
+  ) {
+    return this.customersService.findOne(companyId, id);
   }
 
   @Patch(':id')
   @ApiOperation({ summary: 'Actualizar cliente' })
-  update(@Param('id') id: string, @Body() dto: UpdateCustomerDto) {
-    return this.customersService.update(id, dto);
+  update(
+    @CurrentUser('companyId') companyId: string,
+    @Param('id') id: string,
+    @Body() dto: UpdateCustomerDto,
+  ) {
+    return this.customersService.update(companyId, id, dto);
   }
 
   @Delete(':id')
   @Roles(Role.ADMIN, Role.MANAGER)
   @ApiOperation({ summary: 'Desactivar cliente' })
-  remove(@Param('id') id: string) {
-    return this.customersService.remove(id);
+  remove(
+    @CurrentUser('companyId') companyId: string,
+    @Param('id') id: string,
+  ) {
+    return this.customersService.remove(companyId, id);
   }
 }

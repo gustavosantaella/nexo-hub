@@ -134,9 +134,9 @@ export class RatesService {
   }
 
   /** Estado completo: BCV + tasa personalizada + tasas utilizables. */
-  async snapshot(refresh = false): Promise<RatesSnapshot> {
+  async snapshot(companyId: string, refresh = false): Promise<RatesSnapshot> {
     const { payload, fetchedAt, stale } = await this.bcv(refresh);
-    const custom = await this.customRate();
+    const custom = await this.customRate(companyId);
 
     const rates: RateOption[] = [
       {
@@ -172,7 +172,7 @@ export class RatesService {
     }
 
     const bsPerUsd = this.bsPerUsd(payload, custom);
-    const configured = await this.currencies.list();
+    const configured = await this.currencies.list(companyId);
 
     return {
       bcv: {
@@ -254,12 +254,15 @@ export class RatesService {
    * Tasas necesarias para convertir un monto expresado en `currency`
    * (bolivares por USD + bolivares por unidad de la moneda).
    */
-  async conversionRates(currency?: string | null): Promise<ConversionRates> {
+  async conversionRates(
+    companyId: string,
+    currency?: string | null,
+  ): Promise<ConversionRates> {
     const { payload } = await this.bcv();
-    const custom = await this.customRate();
+    const custom = await this.customRate(companyId);
     const bsPerUsd = this.bsPerUsd(payload, custom);
     const normalized = this.normalizeCurrency(currency);
-    const setting = (await this.currencies.list()).find(
+    const setting = (await this.currencies.list(companyId)).find(
       (item) => item.code === normalized,
     );
 
@@ -276,11 +279,12 @@ export class RatesService {
    * aceptada por el local y tenga tasa disponible.
    */
   async resolvePayment(
+    companyId: string,
     amount: number,
     currency?: string | null,
   ): Promise<PaymentConversion> {
     const normalized = this.normalizeCurrency(currency);
-    const setting = (await this.currencies.list()).find(
+    const setting = (await this.currencies.list(companyId)).find(
       (item) => item.code === normalized,
     );
 
@@ -293,7 +297,7 @@ export class RatesService {
     const conversion = convertToBase(
       amount,
       normalized,
-      await this.conversionRates(normalized),
+      await this.conversionRates(companyId, normalized),
     );
 
     if (!conversion) {
@@ -307,14 +311,16 @@ export class RatesService {
 
   /** Equivalente en la moneda base (USD) de un monto en `currency`. */
   async toBaseAmount(
+    companyId: string,
     amount: number,
     currency?: string | null,
   ): Promise<number> {
-    return (await this.resolvePayment(amount, currency)).baseAmount;
+    return (await this.resolvePayment(companyId, amount, currency)).baseAmount;
   }
 
   /** Equivalente en `currency` de un monto de la moneda base (USD). */
   async toCurrencyAmount(
+    companyId: string,
     amount: number,
     currency?: string | null,
   ): Promise<number> {
@@ -322,7 +328,7 @@ export class RatesService {
     const converted = convertFromBase(
       amount,
       normalized,
-      await this.conversionRates(normalized),
+      await this.conversionRates(companyId, normalized),
     );
     if (converted === null) {
       throw new BadRequestException(
@@ -337,10 +343,10 @@ export class RatesService {
     return normalizeCurrencyCode(currency) || BASE_CURRENCY_CODE;
   }
 
-  /** Lee la tasa personalizada del local (o `null` si no existe). */
-  async customRate(): Promise<CustomRate | null> {
+  /** Lee la tasa personalizada de la empresa (o `null` si no existe). */
+  async customRate(companyId: string): Promise<CustomRate | null> {
     const row = await this.prisma.setting.findUnique({
-      where: { key: CUSTOM_RATE_KEY },
+      where: { companyId_key: { companyId, key: CUSTOM_RATE_KEY } },
       include: { updatedBy: { select: { name: true } } },
     });
     if (!row) return null;
@@ -357,22 +363,25 @@ export class RatesService {
 
   /** Guarda la tasa personalizada; con `usd = null` la elimina. */
   async setCustomRate(
+    companyId: string,
     usd: number | null,
     userId?: string,
   ): Promise<CustomRate | null> {
     if (usd === null) {
-      await this.prisma.setting.deleteMany({ where: { key: CUSTOM_RATE_KEY } });
+      await this.prisma.setting.deleteMany({
+        where: { companyId, key: CUSTOM_RATE_KEY },
+      });
       return null;
     }
 
     const value = String(usd);
     await this.prisma.setting.upsert({
-      where: { key: CUSTOM_RATE_KEY },
+      where: { companyId_key: { companyId, key: CUSTOM_RATE_KEY } },
       update: { value, updatedById: userId },
-      create: { key: CUSTOM_RATE_KEY, value, updatedById: userId },
+      create: { companyId, key: CUSTOM_RATE_KEY, value, updatedById: userId },
     });
 
-    return this.customRate();
+    return this.customRate(companyId);
   }
 
   /**

@@ -33,59 +33,77 @@ export class ReceivablesController {
   @Roles(...FINANCE_ROLES, Role.CASHIER)
   @ApiOperation({ summary: 'Registrar cuenta por cobrar' })
   create(
+    @CurrentUser('companyId') companyId: string,
     @Body() dto: CreateReceivableDto,
     @CurrentUser() user: AuthenticatedUser,
   ) {
-    return this.receivablesService.create(dto, user.id);
+    return this.receivablesService.create(companyId, dto, user.id);
   }
 
   @Get()
   @ApiOperation({ summary: 'Listar cuentas por cobrar (paginado + filtros)' })
-  findAll(@Query() query: ReceivableQueryDto) {
-    return this.receivablesService.findAll(query);
+  findAll(
+    @CurrentUser('companyId') companyId: string,
+    @Query() query: ReceivableQueryDto,
+  ) {
+    return this.receivablesService.findAll(companyId, query);
   }
 
   @Get('summary')
   @ApiOperation({ summary: 'Resumen por estado y saldo por cobrar' })
-  summary() {
-    return this.receivablesService.summary();
+  summary(@CurrentUser('companyId') companyId: string) {
+    return this.receivablesService.summary(companyId);
   }
 
   @Get(':id')
   @ApiOperation({ summary: 'Detalle con cobros' })
-  findOne(@Param('id') id: string) {
-    return this.receivablesService.findOne(id);
+  findOne(
+    @CurrentUser('companyId') companyId: string,
+    @Param('id') id: string,
+  ) {
+    return this.receivablesService.findOne(companyId, id);
   }
 
   @Patch(':id')
   @Roles(...FINANCE_ROLES)
   @ApiOperation({ summary: 'Actualizar cuenta' })
-  update(@Param('id') id: string, @Body() dto: UpdateReceivableDto) {
-    return this.receivablesService.update(id, dto);
+  update(
+    @CurrentUser('companyId') companyId: string,
+    @Param('id') id: string,
+    @Body() dto: UpdateReceivableDto,
+  ) {
+    return this.receivablesService.update(companyId, id, dto);
   }
 
   @Post(':id/payments')
   @Roles(...FINANCE_ROLES, Role.CASHIER)
   @ApiOperation({ summary: 'Registrar cobro (ingresa a caja si es efectivo)' })
   collect(
+    @CurrentUser('companyId') companyId: string,
     @Param('id') id: string,
     @Body() dto: CollectReceivableDto,
     @CurrentUser() user: AuthenticatedUser,
   ) {
-    return this.receivablesService.collect(id, dto, user.id);
+    return this.receivablesService.collect(companyId, id, dto, user.id);
   }
 
   @Post(':id/cancel')
   @Roles(...FINANCE_ROLES)
   @ApiOperation({ summary: 'Anular cuenta' })
-  cancel(@Param('id') id: string) {
-    return this.receivablesService.cancel(id);
+  cancel(
+    @CurrentUser('companyId') companyId: string,
+    @Param('id') id: string,
+  ) {
+    return this.receivablesService.cancel(companyId, id);
   }
 
   @Delete(':id')
   @Roles(Role.ADMIN)
   @ApiOperation({ summary: 'Eliminar cuenta sin cobros' })
-  remove(@Param('id') id: string) {
-    return this.receivablesService.remove(id);
+  remove(
+    @CurrentUser('companyId') companyId: string,
+    @Param('id') id: string,
+  ) {
+    return this.receivablesService.remove(companyId, id);
   }
 }

@@ -6,6 +6,7 @@ import {
   toSkip,
   type PaginatedResult,
 } from '../../common/utils/pagination.util';
+import { tenantWhere } from '../../common/utils/tenant.util';
 import { PrismaService } from '../../prisma/prisma.service';
 import { CreateCustomerDto } from './dto/create-customer.dto';
 import { UpdateCustomerDto } from './dto/update-customer.dto';
@@ -14,27 +15,41 @@ import { UpdateCustomerDto } from './dto/update-customer.dto';
 export class CustomersService {
   constructor(private readonly prisma: PrismaService) {}
 
-  create(dto: CreateCustomerDto) {
+  create(companyId: string, dto: CreateCustomerDto) {
     return this.prisma.customer.create({
-      data: { ...dto, active: dto.active ?? true },
+      data: { ...dto, companyId, active: dto.active ?? true },
     });
   }
 
-  async findAll(query: PaginationQueryDto): Promise<PaginatedResult<unknown>> {
-    const where: Prisma.CustomerWhereInput = query.search
-      ? {
-          OR: [
-            { name: { contains: query.search } },
-            { phone: { contains: query.search } },
-            { docNumber: { contains: query.search } },
-          ],
-        }
-      : {};
+  async findAll(
+    companyId: string,
+    query: PaginationQueryDto,
+  ): Promise<PaginatedResult<unknown>> {
+    const where: Prisma.CustomerWhereInput = {
+      ...tenantWhere(companyId),
+      ...(query.search
+        ? {
+            OR: [
+              { name: { contains: query.search } },
+              { phone: { contains: query.search } },
+              { docNumber: { contains: query.search } },
+            ],
+          }
+        : {}),
+    };
 
     const [items, total] = await this.prisma.$transaction([
       this.prisma.customer.findMany({
         where,
-        include: { _count: { select: { orders: true, receivables: true } } },
+        // Los conteos anidados tambien se aíslan a la empresa activa.
+        include: {
+          _count: {
+            select: {
+              orders: { where: tenantWhere(companyId) },
+              receivables: { where: tenantWhere(companyId) },
+            },
+          },
+        },
         orderBy: query.toOrderBy(['name', 'createdAt'], { name: 'asc' }),
         skip: toSkip(query.page, query.limit),
         take: query.limit,
@@ -45,29 +60,35 @@ export class CustomersService {
     return buildPaginatedResult(items, total, query.page, query.limit);
   }
 
-  findOptions() {
+  findOptions(companyId: string) {
     return this.prisma.customer.findMany({
-      where: { active: true },
+      where: { active: true, ...tenantWhere(companyId) },
       select: { id: true, name: true, phone: true },
       orderBy: { name: 'asc' },
     });
   }
 
-  async findOne(id: string) {
-    const customer = await this.prisma.customer.findUnique({ where: { id } });
+  async findOne(companyId: string, id: string) {
+    const customer = await this.prisma.customer.findFirst({
+      where: { id, ...tenantWhere(companyId) },
+    });
     if (!customer) throw new NotFoundException('Cliente no encontrado');
     return customer;
   }
 
-  async update(id: string, dto: UpdateCustomerDto) {
-    await this.findOne(id);
-    return this.prisma.customer.update({ where: { id }, data: dto });
+  async update(companyId: string, id: string, dto: UpdateCustomerDto) {
+    await this.findOne(companyId, id);
+    await this.prisma.customer.updateMany({
+      where: { id, ...tenantWhere(companyId) },
+      data: dto,
+    });
+    return this.findOne(companyId, id);
   }
 
-  async remove(id: string) {
-    await this.findOne(id);
-    return this.prisma.customer.update({
-      where: { id },
+  async remove(companyId: string, id: string) {
+    await this.findOne(companyId, id);
+    return this.prisma.customer.updateMany({
+      where: { id, ...tenantWhere(companyId) },
       data: { active: false },
     });
   }

@@ -26,21 +26,82 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
+// ============================== Empresas ===================================
+// El sistema es multi-empresa: TODO registro de dominio pertenece a una
+// empresa (`companyId`) y los datos de una empresa nunca se mezclan con los
+// de otra. El rol NO es del usuario sino de su membresia: un mismo usuario
+// puede ser ADMIN en una empresa y CASHIER en otra.
+model Company {
+  id        String   @id @default(cuid())
+  name      String
+  rif       String   @unique // RIF / identificacion fiscal de la empresa
+  phone     String?
+  email     String?
+  address   String?
+  notes     String?
+  active    Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  memberships        Membership[]
+  settings           Setting[]
+  categories         Category[]
+  suppliers          Supplier[]
+  customers          Customer[]
+  products           Product[]
+  stockMovements     StockMovement[]
+  orders             Order[]
+  orderItems         OrderItem[]
+  orderPayments      OrderPayment[]
+  expenses           Expense[]
+  payables           AccountPayable[]
+  payablePayments    PayablePayment[]
+  receivables        AccountReceivable[]
+  receivablePayments ReceivablePayment[]
+  cashSessions       CashSession[]
+  cashMovements      CashMovement[]
+
+  @@index([name])
+  @@map("companies")
+}
+
+// Rol (y estado) de un usuario DENTRO de una empresa concreta.
+model Membership {
+  id        String   @id @default(cuid())
+  userId    String
+  companyId String
+  role      String   @default("CASHIER") // ADMIN | MANAGER | CASHIER
+  active    Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, companyId])
+  @@index([companyId])
+  @@index([userId])
+  @@map("memberships")
+}
+
 // ============================== Seguridad ==================================
+// Identidad global: la misma cuenta (email/contrasena) puede pertenecer a
+// varias empresas a traves de `Membership`. El rol vive en la membresia.
 
 model User {
   id           String    @id @default(cuid())
   email        String    @unique
   name         String
+  documentId   String? // cedula / documento de identidad
   passwordHash String
-  role         String    @default("CASHIER") // ADMIN | MANAGER | CASHIER
-  active       Boolean   @default(true)
-  phone        String?
+  phone        String? // telefono de contacto
   avatarUrl    String?
+  active       Boolean   @default(true)
   lastLoginAt  DateTime?
   createdAt    DateTime  @default(now())
   updatedAt    DateTime  @updatedAt
 
+  memberships        Membership[]
   cashSessionsOpened CashSession[]       @relation("CashSessionOpenedBy")
   cashSessionsClosed CashSession[]       @relation("CashSessionClosedBy")
   cashMovements      CashMovement[]
@@ -59,19 +120,24 @@ model User {
 
 model Category {
   id          String   @id @default(cuid())
-  name        String   @unique
+  companyId   String
+  name        String
   description String?
   active      Boolean  @default(true)
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 
+  company  Company   @relation(fields: [companyId], references: [id], onDelete: Cascade)
   products Product[]
 
+  @@unique([companyId, name])
+  @@index([companyId])
   @@map("categories")
 }
 
 model Supplier {
   id          String   @id @default(cuid())
+  companyId   String
   name        String
   contactName String?
   phone       String?
@@ -83,16 +149,19 @@ model Supplier {
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 
+  company  Company          @relation(fields: [companyId], references: [id], onDelete: Cascade)
   products Product[]
   payables AccountPayable[]
   expenses Expense[]
 
+  @@index([companyId])
   @@index([name])
   @@map("suppliers")
 }
 
 model Customer {
   id        String   @id @default(cuid())
+  companyId String
   name      String
   phone     String?
   email     String?
@@ -103,16 +172,19 @@ model Customer {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
+  company     Company             @relation(fields: [companyId], references: [id], onDelete: Cascade)
   orders      Order[]
   receivables AccountReceivable[]
 
+  @@index([companyId])
   @@index([name])
   @@map("customers")
 }
 
 model Product {
   id          String   @id @default(cuid())
-  sku         String   @unique
+  companyId   String
+  sku         String
   name        String
   description String?
   price       Int      @default(0)
@@ -127,11 +199,14 @@ model Product {
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 
+  company    Company         @relation(fields: [companyId], references: [id], onDelete: Cascade)
   category   Category?       @relation(fields: [categoryId], references: [id], onDelete: SetNull)
   supplier   Supplier?       @relation(fields: [supplierId], references: [id], onDelete: SetNull)
   movements  StockMovement[]
   orderItems OrderItem[]
 
+  @@unique([companyId, sku])
+  @@index([companyId])
   @@index([name])
   @@index([categoryId])
   @@index([supplierId])
@@ -142,6 +217,7 @@ model Product {
 
 model StockMovement {
   id            String   @id @default(cuid())
+  companyId     String
   productId     String
   type          String // IN | OUT | ADJUSTMENT
   quantity      Int // siempre positivo, la direccion la da "type"
@@ -154,9 +230,11 @@ model StockMovement {
   createdById   String?
   createdAt     DateTime @default(now())
 
+  company   Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
   product   Product @relation(fields: [productId], references: [id], onDelete: Cascade)
   createdBy User?   @relation(fields: [createdById], references: [id], onDelete: SetNull)
 
+  @@index([companyId])
   @@index([productId])
   @@index([createdAt])
   @@map("stock_movements")
@@ -166,7 +244,8 @@ model StockMovement {
 
 model Order {
   id            String   @id @default(cuid())
-  code          String   @unique
+  companyId     String
+  code          String
   customerId    String?
   type          String   @default("DINE_IN") // DINE_IN | TAKEAWAY | DELIVERY
   status        String   @default("PENDING") // PENDING | CONFIRMED | PREPARING | READY | COMPLETED | CANCELLED
@@ -183,12 +262,15 @@ model Order {
   createdAt     DateTime @default(now())
   updatedAt     DateTime @updatedAt
 
+  company     Company        @relation(fields: [companyId], references: [id], onDelete: Cascade)
   customer    Customer?      @relation(fields: [customerId], references: [id], onDelete: SetNull)
   cashSession CashSession?   @relation(fields: [cashSessionId], references: [id], onDelete: SetNull)
   createdBy   User?          @relation("OrderCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
   items       OrderItem[]
   payments    OrderPayment[]
 
+  @@unique([companyId, code])
+  @@index([companyId])
   @@index([status])
   @@index([createdAt])
   @@index([cashSessionId])
@@ -197,6 +279,7 @@ model Order {
 
 model OrderItem {
   id        String @id @default(cuid())
+  companyId String
   orderId   String
   productId String
   name      String // snapshot del nombre al momento de la venta
@@ -204,15 +287,18 @@ model OrderItem {
   unitPrice Int
   total     Int
 
+  company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
   order   Order   @relation(fields: [orderId], references: [id], onDelete: Cascade)
   product Product @relation(fields: [productId], references: [id], onDelete: Restrict)
 
+  @@index([companyId])
   @@index([orderId])
   @@map("order_items")
 }
 
 model OrderPayment {
   id             String   @id @default(cuid())
+  companyId      String
   orderId        String
   amount         Int // Monto en la moneda del pago (`currency`)
   method         String // CASH | CARD | TRANSFER | YAPE | PLIN | MIXED
@@ -224,8 +310,10 @@ model OrderPayment {
   createdById    String?
   createdAt      DateTime @default(now())
 
-  order Order @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  order   Order   @relation(fields: [orderId], references: [id], onDelete: Cascade)
 
+  @@index([companyId])
   @@index([orderId])
   @@map("order_payments")
 }
@@ -234,6 +322,7 @@ model OrderPayment {
 
 model Expense {
   id            String   @id @default(cuid())
+  companyId     String
   category      String // OPERATIVO | SERVICIOS | SUELDOS | COMPRAS | MANTENIMIENTO | IMPUESTOS | OTROS
   description   String
   amount        Int // Monto en la moneda del gasto (`currency`)
@@ -248,10 +337,12 @@ model Expense {
   createdAt     DateTime @default(now())
   updatedAt     DateTime @updatedAt
 
+  company     Company      @relation(fields: [companyId], references: [id], onDelete: Cascade)
   supplier    Supplier?    @relation(fields: [supplierId], references: [id], onDelete: SetNull)
   createdBy   User?        @relation(fields: [createdById], references: [id], onDelete: SetNull)
   cashSession CashSession? @relation(fields: [cashSessionId], references: [id], onDelete: SetNull)
 
+  @@index([companyId])
   @@index([date])
   @@index([category])
   @@index([cashSessionId])
@@ -259,32 +350,36 @@ model Expense {
 }
 
 model AccountPayable {
-  id          String    @id @default(cuid())
-  supplierId  String?
-  description String
-  amount      Int // Monto en la moneda de la cuenta (`currency`)
-  currency    String    @default("USD") // Moneda en la que se registro la cuenta
+  id           String    @id @default(cuid())
+  companyId    String
+  supplierId   String?
+  description  String
+  amount       Int // Monto en la moneda de la cuenta (`currency`)
+  currency     String    @default("USD") // Moneda en la que se registro la cuenta
   exchangeRate Float? // Bolivares por 1 unidad de `currency` (tasa usada)
-  baseAmount  Int       @default(0) // Equivalente en USD (moneda base del sistema)
-  paidAmount  Int       @default(0) // Abonado en USD (moneda base)
-  dueDate     DateTime?
-  status      String    @default("PENDING") // PENDING | PARTIAL | PAID | CANCELLED
-  reference   String?
-  notes       String?
-  createdById String?
-  createdAt   DateTime  @default(now())
-  updatedAt   DateTime  @updatedAt
+  baseAmount   Int       @default(0) // Equivalente en USD (moneda base del sistema)
+  paidAmount   Int       @default(0) // Abonado en USD (moneda base)
+  dueDate      DateTime?
+  status       String    @default("PENDING") // PENDING | PARTIAL | PAID | CANCELLED
+  reference    String?
+  notes        String?
+  createdById  String?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
 
+  company   Company          @relation(fields: [companyId], references: [id], onDelete: Cascade)
   supplier  Supplier?        @relation(fields: [supplierId], references: [id], onDelete: SetNull)
   createdBy User?            @relation(fields: [createdById], references: [id], onDelete: SetNull)
   payments  PayablePayment[]
 
+  @@index([companyId])
   @@index([status])
   @@map("accounts_payable")
 }
 
 model PayablePayment {
   id           String   @id @default(cuid())
+  companyId    String
   payableId    String
   amount       Int // Monto en la moneda del pago (`currency`)
   method       String   @default("CASH")
@@ -295,40 +390,46 @@ model PayablePayment {
   createdById  String?
   createdAt    DateTime @default(now())
 
+  company   Company        @relation(fields: [companyId], references: [id], onDelete: Cascade)
   payable   AccountPayable @relation(fields: [payableId], references: [id], onDelete: Cascade)
   createdBy User?          @relation(fields: [createdById], references: [id], onDelete: SetNull)
 
+  @@index([companyId])
   @@index([payableId])
   @@map("payable_payments")
 }
 
 model AccountReceivable {
-  id          String    @id @default(cuid())
-  customerId  String?
-  orderId     String?
-  description String
-  amount      Int // Monto en la moneda de la cuenta (`currency`)
-  currency    String    @default("USD") // Moneda en la que se registro la cuenta
+  id           String    @id @default(cuid())
+  companyId    String
+  customerId   String?
+  orderId      String?
+  description  String
+  amount       Int // Monto en la moneda de la cuenta (`currency`)
+  currency     String    @default("USD") // Moneda en la que se registro la cuenta
   exchangeRate Float? // Bolivares por 1 unidad de `currency` (tasa usada)
-  baseAmount  Int       @default(0) // Equivalente en USD (moneda base del sistema)
-  paidAmount  Int       @default(0) // Cobrado en USD (moneda base)
-  dueDate     DateTime?
-  status      String    @default("PENDING") // PENDING | PARTIAL | PAID | CANCELLED
-  reference   String?
-  notes       String?
-  createdById String?
-  createdAt   DateTime  @default(now())
-  updatedAt   DateTime  @updatedAt
+  baseAmount   Int       @default(0) // Equivalente en USD (moneda base del sistema)
+  paidAmount   Int       @default(0) // Cobrado en USD (moneda base)
+  dueDate      DateTime?
+  status       String    @default("PENDING") // PENDING | PARTIAL | PAID | CANCELLED
+  reference    String?
+  notes        String?
+  createdById  String?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
 
+  company  Company             @relation(fields: [companyId], references: [id], onDelete: Cascade)
   customer Customer?           @relation(fields: [customerId], references: [id], onDelete: SetNull)
   payments ReceivablePayment[]
 
+  @@index([companyId])
   @@index([status])
   @@map("accounts_receivable")
 }
 
 model ReceivablePayment {
   id           String   @id @default(cuid())
+  companyId    String
   receivableId String
   amount       Int // Monto en la moneda del pago (`currency`)
   method       String   @default("CASH")
@@ -339,9 +440,11 @@ model ReceivablePayment {
   createdById  String?
   createdAt    DateTime @default(now())
 
+  company    Company           @relation(fields: [companyId], references: [id], onDelete: Cascade)
   receivable AccountReceivable @relation(fields: [receivableId], references: [id], onDelete: Cascade)
   createdBy  User?             @relation(fields: [createdById], references: [id], onDelete: SetNull)
 
+  @@index([companyId])
   @@index([receivableId])
   @@map("receivable_payments")
 }
@@ -357,7 +460,8 @@ model ReceivablePayment {
 
 model CashSession {
   id              String    @id @default(cuid())
-  code            String    @unique
+  companyId       String
+  code            String
   status          String    @default("OPEN") // OPEN | CLOSED
   openedById      String
   openedAt        DateTime  @default(now())
@@ -380,13 +484,16 @@ model CashSession {
   createdAt       DateTime  @default(now())
   updatedAt       DateTime  @updatedAt
 
-  openedBy User  @relation("CashSessionOpenedBy", fields: [openedById], references: [id], onDelete: Restrict)
-  closedBy User? @relation("CashSessionClosedBy", fields: [closedById], references: [id], onDelete: SetNull)
+  company  Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  openedBy User    @relation("CashSessionOpenedBy", fields: [openedById], references: [id], onDelete: Restrict)
+  closedBy User?   @relation("CashSessionClosedBy", fields: [closedById], references: [id], onDelete: SetNull)
 
   movements CashMovement[]
   orders    Order[]
   expenses  Expense[]
 
+  @@unique([companyId, code])
+  @@index([companyId])
   @@index([status])
   @@index([openedAt])
   @@map("cash_sessions")
@@ -394,6 +501,7 @@ model CashSession {
 
 model CashMovement {
   id            String   @id @default(cuid())
+  companyId     String
   sessionId     String
   type          String // IN | OUT
   category      String // SALE | EXPENSE | WITHDRAWAL | DEPOSIT | REFUND | PAYMENT | ADJUSTMENT | OTHER
@@ -408,24 +516,32 @@ model CashMovement {
   createdById   String?
   createdAt     DateTime @default(now())
 
+  company   Company     @relation(fields: [companyId], references: [id], onDelete: Cascade)
   session   CashSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
   createdBy User?       @relation(fields: [createdById], references: [id], onDelete: SetNull)
 
+  @@index([companyId])
   @@index([sessionId])
   @@index([createdAt])
   @@map("cash_movements")
 }
 
 // ============================== Configuracion ==============================
-// Tabla clave/valor para ajustes del sistema que no merecen su propio modelo
-// (por ahora: `rates.custom_usd`, la tasa personalizada Bs/USD del local).
+// Tabla clave/valor POR EMPRESA para ajustes del sistema que no merecen su
+// propio modelo (por ahora: `rates.custom_usd`, la tasa personalizada Bs/USD
+// del local, y `currencies.config`, las monedas que acepta cobrar/pagar). Lo
+// que no esta aqui es lo *por defecto* (monedas por defecto, tasas del BCV),
+// que es igual para todas las empresas.
 model Setting {
-  key         String   @id
+  companyId   String
+  key         String
   value       String
   updatedById String?
   updatedAt   DateTime @updatedAt
 
-  updatedBy User? @relation("SettingUpdatedBy", fields: [updatedById], references: [id], onDelete: SetNull)
+  company   Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  updatedBy User?   @relation("SettingUpdatedBy", fields: [updatedById], references: [id], onDelete: SetNull)
 
+  @@id([companyId, key])
   @@map("settings")
 }

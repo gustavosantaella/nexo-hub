@@ -3,6 +3,10 @@
  *
  * Deja la base de datos lista para probar TODO el sistema:
  *
+ *   - Dos empresas (multi-empresa): la principal "Nexo Hub Demo, C.A." recibe
+ *     todo el historial; "Bodegon La Esquina, C.A." queda configurada y con
+ *     catalogo (sin operaciones) para probar el cambio de empresa activa. El rol
+ *     de cada usuario se guarda en su `Membership`, no en el usuario.
  *   - Datos maestros (usuarios, categorias, proveedores, clientes, productos,
  *     monedas y tasa personalizada): se actualizan con `upsert` (nunca se
  *     duplican).
@@ -246,6 +250,50 @@ function fromBase(baseAmount: number, currency: string, rates: DayRates): number
 // ===========================================================================
 //  Datos maestros
 // ===========================================================================
+
+/** Empresa del seed. Cada una es un espacio de datos independiente. */
+interface SeedCompany {
+  name: string;
+  rif: string;
+  phone: string;
+  email: string;
+  address: string;
+  notes: string;
+}
+
+/**
+ * Empresas del seed.
+ *
+ * La PRIMERA recibe todo el historial de demostracion (caja, pedidos, gastos,
+ * cuentas e inventario). La SEGUNDA queda configurada y con catalogo pero sin
+ * historial: existe para poder probar el cambio de empresa activa desde el panel.
+ */
+const COMPANIES: SeedCompany[] = [
+  {
+    name: 'Nexo Hub Demo, C.A.',
+    rif: 'J-40123456-7',
+    phone: '2125551122',
+    email: 'contacto@nexohub.com',
+    address: 'Av. Principal 123, Caracas',
+    notes: 'Empresa principal del seed: recibe todo el historial de demostracion.',
+  },
+  {
+    name: 'Bodegon La Esquina, C.A.',
+    rif: 'J-40987654-3',
+    phone: '2125553344',
+    email: 'contacto@bodegonlaesquina.com',
+    address: 'Calle 8 con Av. 4, Valencia',
+    notes: 'Segunda empresa: sirve para probar el cambio de empresa activa.',
+  },
+];
+
+/**
+ * Empresa activa del seed.
+ *
+ * Todos los datos de dominio (catalogo, caja, pedidos, cuentas, ajustes) son por
+ * empresa, asi que cada `create` incluye este id. Se cambia con `withCompany`.
+ */
+let COMPANY_ID = '';
 
 interface SeedUser {
   email: string;
@@ -683,24 +731,82 @@ interface MasterData {
   categoryIds: Map<string, string>;
 }
 
+/**
+ * Ejecuta una tarea con otra empresa activa y restaura la anterior al terminar.
+ * Asi cada bloque (configuracion, catalogo, historial) se siembra en su empresa.
+ */
+async function withCompany<T>(companyId: string, task: () => Promise<T>): Promise<T> {
+  const previous = COMPANY_ID;
+  COMPANY_ID = companyId;
+  try {
+    return await task();
+  } finally {
+    COMPANY_ID = previous;
+  }
+}
+
+/** Crea (o actualiza) las empresas del seed por su RIF. */
+async function seedCompanies(): Promise<{ primaryId: string; secondaryId: string }> {
+  const ids: string[] = [];
+  for (const company of COMPANIES) {
+    const row = await prisma.company.upsert({
+      where: { rif: company.rif },
+      update: { ...company, active: true },
+      create: company,
+    });
+    ids.push(row.id);
+  }
+
+  console.log(
+    `  Empresas: ${COMPANIES.map((company) => `${company.name} (${company.rif})`).join(', ')}`,
+  );
+  return { primaryId: ids[0], secondaryId: ids[1] };
+}
+
 /** Usuarios demo (se identifican por email; nunca se duplican). */
-async function seedUsers(): Promise<{ adminId: string; operatorIds: string[] }> {
+async function seedUsers(
+  companyId: string,
+  secondaryCompanyId: string,
+): Promise<{ adminId: string; operatorIds: string[] }> {
   const byEmail = new Map<string, string>();
   for (const user of USERS) {
     const passwordHash = await hashPassword(user.password);
     const row = await prisma.user.upsert({
       where: { email: user.email },
-      update: { name: user.name, role: user.role, active: true, phone: user.phone ?? null },
+      update: { name: user.name, active: true, phone: user.phone ?? null },
       create: {
         email: user.email,
         name: user.name,
-        role: user.role,
         active: true,
         phone: user.phone ?? null,
         passwordHash,
       },
     });
+
+    // El rol vive en la membresia (usuario + empresa), no en el usuario.
+    await prisma.membership.upsert({
+      where: { userId_companyId: { userId: row.id, companyId } },
+      update: { role: user.role, active: true },
+      create: { userId: row.id, companyId, role: user.role, active: true },
+    });
+
     byEmail.set(user.email, row.id);
+  }
+
+  // El administrador y el encargado tambien pertenecen a la segunda empresa, con
+  // un rol DISTINTO al de la principal: es lo que permite demostrar el cambio de
+  // empresa activa y que el rol es por empresa, no del usuario.
+  const extraMemberships = [
+    { email: 'admin@nexohub.com', role: Role.MANAGER },
+    { email: 'manager@nexohub.com', role: Role.ADMIN },
+  ];
+  for (const extra of extraMemberships) {
+    const userId = byEmail.get(extra.email) as string;
+    await prisma.membership.upsert({
+      where: { userId_companyId: { userId, companyId: secondaryCompanyId } },
+      update: { role: extra.role, active: true },
+      create: { userId, companyId: secondaryCompanyId, role: extra.role, active: true },
+    });
   }
 
   console.log(`  Usuarios: ${USERS.map((u) => `${u.email} (${u.role})`).join(', ')}`);
@@ -730,16 +836,26 @@ async function seedSettings(adminId: string): Promise<void> {
   const value = JSON.stringify(settings);
 
   await prisma.setting.upsert({
-    where: { key: CURRENCIES_KEY },
+    where: { companyId_key: { companyId: COMPANY_ID, key: CURRENCIES_KEY } },
     update: { value, updatedById: adminId },
-    create: { key: CURRENCIES_KEY, value, updatedById: adminId },
+    create: {
+      companyId: COMPANY_ID,
+      key: CURRENCIES_KEY,
+      value,
+      updatedById: adminId,
+    },
   });
 
   const customUsd = RATES[RATES.length - 1].bsPerUsd;
   await prisma.setting.upsert({
-    where: { key: CUSTOM_RATE_KEY },
+    where: { companyId_key: { companyId: COMPANY_ID, key: CUSTOM_RATE_KEY } },
     update: { value: String(customUsd), updatedById: adminId },
-    create: { key: CUSTOM_RATE_KEY, value: String(customUsd), updatedById: adminId },
+    create: {
+      companyId: COMPANY_ID,
+      key: CUSTOM_RATE_KEY,
+      value: String(customUsd),
+      updatedById: adminId,
+    },
   });
 
   console.log(
@@ -764,34 +880,42 @@ async function seedCatalog(): Promise<{
   const categoryIds = new Map<string, string>();
   for (const category of CATEGORIES) {
     const row = await prisma.category.upsert({
-      where: { name: category.name },
+      where: { companyId_name: { companyId: COMPANY_ID, name: category.name } },
       update: { description: category.description, active: true },
-      create: category,
+      create: { ...category, companyId: COMPANY_ID },
     });
     categoryIds.set(row.name, row.id);
   }
 
   const supplierIds = new Map<string, string>();
   for (const supplier of SUPPLIERS) {
-    const existing = await prisma.supplier.findFirst({ where: { name: supplier.name } });
+    const existing = await prisma.supplier.findFirst({
+      where: { name: supplier.name, companyId: COMPANY_ID },
+    });
     const row = existing
       ? await prisma.supplier.update({
           where: { id: existing.id },
           data: { ...supplier, active: true },
         })
-      : await prisma.supplier.create({ data: { ...supplier, active: true } });
+      : await prisma.supplier.create({
+          data: { ...supplier, active: true, companyId: COMPANY_ID },
+        });
     supplierIds.set(row.name, row.id);
   }
 
   const customerIds = new Map<string, string>();
   for (const customer of CUSTOMERS) {
-    const existing = await prisma.customer.findFirst({ where: { name: customer.name } });
+    const existing = await prisma.customer.findFirst({
+      where: { name: customer.name, companyId: COMPANY_ID },
+    });
     const row = existing
       ? await prisma.customer.update({
           where: { id: existing.id },
           data: { ...customer, active: true },
         })
-      : await prisma.customer.create({ data: { ...customer, active: true } });
+      : await prisma.customer.create({
+          data: { ...customer, active: true, companyId: COMPANY_ID },
+        });
     customerIds.set(row.name, row.id);
   }
 
@@ -810,10 +934,10 @@ async function seedCatalog(): Promise<{
     };
 
     await prisma.product.upsert({
-      where: { sku: product.sku },
+      where: { companyId_sku: { companyId: COMPANY_ID, sku: product.sku } },
       // El stock vuelve al valor del catalogo: lo reconstruye el historial.
       update: { ...base, stock: product.stock },
-      create: { ...base, sku: product.sku, stock: product.stock },
+      create: { ...base, companyId: COMPANY_ID, sku: product.sku, stock: product.stock },
     });
   }
 
@@ -924,22 +1048,24 @@ function timeWithin(shift: ShiftContext, from = 10, to = -15): Date {
 }
 
 /**
- * Borra los datos de operacion (caja, pedidos, gastos, cuentas e inventario)
- * para regenerarlos. Los datos maestros y los usuarios NO se tocan.
+ * Borra los datos de operacion (caja, pedidos, gastos, cuentas e inventario) de
+ * la empresa activa para regenerarlos. Los datos maestros y los usuarios NO se
+ * tocan.
  */
 async function wipeOperationalData(): Promise<void> {
+  const where = { companyId: COMPANY_ID };
   await prisma.$transaction([
-    prisma.receivablePayment.deleteMany(),
-    prisma.payablePayment.deleteMany(),
-    prisma.orderPayment.deleteMany(),
-    prisma.orderItem.deleteMany(),
-    prisma.order.deleteMany(),
-    prisma.cashMovement.deleteMany(),
-    prisma.stockMovement.deleteMany(),
-    prisma.expense.deleteMany(),
-    prisma.accountReceivable.deleteMany(),
-    prisma.accountPayable.deleteMany(),
-    prisma.cashSession.deleteMany(),
+    prisma.receivablePayment.deleteMany({ where }),
+    prisma.payablePayment.deleteMany({ where }),
+    prisma.orderPayment.deleteMany({ where }),
+    prisma.orderItem.deleteMany({ where }),
+    prisma.order.deleteMany({ where }),
+    prisma.cashMovement.deleteMany({ where }),
+    prisma.stockMovement.deleteMany({ where }),
+    prisma.expense.deleteMany({ where }),
+    prisma.accountReceivable.deleteMany({ where }),
+    prisma.accountPayable.deleteMany({ where }),
+    prisma.cashSession.deleteMany({ where }),
   ]);
   console.log('  Historial de operacion anterior eliminado');
 }
@@ -988,6 +1114,7 @@ async function applyStockMovement(
   ctx.stock.set(options.productId, after);
   await prisma.stockMovement.create({
     data: {
+      companyId: COMPANY_ID,
       productId: options.productId,
       type: options.type,
       quantity: Math.abs(after - before),
@@ -1031,6 +1158,7 @@ async function registerCashMovement(
 ): Promise<string> {
   const movement = await prisma.cashMovement.create({
     data: {
+      companyId: COMPANY_ID,
       sessionId: shift.sessionId,
       type: input.type,
       category: input.category,
@@ -1198,6 +1326,7 @@ async function registerOrderPayment(
 
   await prisma.orderPayment.create({
     data: {
+      companyId: COMPANY_ID,
       orderId: order.id,
       amount: conversion.amount,
       method,
@@ -1284,6 +1413,7 @@ async function createOrder(
 
   const order = await prisma.order.create({
     data: {
+      companyId: COMPANY_ID,
       code: options.code,
       customerId: ctx.customerIds.get(customerName) ?? null,
       type,
@@ -1301,6 +1431,7 @@ async function createOrder(
       createdAt: options.at,
       items: {
         create: items.map((item) => ({
+          companyId: COMPANY_ID,
           productId: item.product.id,
           name: item.product.name,
           quantity: item.quantity,
@@ -1439,12 +1570,20 @@ async function createAccounts(options: {
     let id: string;
     if (options.kind === 'PAYABLE') {
       const row = await prisma.accountPayable.create({
-        data: { ...shared, supplierId: options.supplierIds.get(def.party) ?? null },
+        data: {
+          ...shared,
+          companyId: COMPANY_ID,
+          supplierId: options.supplierIds.get(def.party) ?? null,
+        },
       });
       id = row.id;
     } else {
       const row = await prisma.accountReceivable.create({
-        data: { ...shared, customerId: options.customerIds.get(def.party) ?? null },
+        data: {
+          ...shared,
+          companyId: COMPANY_ID,
+          customerId: options.customerIds.get(def.party) ?? null,
+        },
       });
       id = row.id;
     }
@@ -1503,9 +1642,13 @@ async function applyAccountPayment(shift: ShiftContext, task: AccountPaymentTask
   };
 
   if (plan.kind === 'PAYABLE') {
-    await prisma.payablePayment.create({ data: { ...paymentData, payableId: plan.id } });
+    await prisma.payablePayment.create({
+      data: { ...paymentData, companyId: COMPANY_ID, payableId: plan.id },
+    });
   } else {
-    await prisma.receivablePayment.create({ data: { ...paymentData, receivableId: plan.id } });
+    await prisma.receivablePayment.create({
+      data: { ...paymentData, companyId: COMPANY_ID, receivableId: plan.id },
+    });
   }
 
   // El estado de la cuenta se deriva de baseAmount/paidAmount (account.util.ts).
@@ -1638,6 +1781,7 @@ async function createExpense(
 
   const expense = await prisma.expense.create({
     data: {
+      companyId: COMPANY_ID,
       category: input.category,
       description: input.description,
       amount: conversion.amount,
@@ -1733,6 +1877,7 @@ async function simulateShift(ctx: DemoContext, options: ShiftOptions): Promise<v
 
   const session = await prisma.cashSession.create({
     data: {
+      companyId: COMPANY_ID,
       code: buildCode('CJ', options.sessionSeq, options.day),
       status: CashSessionStatus.OPEN,
       openedById: operatorId,
@@ -1961,7 +2106,10 @@ async function seedDemoData(master: MasterData): Promise<void> {
   // (pruebas manuales), se dejan intactos para no alterarlos.
   const catalogSkus = new Set(PRODUCTS.map((product) => product.sku));
   const products = (
-    await prisma.product.findMany({ orderBy: { sku: 'asc' } })
+    await prisma.product.findMany({
+      where: { companyId: COMPANY_ID },
+      orderBy: { sku: 'asc' },
+    })
   ).filter((product) => catalogSkus.has(product.sku));
   const stock = new Map<string, number>(products.map((product) => [product.id, product.stock]));
   const supplierNames = new Map(
@@ -2009,6 +2157,7 @@ async function seedDemoData(master: MasterData): Promise<void> {
     if (product.stock <= 0) continue;
     await prisma.stockMovement.create({
       data: {
+        companyId: COMPANY_ID,
         productId: product.id,
         type: StockMovementType.IN,
         quantity: product.stock,
@@ -2042,8 +2191,9 @@ async function seedDemoData(master: MasterData): Promise<void> {
   );
 }
 
-/** Resumen de lo que quedo en la base de datos al terminar el seed. */
+/** Resumen de lo que quedo en la base de datos del seed. */
 async function printSummary(): Promise<void> {
+  const where = { companyId: COMPANY_ID };
   const [
     sessions,
     openSessions,
@@ -2055,19 +2205,19 @@ async function printSummary(): Promise<void> {
     receivables,
     stockMovements,
   ] = await Promise.all([
-    prisma.cashSession.count(),
-    prisma.cashSession.count({ where: { status: CashSessionStatus.OPEN } }),
-    prisma.cashMovement.count(),
-    prisma.order.count(),
-    prisma.orderPayment.count(),
-    prisma.expense.count(),
-    prisma.accountPayable.count(),
-    prisma.accountReceivable.count(),
-    prisma.stockMovement.count(),
+    prisma.cashSession.count({ where }),
+    prisma.cashSession.count({ where: { ...where, status: CashSessionStatus.OPEN } }),
+    prisma.cashMovement.count({ where }),
+    prisma.order.count({ where }),
+    prisma.orderPayment.count({ where }),
+    prisma.expense.count({ where }),
+    prisma.accountPayable.count({ where }),
+    prisma.accountReceivable.count({ where }),
+    prisma.stockMovement.count({ where }),
   ]);
 
   const tracked = await prisma.product.findMany({
-    where: { trackStock: true },
+    where: { trackStock: true, ...where },
     select: { stock: true, minStock: true },
   });
   const lowStock = tracked.filter((product) => product.stock <= product.minStock).length;
@@ -2083,16 +2233,29 @@ async function printSummary(): Promise<void> {
 
 async function main(): Promise<void> {
   console.log('Sembrando datos de Nexo Hub...');
-  const { adminId, operatorIds } = await seedUsers();
-  await seedSettings(adminId);
-  const catalog = await seedCatalog();
-  await seedDemoData({
-    adminId,
-    operatorIds,
-    supplierIds: catalog.supplierIds,
-    customerIds: catalog.customerIds,
-    categoryIds: catalog.categoryIds,
-  });
+
+  const { primaryId, secondaryId } = await seedCompanies();
+  const { adminId, operatorIds } = await seedUsers(primaryId, secondaryId);
+
+  // Empresa principal: configuracion, catalogo e historial completo.
+  await withCompany(primaryId, () => seedSettings(adminId));
+  const catalog = await withCompany(primaryId, () => seedCatalog());
+  await withCompany(primaryId, () =>
+    seedDemoData({
+      adminId,
+      operatorIds,
+      supplierIds: catalog.supplierIds,
+      customerIds: catalog.customerIds,
+      categoryIds: catalog.categoryIds,
+    }),
+  );
+
+  // Segunda empresa: queda configurada y con catalogo (sin historial) para poder
+  // probar el cambio de empresa activa desde el panel.
+  await withCompany(secondaryId, () => seedSettings(adminId));
+  await withCompany(secondaryId, () => seedCatalog());
+
+  COMPANY_ID = primaryId;
   await printSummary();
   console.log('Listo. Accede con admin@nexohub.com / Admin123!');
 }

@@ -35,7 +35,7 @@ import { StatCardComponent } from '../../shared/components/stat-card.component';
         <app-icon name="refresh" size="h-4 w-4" />
         Actualizar
       </button>
-      <a routerLink="/pedidos" class="btn-primary">
+      <a routerLink="/panel/pedidos" class="btn-primary">
         <app-icon name="plus" size="h-4 w-4" />
         Nuevo pedido
       </a>
@@ -83,7 +83,7 @@ import { StatCardComponent } from '../../shared/components/stat-card.component';
         <section class="card">
           <div class="card-header">
             <h2 class="text-sm font-semibold text-slate-800">Caja</h2>
-            <a routerLink="/caja" class="text-xs font-semibold text-brand-600 hover:underline">
+            <a routerLink="/panel/caja" class="text-xs font-semibold text-brand-600 hover:underline">
               Ir a caja
             </a>
           </div>
@@ -139,7 +139,7 @@ import { StatCardComponent } from '../../shared/components/stat-card.component';
               }
             } @else {
               <p class="text-sm text-slate-500">No hay una sesión de caja abierta.</p>
-              <a routerLink="/caja" class="btn-primary btn-sm mt-4">
+              <a routerLink="/panel/caja" class="btn-primary btn-sm mt-4">
                 <app-icon name="plus" size="h-4 w-4" />
                 Abrir caja
               </a>
@@ -150,7 +150,7 @@ import { StatCardComponent } from '../../shared/components/stat-card.component';
         <section class="card">
           <div class="card-header">
             <h2 class="text-sm font-semibold text-slate-800">Mes en curso</h2>
-            <a routerLink="/reportes" class="text-xs font-semibold text-brand-600 hover:underline">
+            <a routerLink="/panel/reportes" class="text-xs font-semibold text-brand-600 hover:underline">
               Ver reportes
             </a>
           </div>
@@ -173,14 +173,14 @@ import { StatCardComponent } from '../../shared/components/stat-card.component';
             </p>
             <div class="grid grid-cols-2 gap-3 border-t border-slate-100 pt-3">
               <a
-                routerLink="/pedidos"
+                routerLink="/panel/pedidos"
                 class="rounded-lg bg-slate-50 px-3 py-2 transition hover:bg-slate-100"
               >
                 <p class="text-xs text-slate-500">Pedidos activos</p>
                 <p class="text-lg font-semibold text-slate-900">{{ data.activeOrders }}</p>
               </a>
               <a
-                routerLink="/inventario"
+                routerLink="/panel/inventario"
                 class="rounded-lg bg-slate-50 px-3 py-2 transition hover:bg-slate-100"
               >
                 <p class="text-xs text-slate-500">Bajo stock</p>
@@ -434,10 +434,10 @@ import { StatCardComponent } from '../../shared/components/stat-card.component';
             Accesos rápidos
           </p>
           <div class="mt-3 grid grid-cols-2 gap-2">
-            <a routerLink="/productos" class="btn-secondary btn-sm">Productos</a>
-            <a routerLink="/inventario" class="btn-secondary btn-sm">Inventario</a>
-            <a routerLink="/gastos" class="btn-secondary btn-sm">Gastos</a>
-            <a routerLink="/cuentas-por-cobrar" class="btn-secondary btn-sm">Cobranzas</a>
+            <a routerLink="/panel/productos" class="btn-secondary btn-sm">Productos</a>
+            <a routerLink="/panel/inventario" class="btn-secondary btn-sm">Inventario</a>
+            <a routerLink="/panel/gastos" class="btn-secondary btn-sm">Gastos</a>
+            <a routerLink="/panel/cuentas-por-cobrar" class="btn-secondary btn-sm">Cobranzas</a>
           </div>
           <p class="mt-4 text-[11px] text-slate-400">Actualizado: {{ updatedAt() }}</p>
         </section>

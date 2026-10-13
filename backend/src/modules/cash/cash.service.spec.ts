@@ -5,6 +5,8 @@ import type { PrismaService } from '../../prisma/prisma.service';
 import type { RatesService } from '../rates/rates.service';
 import { CashService, type MovementLike } from './cash.service';
 
+const COMPANY_ID = 'company-1';
+
 /** Tasa del dolar usada en las pruebas (Bs por USD). */
 const BS_PER_USD = 900;
 
@@ -13,7 +15,11 @@ const BS_PER_USD = 900;
  * 990 Bs por EUR y 0.22 Bs por COP (el resto de monedas no tiene tasa).
  */
 const rates = {
-  resolvePayment: async (amount: number, currency?: string | null) => {
+  resolvePayment: async (
+    _companyId: string,
+    amount: number,
+    currency?: string | null,
+  ) => {
     const code = String(currency ?? 'USD').toUpperCase();
     const bsPerCurrency =
       code === 'VES'
@@ -179,11 +185,28 @@ describe('CashService (arqueo multimoneda)', () => {
       };
     }
 
+    it('filtra la sesion de caja por la empresa activa', async () => {
+      const { service, tx } = build([]);
+
+      await service.registerMovement(
+        COMPANY_ID,
+        { category: 'SALE', amount: 15 },
+        tx as never,
+      );
+
+      expect(tx.cashSession.findFirst).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: expect.objectContaining({ companyId: COMPANY_ID }),
+        }),
+      );
+    });
+
     it('guarda el monto en su moneda y el equivalente en USD', async () => {
       const created: unknown[] = [];
       const { service, tx } = build(created);
 
       await service.registerMovement(
+        COMPANY_ID,
         { category: 'SALE', amount: 1800, currency: 'VES' },
         tx as never,
       );
@@ -201,6 +224,7 @@ describe('CashService (arqueo multimoneda)', () => {
       const { service, tx } = build(created);
 
       await service.registerMovement(
+        COMPANY_ID,
         { type: 'IN', category: 'DEPOSIT', amount: 1000, currency: 'COP' },
         tx as never,
       );
@@ -218,6 +242,7 @@ describe('CashService (arqueo multimoneda)', () => {
       const { service, tx } = build(created);
 
       await service.registerMovement(
+        COMPANY_ID,
         { category: 'SALE', amount: 15 },
         tx as never,
       );
@@ -234,7 +259,7 @@ describe('CashService (arqueo multimoneda)', () => {
       const { service, tx } = build([]);
 
       await expect(
-        service.registerMovement({ category: 'SALE', amount: 0 }, tx as never),
+        service.registerMovement(COMPANY_ID, { category: 'SALE', amount: 0 }, tx as never),
       ).rejects.toBeInstanceOf(BadRequestException);
     });
   });
@@ -291,6 +316,7 @@ describe('CashService (arqueo multimoneda)', () => {
 
       const service = new CashService(prisma, config, rates);
       await service.openSession(
+        COMPANY_ID,
         { openingAmount: 1800, openingCurrency: 'VES' },
         'user-1',
       );
@@ -306,6 +332,7 @@ describe('CashService (arqueo multimoneda)', () => {
       const { service, created } = build();
 
       const session = await service.openSession(
+        COMPANY_ID,
         {
           openingLines: [
             { currency: 'USD', amount: 100 },
@@ -340,6 +367,7 @@ describe('CashService (arqueo multimoneda)', () => {
       const { service, created } = build();
 
       await service.openSession(
+        COMPANY_ID,
         {
           openingLines: [
             { currency: 'usd', amount: 100 },
@@ -363,6 +391,7 @@ describe('CashService (arqueo multimoneda)', () => {
       const { service, created } = build();
 
       await service.openSession(
+        COMPANY_ID,
         { openingLines: [{ currency: 'USD', amount: 0 }] },
         'user-1',
       );
@@ -379,7 +408,7 @@ describe('CashService (arqueo multimoneda)', () => {
     it('exige un fondo (una moneda o varias lineas)', async () => {
       const { service } = build();
 
-      await expect(service.openSession({}, 'user-1')).rejects.toBeInstanceOf(
+      await expect(service.openSession(COMPANY_ID, {}, 'user-1')).rejects.toBeInstanceOf(
         BadRequestException,
       );
     });
@@ -414,7 +443,7 @@ describe('CashService (arqueo multimoneda)', () => {
       } as unknown as PrismaService;
       const service = new CashService(prisma, config, rates);
 
-      const result = await service.listSessions({
+      const result = await service.listSessions(COMPANY_ID, {
         page: 1,
         limit: 10,
         toOrderBy: () => ({ openedAt: 'desc' }),
@@ -480,6 +509,7 @@ describe('CashService (arqueo multimoneda)', () => {
 
       const service = new CashService(prisma, config, rates);
       const closed = await service.closeSession(
+        COMPANY_ID,
         { countedAmount: 1800, countedCurrency: 'VES' },
         'user-1',
       );

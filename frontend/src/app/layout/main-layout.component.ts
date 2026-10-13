@@ -1,4 +1,5 @@
 import { ChangeDetectionStrategy, Component, computed, inject, signal } from '@angular/core';
+import { FormsModule } from '@angular/forms';
 import { NavigationEnd, Router, RouterLink, RouterLinkActive, RouterOutlet } from '@angular/router';
 import { filter } from 'rxjs';
 import type { Role } from '../core/models/api.model';
@@ -6,6 +7,7 @@ import type { CashSession } from '../core/models/operations.model';
 import { AuthService } from '../core/services/auth.service';
 import { CashService } from '../core/services/cash.service';
 import { RatesService } from '../core/services/rates.service';
+import { ToastService } from '../core/services/toast.service';
 import { RATE_META } from '../core/constants/currency';
 import { money, rate } from '../core/utils/format';
 import { IconComponent } from '../shared/components/icon.component';
@@ -28,6 +30,7 @@ interface NavGroup {
   selector: 'app-main-layout',
   standalone: true,
   imports: [
+    FormsModule,
     RouterOutlet,
     RouterLink,
     RouterLinkActive,
@@ -58,6 +61,7 @@ interface NavGroup {
               <a
                 [routerLink]="item.route"
                 routerLinkActive="bg-brand-50 text-brand-700"
+                [routerLinkActiveOptions]="{ exact: item.route === '/panel' }"
                 class="mb-0.5 flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium text-slate-600 transition hover:bg-slate-100"
                 (click)="closeSidebarOnMobile()"
               >
@@ -107,10 +111,38 @@ interface NavGroup {
             <app-icon name="menu" size="h-5 w-5" />
           </button>
 
+          @if (companies().length > 1) {
+            <div class="flex items-center gap-2">
+              <span class="hidden text-slate-400 sm:inline">
+                <app-icon name="building" size="h-4 w-4" />
+              </span>
+              <select
+                class="input h-9 w-auto max-w-[14rem] py-0 text-xs font-semibold"
+                aria-label="Empresa activa"
+                [ngModel]="company()?.id"
+                [disabled]="switching()"
+                (ngModelChange)="changeCompany($event)"
+              >
+                @for (item of companies(); track item.id) {
+                  <option [value]="item.id">{{ item.name }}</option>
+                }
+              </select>
+            </div>
+          } @else {
+            @if (company(); as current) {
+              <span
+                class="flex items-center gap-2 rounded-full border border-slate-200 bg-slate-50 px-3 py-1.5 text-xs font-semibold text-slate-600"
+              >
+                <app-icon name="building" size="h-3.5 w-3.5" />
+                {{ current.name }}
+              </span>
+            }
+          }
+
           <div class="flex-1"></div>
 
           <a
-            routerLink="/configuracion"
+            routerLink="/panel/configuracion"
             class="hidden items-center gap-2 rounded-full border px-3 py-1.5 text-xs font-semibold transition sm:flex"
             [class]="
               showConversions()
@@ -124,7 +156,7 @@ interface NavGroup {
           </a>
 
           <a
-            routerLink="/caja"
+            routerLink="/panel/caja"
             class="flex items-center gap-2 rounded-full border px-3 py-1.5 text-xs font-semibold transition"
             [class]="
               cashSession()
@@ -158,6 +190,7 @@ export class MainLayoutComponent {
   private readonly rates = inject(RatesService);
   private readonly confirm = inject(ConfirmService);
   private readonly router = inject(Router);
+  private readonly toast = inject(ToastService);
 
   readonly sidebarOpen = signal(false);
   readonly showConversions = this.rates.showConversions;
@@ -193,7 +226,10 @@ export class MainLayoutComponent {
   });
 
   readonly cashSession = signal<CashSession | null>(null);
+  readonly switching = signal(false);
   readonly user = this.auth.user;
+  readonly company = this.auth.company;
+  readonly companies = this.auth.companies;
   readonly money = money;
 
   private readonly allGroups: NavGroup[] = [
@@ -201,29 +237,29 @@ export class MainLayoutComponent {
       title: 'Operación',
       items: [
         { label: 'Panel', route: '/panel', icon: 'grid' },
-        { label: 'Pedidos', route: '/pedidos', icon: 'receipt' },
-        { label: 'Caja', route: '/caja', icon: 'wallet' },
-        { label: 'Inventario', route: '/inventario', icon: 'box' },
+        { label: 'Pedidos', route: '/panel/pedidos', icon: 'receipt' },
+        { label: 'Caja', route: '/panel/caja', icon: 'wallet' },
+        { label: 'Inventario', route: '/panel/inventario', icon: 'box' },
       ],
     },
     {
       title: 'Catálogo',
       items: [
-        { label: 'Productos', route: '/productos', icon: 'tag' },
-        { label: 'Categorías', route: '/categorias', icon: 'folder' },
-        { label: 'Proveedores', route: '/proveedores', icon: 'truck' },
-        { label: 'Clientes', route: '/clientes', icon: 'users' },
+        { label: 'Productos', route: '/panel/productos', icon: 'tag' },
+        { label: 'Categorías', route: '/panel/categorias', icon: 'folder' },
+        { label: 'Proveedores', route: '/panel/proveedores', icon: 'truck' },
+        { label: 'Clientes', route: '/panel/clientes', icon: 'users' },
       ],
     },
     {
       title: 'Finanzas',
       items: [
-        { label: 'Gastos', route: '/gastos', icon: 'money' },
-        { label: 'Cuentas por pagar', route: '/cuentas-por-pagar', icon: 'trend-down' },
-        { label: 'Cuentas por cobrar', route: '/cuentas-por-cobrar', icon: 'trend-up' },
+        { label: 'Gastos', route: '/panel/gastos', icon: 'money' },
+        { label: 'Cuentas por pagar', route: '/panel/cuentas-por-pagar', icon: 'trend-down' },
+        { label: 'Cuentas por cobrar', route: '/panel/cuentas-por-cobrar', icon: 'trend-up' },
         {
           label: 'Reportes',
-          route: '/reportes',
+          route: '/panel/reportes',
           icon: 'chart',
           roles: ['ADMIN', 'MANAGER'],
         },
@@ -232,8 +268,8 @@ export class MainLayoutComponent {
     {
       title: 'Sistema',
       items: [
-        { label: 'Usuarios', route: '/usuarios', icon: 'user-cog', roles: ['ADMIN'] },
-        { label: 'Configuración', route: '/configuracion', icon: 'settings' },
+        { label: 'Usuarios', route: '/panel/usuarios', icon: 'user-cog', roles: ['ADMIN'] },
+        { label: 'Configuración', route: '/panel/configuracion', icon: 'settings' },
       ],
     },
   ];
@@ -293,6 +329,27 @@ export class MainLayoutComponent {
 
   closeSidebarOnMobile(): void {
     this.sidebarOpen.set(false);
+  }
+
+  /**
+   * Cambia de empresa activa: el backend emite un token nuevo con el rol del
+   * usuario en esa empresa y se recargan las tasas/monedas.
+   */
+  changeCompany(companyId: string): void {
+    if (!companyId || companyId === this.company()?.id || this.switching()) return;
+
+    this.switching.set(true);
+    this.auth.switchCompany(companyId).subscribe({
+      next: (response) => {
+        this.switching.set(false);
+        this.toast.success(
+          `Ahora trabajas en ${response.company.name}`,
+          'Empresa activa',
+        );
+        void this.router.navigate(['/panel']);
+      },
+      error: () => this.switching.set(false),
+    });
   }
 
   async logout(): Promise<void> {

@@ -27,6 +27,7 @@ import {
   buildPaginatedResult,
   toSkip,
 } from '../../common/utils/pagination.util';
+import { tenantWhere } from '../../common/utils/tenant.util';
 import { PrismaService } from '../../prisma/prisma.service';
 import { CashService } from '../cash/cash.service';
 import { RatesService } from '../rates/rates.service';
@@ -53,15 +54,20 @@ export class ReceivablesService {
     private readonly rates: RatesService,
   ) {}
 
-  async create(dto: CreateReceivableDto, userId: string) {
+  async create(companyId: string, dto: CreateReceivableDto, userId: string) {
     // El monto se guarda en la moneda de la cuenta y su equivalente en USD
     // (`baseAmount`), que es el que suman los reportes y contra el que se
     // comparan los cobros (siempre en moneda base).
     const amount = toMoney(dto.amount);
-    const conversion = await this.rates.resolvePayment(amount, dto.currency);
+    const conversion = await this.rates.resolvePayment(
+      companyId,
+      amount,
+      dto.currency,
+    );
 
     const receivable = await this.prisma.accountReceivable.create({
       data: {
+        companyId,
         customerId: normalizeNullableId(dto.customerId),
         orderId: normalizeNullableId(dto.orderId),
         description: dto.description,
@@ -81,10 +87,11 @@ export class ReceivablesService {
     return this.withBalance(receivable);
   }
 
-  async findAll(query: ReceivableQueryDto) {
+  async findAll(companyId: string, query: ReceivableQueryDto) {
     const today = startOfToday();
 
     const where: Prisma.AccountReceivableWhereInput = {
+      ...tenantWhere(companyId),
       ...(query.status ? { status: query.status } : {}),
       ...(query.customerId ? { customerId: query.customerId } : {}),
       ...(query.search ? { description: { contains: query.search } } : {}),
@@ -134,9 +141,9 @@ export class ReceivablesService {
     };
   }
 
-  async findOne(id: string) {
-    const receivable = await this.prisma.accountReceivable.findUnique({
-      where: { id },
+  async findOne(companyId: string, id: string) {
+    const receivable = await this.prisma.accountReceivable.findFirst({
+      where: { id, ...tenantWhere(companyId) },
       include: RECEIVABLE_INCLUDE,
     });
     if (!receivable) {
@@ -161,8 +168,8 @@ export class ReceivablesService {
   }
 
   /** Actualiza datos. El monto y la moneda solo sin cobros registrados. */
-  async update(id: string, dto: UpdateReceivableDto) {
-    const receivable = await this.findOne(id);
+  async update(companyId: string, id: string, dto: UpdateReceivableDto) {
+    const receivable = await this.findOne(companyId, id);
 
     // Cambiar el monto o la moneda altera el equivalente en USD y el saldo.
     const monetaryChange =
@@ -182,11 +189,15 @@ export class ReceivablesService {
     // Solo se recalcula la conversion si cambio el monto o la moneda.
     const amount = toMoney(dto.amount ?? receivable.amount);
     const conversion = monetaryChange
-      ? await this.rates.resolvePayment(amount, dto.currency ?? receivable.currency)
+      ? await this.rates.resolvePayment(
+          companyId,
+          amount,
+          dto.currency ?? receivable.currency,
+        )
       : null;
 
-    const updated = await this.prisma.accountReceivable.update({
-      where: { id },
+    await this.prisma.accountReceivable.updateMany({
+      where: { id, ...tenantWhere(companyId) },
       data: {
         ...(dto.customerId !== undefined
           ? { customerId: normalizeNullableId(dto.customerId) }
@@ -208,18 +219,22 @@ export class ReceivablesService {
         ...(dto.reference !== undefined ? { reference: dto.reference } : {}),
         ...(dto.notes !== undefined ? { notes: dto.notes } : {}),
       },
-      include: RECEIVABLE_INCLUDE,
     });
 
-    return this.withBalance(updated);
+    return this.findOne(companyId, id);
   }
 
   /**
    * Registra un cobro. Si es en efectivo (`depositToCash`, por defecto true
    * cuando el metodo es CASH) ingresa el dinero a la caja abierta.
    */
-  async collect(id: string, dto: CollectReceivableDto, userId: string) {
-    const receivable = await this.findOne(id);
+  async collect(
+    companyId: string,
+    id: string,
+    dto: CollectReceivableDto,
+    userId: string,
+  ) {
+    const receivable = await this.findOne(companyId, id);
 
     if (receivable.status === AccountStatus.CANCELLED) {
       throw new BadRequestException('La cuenta esta anulada');
@@ -228,7 +243,11 @@ export class ReceivablesService {
     // `amount` viene en la moneda del cobro; el saldo de la cuenta esta en la
     // moneda base (USD), por eso se compara el equivalente convertido.
     const amount = toMoney(dto.amount);
-    const conversion = await this.rates.resolvePayment(amount, dto.currency);
+    const conversion = await this.rates.resolvePayment(
+      companyId,
+      amount,
+      dto.currency,
+    );
     const { currency, exchangeRate } = conversion;
 
     const balance = money.sub(receivable.baseAmount, receivable.paidAmount);
@@ -247,6 +266,7 @@ export class ReceivablesService {
     return this.prisma.$transaction(async (tx) => {
       const payment = await tx.receivablePayment.create({
         data: {
+          companyId,
           receivableId: id,
           amount,
           method,
@@ -259,8 +279,9 @@ export class ReceivablesService {
       });
 
       if (depositToCash) {
-        const session = await this.cash.getOpenSessionOrThrow(tx);
+        const session = await this.cash.getOpenSessionOrThrow(companyId, tx);
         await this.cash.registerMovement(
+          companyId,
           {
             sessionId: session.id,
             type: CashMovementType.IN,
@@ -279,24 +300,28 @@ export class ReceivablesService {
       }
 
       const paidAmount = money.add(receivable.paidAmount, baseAmount);
-      await tx.accountReceivable.update({
-        where: { id },
+      await tx.accountReceivable.updateMany({
+        where: { id, ...tenantWhere(companyId) },
         data: {
           paidAmount,
           status: resolveAccountStatus(receivable.baseAmount, paidAmount),
         },
       });
 
-      return tx.accountReceivable.findUniqueOrThrow({
-        where: { id },
+      const updated = await tx.accountReceivable.findFirst({
+        where: { id, ...tenantWhere(companyId) },
         include: RECEIVABLE_INCLUDE,
       });
+      if (!updated) {
+        throw new NotFoundException('Cuenta por cobrar no encontrada');
+      }
+      return this.withBalance(updated);
     });
   }
 
   /** Anula la cuenta (solo si no tiene cobros). */
-  async cancel(id: string) {
-    const receivable = await this.findOne(id);
+  async cancel(companyId: string, id: string) {
+    const receivable = await this.findOne(companyId, id);
 
     if (compareMoney(receivable.paidAmount, 0) > 0) {
       throw new BadRequestException(
@@ -305,17 +330,16 @@ export class ReceivablesService {
     }
     if (receivable.status === AccountStatus.CANCELLED) return receivable;
 
-    const updated = await this.prisma.accountReceivable.update({
-      where: { id },
+    await this.prisma.accountReceivable.updateMany({
+      where: { id, ...tenantWhere(companyId) },
       data: { status: AccountStatus.CANCELLED },
-      include: RECEIVABLE_INCLUDE,
     });
-    return this.withBalance(updated);
+    return this.findOne(companyId, id);
   }
 
   /** Elimina la cuenta (solo si no tiene cobros). */
-  async remove(id: string) {
-    const receivable = await this.findOne(id);
+  async remove(companyId: string, id: string) {
+    const receivable = await this.findOne(companyId, id);
 
     if (compareMoney(receivable.paidAmount, 0) > 0) {
       throw new BadRequestException(
@@ -323,23 +347,29 @@ export class ReceivablesService {
       );
     }
 
-    await this.prisma.accountReceivable.delete({ where: { id } });
+    await this.prisma.accountReceivable.deleteMany({
+      where: { id, ...tenantWhere(companyId) },
+    });
     return { id, deleted: true };
   }
 
   /** Resumen por estado + saldo total por cobrar. */
-  async summary() {
+  async summary(companyId: string) {
     // Promise.all (y no $transaction): Prisma pierde la inferencia de tipos de
     // `groupBy` dentro del arreglo de la transaccion. Solo son lecturas.
     const [byStatus, aggregate] = await Promise.all([
       this.prisma.accountReceivable.groupBy({
         by: ['status'],
+        where: tenantWhere(companyId),
         orderBy: { status: 'asc' },
         _sum: { baseAmount: true, paidAmount: true },
         _count: { _all: true },
       }),
       this.prisma.accountReceivable.aggregate({
-        where: { status: { in: [AccountStatus.PENDING, AccountStatus.PARTIAL] } },
+        where: {
+          status: { in: [AccountStatus.PENDING, AccountStatus.PARTIAL] },
+          ...tenantWhere(companyId),
+        },
         _sum: { baseAmount: true, paidAmount: true },
         _count: { _all: true },
       }),
@@ -367,9 +397,12 @@ export class ReceivablesService {
   }
 
   /** Saldo total pendiente de cobro (para estadisticas). */
-  async outstandingBalance() {
+  async outstandingBalance(companyId: string) {
     const result = await this.prisma.accountReceivable.aggregate({
-      where: { status: { in: [AccountStatus.PENDING, AccountStatus.PARTIAL] } },
+      where: {
+        status: { in: [AccountStatus.PENDING, AccountStatus.PARTIAL] },
+        ...tenantWhere(companyId),
+      },
       _sum: { baseAmount: true, paidAmount: true },
     });
     return money.sub(

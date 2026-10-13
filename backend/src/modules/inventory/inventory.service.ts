@@ -11,6 +11,7 @@ import {
 import { buildPaginatedResult, toSkip } from '../../common/utils/pagination.util';
 import { buildDateRange } from '../../common/utils/date.util';
 import { money } from '../../common/utils/money.util';
+import { tenantWhere } from '../../common/utils/tenant.util';
 import { PrismaService, type PrismaClientLike } from '../../prisma/prisma.service';
 import { AdjustStockDto } from './dto/adjust-stock.dto';
 import { CreateMovementDto } from './dto/create-movement.dto';
@@ -46,13 +47,15 @@ export class InventoryService {
    * (movimiento append-only con stockBefore/stockAfter).
    */
   async applyMovement(
+    companyId: string,
     input: MovementInput,
     tx?: PrismaClientLike,
   ): Promise<MovementResult> {
     const client = tx ?? this.prisma;
 
-    const product = await client.product.findUnique({
-      where: { id: input.productId },
+    // El producto debe pertenecer a la empresa activa (aislamiento).
+    const product = await client.product.findFirst({
+      where: { id: input.productId, ...tenantWhere(companyId) },
       select: { id: true, name: true, stock: true },
     });
     if (!product) {
@@ -87,6 +90,7 @@ export class InventoryService {
 
     const movement = await client.stockMovement.create({
       data: {
+        companyId,
         productId: product.id,
         type: input.type,
         quantity: Math.abs(stockAfter - stockBefore),
@@ -100,8 +104,9 @@ export class InventoryService {
       },
     });
 
-    await client.product.update({
-      where: { id: product.id },
+    // updateMany + filtro por empresa: nunca se toca un producto de otra.
+    await client.product.updateMany({
+      where: { id: product.id, ...tenantWhere(companyId) },
       data: {
         stock: stockAfter,
         // Al ingresar mercaderia podemos actualizar el costo de referencia.
@@ -115,13 +120,18 @@ export class InventoryService {
   }
 
   /** Crea un movimiento a partir del DTO del endpoint. */
-  create(dto: CreateMovementDto, userId?: string) {
-    return this.applyMovement({ ...dto, createdById: userId });
+  create(companyId: string, dto: CreateMovementDto, userId?: string) {
+    return this.applyMovement(companyId, { ...dto, createdById: userId });
   }
 
   /** Ajusta el stock al valor final indicado (crea IN u OUT implicitamente). */
-  adjustStock(productId: string, dto: AdjustStockDto, userId?: string) {
-    return this.applyMovement({
+  adjustStock(
+    companyId: string,
+    productId: string,
+    dto: AdjustStockDto,
+    userId?: string,
+  ) {
+    return this.applyMovement(companyId, {
       productId,
       type: StockMovementType.ADJUSTMENT,
       quantity: dto.newStock,
@@ -131,10 +141,11 @@ export class InventoryService {
     });
   }
 
-  async findMovements(query: MovementQueryDto) {
+  async findMovements(companyId: string, query: MovementQueryDto) {
     const dateFilter = buildDateRange(query.from, query.to);
 
     const where: Prisma.StockMovementWhereInput = {
+      ...tenantWhere(companyId),
       ...(query.productId ? { productId: query.productId } : {}),
       ...(query.type ? { type: query.type } : {}),
       ...(query.from || query.to ? { createdAt: dateFilter } : {}),
@@ -144,6 +155,7 @@ export class InventoryService {
       this.prisma.stockMovement.findMany({
         where,
         include: {
+          // El movimiento ya viene filtrado por empresa; su producto es el mismo.
           product: { select: { id: true, name: true, sku: true, unit: true } },
           createdBy: { select: { id: true, name: true } },
         },
@@ -160,10 +172,14 @@ export class InventoryService {
   }
 
   /** Niveles de stock actuales (opcionalmente solo los que estan bajo minimo). */
-  async getStockLevels(options: { lowOnly?: boolean; search?: string }) {
+  async getStockLevels(
+    companyId: string,
+    options: { lowOnly?: boolean; search?: string },
+  ) {
     const products = await this.prisma.product.findMany({
       where: {
         active: true,
+        ...tenantWhere(companyId),
         ...(options.search
           ? {
               OR: [

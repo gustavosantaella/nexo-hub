@@ -13,6 +13,8 @@ interface ErrorBody {
   statusCode: number;
   message: string | string[];
   error: string;
+  /** Codigo estable opcional (ej.: COMPANY_UNDER_REVIEW) para el frontend. */
+  code?: string;
   path: string;
   timestamp: string;
 }
@@ -36,6 +38,7 @@ export class AllExceptionsFilter implements ExceptionFilter {
     let status = HttpStatus.INTERNAL_SERVER_ERROR;
     let message: string | string[] = 'Error interno del servidor';
     let error = 'InternalServerError';
+    let code: string | undefined;
 
     if (exception instanceof HttpException) {
       status = exception.getStatus();
@@ -46,6 +49,7 @@ export class AllExceptionsFilter implements ExceptionFilter {
         const body = res as Record<string, unknown>;
         message = (body.message as string | string[]) ?? exception.message;
         error = (body.error as string) ?? exception.name;
+        if (typeof body.code === 'string') code = body.code;
       }
     } else if (exception instanceof Prisma.PrismaClientKnownRequestError) {
       const mapped = this.mapPrismaError(exception);
@@ -72,6 +76,8 @@ export class AllExceptionsFilter implements ExceptionFilter {
       statusCode: status,
       message,
       error,
+      // Solo se envia cuando la excepcion trae un codigo propio.
+      ...(code ? { code } : {}),
       path: request.url,
       timestamp: new Date().toISOString(),
     };

@@ -11,6 +11,8 @@ import type { InventoryService } from '../inventory/inventory.service';
 import type { RatesService } from '../rates/rates.service';
 import { OrdersService } from './orders.service';
 
+const COMPANY_ID = 'company-1';
+
 /** Catalogo de productos simulado (precios en la moneda base, decimales). */
 const PRODUCTS: Record<
   string,
@@ -93,7 +95,7 @@ function createService(current: OrderFixture | null) {
   };
 
   const prisma = {
-    order: { findUnique: jest.fn(async () => current) },
+    order: { findFirst: jest.fn(async () => current) },
     product: {
       findMany: jest.fn(async (args: { where: { id: { in: string[] } } }) =>
         args.where.id.in
@@ -107,7 +109,7 @@ function createService(current: OrderFixture | null) {
   };
 
   const inventory = {
-    applyMovement: jest.fn(async (_input: unknown, _tx?: unknown) => ({
+    applyMovement: jest.fn(async (_companyId: string, _input: unknown, _tx?: unknown) => ({
       movement: { id: 'mv1' },
       stockBefore: 10,
       stockAfter: 9,
@@ -150,10 +152,33 @@ function itemsWrite(tx: { order: { update: jest.Mock } }): ItemsWrite {
 
 
 describe('OrdersService.addItems (agregar productos a un pedido)', () => {
+  it('aisla la busqueda del pedido a la empresa activa', async () => {
+    const { service, tx, prisma } = createService(order());
+
+    await service.addItems(
+      COMPANY_ID,
+      'o1',
+      { items: [{ productId: 'p1', quantity: 1 }] },
+      'u1',
+    );
+
+    // La lectura del pedido y la escritura filtran por companyId.
+    expect(prisma.order.findFirst).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({ id: 'o1', companyId: COMPANY_ID }),
+      }),
+    );
+    expect(tx.order.update.mock.calls[0][0].where).toEqual({
+      id: 'o1',
+      companyId: COMPANY_ID,
+    });
+  });
+
   it('fusiona el producto existente, descuenta stock y recalcula los totales', async () => {
     const { service, tx, inventory } = createService(order());
 
     await service.addItems(
+      COMPANY_ID,
       'o1',
       { items: [{ productId: 'p1', quantity: 1 }] },
       'u1',
@@ -173,7 +198,7 @@ describe('OrdersService.addItems (agregar productos a un pedido)', () => {
     ]);
 
     expect(inventory.applyMovement).toHaveBeenCalledTimes(1);
-    const movement = inventory.applyMovement.mock.calls[0][0] as {
+    const movement = inventory.applyMovement.mock.calls[0][1] as {
       productId: string;
       type: string;
       quantity: number;
@@ -188,7 +213,7 @@ describe('OrdersService.addItems (agregar productos a un pedido)', () => {
       referenceId: 'o1',
     });
     // El movimiento participa de la misma transaccion.
-    expect(inventory.applyMovement.mock.calls[0][1]).toBe(tx);
+    expect(inventory.applyMovement.mock.calls[0][2]).toBe(tx);
   });
 
   it('conserva el IGV efectivo del pedido al recalcular', async () => {
@@ -197,6 +222,7 @@ describe('OrdersService.addItems (agregar productos a un pedido)', () => {
     );
 
     await service.addItems(
+      COMPANY_ID,
       'o1',
       { items: [{ productId: 'p1', quantity: 1 }] },
       'u1',
@@ -213,6 +239,7 @@ describe('OrdersService.addItems (agregar productos a un pedido)', () => {
     const { service, tx } = createService(order({ paidAmount: 60 }));
 
     await service.addItems(
+      COMPANY_ID,
       'o1',
       { items: [{ productId: 'p1', quantity: 1 }] },
       'u1',
@@ -227,6 +254,7 @@ describe('OrdersService.addItems (agregar productos a un pedido)', () => {
     const { service, tx, inventory } = createService(order());
 
     await service.addItems(
+      COMPANY_ID,
       'o1',
       { items: [{ productId: 'p2', quantity: 1 }] },
       'u1',
@@ -242,7 +270,7 @@ describe('OrdersService.addItems (agregar productos a un pedido)', () => {
     );
 
     await expect(
-      service.addItems('o1', { items: [{ productId: 'p1', quantity: 1 }] }, 'u1'),
+      service.addItems(COMPANY_ID, 'o1', { items: [{ productId: 'p1', quantity: 1 }] }, 'u1'),
     ).rejects.toBeInstanceOf(BadRequestException);
     expect(prisma.product.findMany).not.toHaveBeenCalled();
   });
@@ -251,7 +279,7 @@ describe('OrdersService.addItems (agregar productos a un pedido)', () => {
     const { service } = createService(order({ status: OrderStatus.COMPLETED }));
 
     await expect(
-      service.addItems('o1', { items: [{ productId: 'p1', quantity: 1 }] }, 'u1'),
+      service.addItems(COMPANY_ID, 'o1', { items: [{ productId: 'p1', quantity: 1 }] }, 'u1'),
     ).rejects.toBeInstanceOf(BadRequestException);
   });
 
@@ -259,7 +287,7 @@ describe('OrdersService.addItems (agregar productos a un pedido)', () => {
     const { service } = createService(null);
 
     await expect(
-      service.addItems('nope', { items: [{ productId: 'p1', quantity: 1 }] }, 'u1'),
+      service.addItems(COMPANY_ID, 'nope', { items: [{ productId: 'p1', quantity: 1 }] }, 'u1'),
     ).rejects.toBeInstanceOf(NotFoundException);
   });
 
@@ -267,7 +295,7 @@ describe('OrdersService.addItems (agregar productos a un pedido)', () => {
     const { service, tx } = createService(order());
 
     await expect(
-      service.addItems('o1', { items: [{ productId: 'p3', quantity: 1 }] }, 'u1'),
+      service.addItems(COMPANY_ID, 'o1', { items: [{ productId: 'p3', quantity: 1 }] }, 'u1'),
     ).rejects.toBeInstanceOf(BadRequestException);
     expect(tx.order.update).not.toHaveBeenCalled();
   });
@@ -276,7 +304,7 @@ describe('OrdersService.addItems (agregar productos a un pedido)', () => {
     const { service } = createService(order());
 
     await expect(
-      service.addItems('o1', { items: [{ productId: 'ghost', quantity: 1 }] }, 'u1'),
+      service.addItems(COMPANY_ID, 'o1', { items: [{ productId: 'ghost', quantity: 1 }] }, 'u1'),
     ).rejects.toBeInstanceOf(BadRequestException);
   });
 
@@ -284,6 +312,7 @@ describe('OrdersService.addItems (agregar productos a un pedido)', () => {
     const { service, tx } = createService(order());
 
     await service.addItems(
+      COMPANY_ID,
       'o1',
       { items: [{ productId: 'p2', quantity: 1 }] },
       'u1',
@@ -291,7 +320,7 @@ describe('OrdersService.addItems (agregar productos a un pedido)', () => {
 
     expect(itemsWrite(tx).update).toBeUndefined();
     expect(itemsWrite(tx).create).toEqual([
-      { productId: 'p2', name: 'Postre', quantity: 1, unitPrice: 30, total: 30 },
+      { companyId: COMPANY_ID, productId: 'p2', name: 'Postre', quantity: 1, unitPrice: 30, total: 30 },
     ]);
     expect(updateData(tx).subtotal).toBe(130);
   });
@@ -302,6 +331,7 @@ describe('OrdersService.addItems (agregar productos a un pedido)', () => {
     );
 
     await service.addItems(
+      COMPANY_ID,
       'o1',
       {
         items: [
@@ -313,12 +343,12 @@ describe('OrdersService.addItems (agregar productos a un pedido)', () => {
     );
 
     expect(itemsWrite(tx).create).toEqual([
-      { productId: 'p1', name: 'Cafe', quantity: 3, unitPrice: 50, total: 150 },
+      { companyId: COMPANY_ID, productId: 'p1', name: 'Cafe', quantity: 3, unitPrice: 50, total: 150 },
     ]);
     expect(updateData(tx).subtotal).toBe(150);
     // Una sola salida de stock con la cantidad total agregada.
     expect(inventory.applyMovement).toHaveBeenCalledTimes(1);
-    expect(inventory.applyMovement.mock.calls[0][0]).toMatchObject({
+    expect(inventory.applyMovement.mock.calls[0][1]).toMatchObject({
       productId: 'p1',
       quantity: 3,
     });
@@ -334,6 +364,7 @@ describe('OrdersService.addItems (agregar productos a un pedido)', () => {
     );
 
     await service.addItems(
+      COMPANY_ID,
       'o1',
       { items: [{ productId: 'p1', quantity: 1 }] },
       'u1',
@@ -352,13 +383,14 @@ describe('OrdersService.addItems (agregar productos a un pedido)', () => {
     const { service, tx } = createService(order());
 
     await service.addItems(
+      COMPANY_ID,
       'o1',
       { items: [{ productId: 'p1', quantity: 1, unitPrice: 40 }] },
       'u1',
     );
 
     expect(itemsWrite(tx).create).toEqual([
-      { productId: 'p1', name: 'Cafe', quantity: 1, unitPrice: 40, total: 40 },
+      { companyId: COMPANY_ID, productId: 'p1', name: 'Cafe', quantity: 1, unitPrice: 40, total: 40 },
     ]);
     expect(itemsWrite(tx).update).toBeUndefined();
     expect(updateData(tx).subtotal).toBe(140);
@@ -368,7 +400,7 @@ describe('OrdersService.addItems (agregar productos a un pedido)', () => {
     const { service, tx } = createService(order({ paidAmount: 999 }));
 
     await expect(
-      service.addItems('o1', { items: [{ productId: 'p1', quantity: 1 }] }, 'u1'),
+      service.addItems(COMPANY_ID, 'o1', { items: [{ productId: 'p1', quantity: 1 }] }, 'u1'),
     ).rejects.toBeInstanceOf(BadRequestException);
     expect(tx.order.update).not.toHaveBeenCalled();
   });
@@ -378,7 +410,7 @@ describe('OrdersService.updateItem / removeItem (corregir o quitar productos)', 
   it('baja la cantidad y devuelve la diferencia al inventario', async () => {
     const { service, tx, inventory } = createService(order());
 
-    await service.updateItem('o1', 'i1', { quantity: 1 }, 'u1');
+    await service.updateItem(COMPANY_ID, 'o1', 'i1', { quantity: 1 }, 'u1');
 
     const data = updateData(tx);
     expect(data.subtotal).toBe(50);
@@ -394,14 +426,14 @@ describe('OrdersService.updateItem / removeItem (corregir o quitar productos)', 
 
     // Una sola entrada de stock con la unidad quitada, en la misma transaccion.
     expect(inventory.applyMovement).toHaveBeenCalledTimes(1);
-    expect(inventory.applyMovement.mock.calls[0][0]).toMatchObject({
+    expect(inventory.applyMovement.mock.calls[0][1]).toMatchObject({
       productId: 'p1',
       type: StockMovementType.IN,
       quantity: 1,
       referenceType: StockReferenceType.ORDER,
       referenceId: 'o1',
     });
-    expect(inventory.applyMovement.mock.calls[0][1]).toBe(tx);
+    expect(inventory.applyMovement.mock.calls[0][2]).toBe(tx);
   });
 
   it('sube la cantidad, consume la diferencia y recalcula el pago', async () => {
@@ -409,7 +441,7 @@ describe('OrdersService.updateItem / removeItem (corregir o quitar productos)', 
       order({ paidAmount: 160 }),
     );
 
-    await service.updateItem('o1', 'i1', { quantity: 4 }, 'u1');
+    await service.updateItem(COMPANY_ID, 'o1', 'i1', { quantity: 4 }, 'u1');
 
     const data = updateData(tx);
     expect(data.total).toBe(200);
@@ -417,7 +449,7 @@ describe('OrdersService.updateItem / removeItem (corregir o quitar productos)', 
     expect(itemsWrite(tx).update).toEqual([
       { where: { id: 'i1' }, data: { quantity: 4, total: 200 } },
     ]);
-    expect(inventory.applyMovement.mock.calls[0][0]).toMatchObject({
+    expect(inventory.applyMovement.mock.calls[0][1]).toMatchObject({
       productId: 'p1',
       type: StockMovementType.OUT,
       quantity: 2,
@@ -429,7 +461,7 @@ describe('OrdersService.updateItem / removeItem (corregir o quitar productos)', 
       order({ subtotal: 100, tax: 18, total: 118 }),
     );
 
-    await service.updateItem('o1', 'i1', { quantity: 1 }, 'u1');
+    await service.updateItem(COMPANY_ID, 'o1', 'i1', { quantity: 1 }, 'u1');
 
     const data = updateData(tx);
     expect(data.subtotal).toBe(50);
@@ -440,7 +472,7 @@ describe('OrdersService.updateItem / removeItem (corregir o quitar productos)', 
   it('no escribe nada si la cantidad pedida es la misma', async () => {
     const { service, tx, inventory } = createService(order());
 
-    await service.updateItem('o1', 'i1', { quantity: 2 }, 'u1');
+    await service.updateItem(COMPANY_ID, 'o1', 'i1', { quantity: 2 }, 'u1');
 
     expect(tx.order.update).not.toHaveBeenCalled();
     expect(inventory.applyMovement).not.toHaveBeenCalled();
@@ -465,7 +497,7 @@ describe('OrdersService.updateItem / removeItem (corregir o quitar productos)', 
       }),
     );
 
-    await service.removeItem('o1', 'i1', 'u1');
+    await service.removeItem(COMPANY_ID, 'o1', 'i1', 'u1');
 
     const data = updateData(tx);
     expect(data.subtotal).toBe(30);
@@ -473,7 +505,7 @@ describe('OrdersService.updateItem / removeItem (corregir o quitar productos)', 
     expect(itemsWrite(tx).deleteMany).toEqual([{ id: 'i1' }]);
     expect(itemsWrite(tx).update).toBeUndefined();
     expect(inventory.applyMovement).toHaveBeenCalledTimes(1);
-    expect(inventory.applyMovement.mock.calls[0][0]).toMatchObject({
+    expect(inventory.applyMovement.mock.calls[0][1]).toMatchObject({
       productId: 'p1',
       type: StockMovementType.IN,
       quantity: 2,
@@ -493,7 +525,7 @@ describe('OrdersService.updateItem / removeItem (corregir o quitar productos)', 
       }),
     );
 
-    await service.removeItem('o1', 'i1', 'u1');
+    await service.removeItem(COMPANY_ID, 'o1', 'i1', 'u1');
 
     expect(inventory.applyMovement).not.toHaveBeenCalled();
   });
@@ -502,7 +534,7 @@ describe('OrdersService.updateItem / removeItem (corregir o quitar productos)', 
     const { service, tx } = createService(order());
 
     await expect(
-      service.removeItem('o1', 'i1', 'u1'),
+      service.removeItem(COMPANY_ID, 'o1', 'i1', 'u1'),
     ).rejects.toBeInstanceOf(BadRequestException);
     expect(tx.order.update).not.toHaveBeenCalled();
   });
@@ -511,14 +543,14 @@ describe('OrdersService.updateItem / removeItem (corregir o quitar productos)', 
     const cancelled = createService(order({ status: OrderStatus.CANCELLED }));
 
     await expect(
-      cancelled.service.removeItem('o1', 'i1', 'u1'),
+      cancelled.service.removeItem(COMPANY_ID, 'o1', 'i1', 'u1'),
     ).rejects.toBeInstanceOf(BadRequestException);
     expect(cancelled.inventory.applyMovement).not.toHaveBeenCalled();
 
     const completed = createService(order({ status: OrderStatus.COMPLETED }));
 
     await expect(
-      completed.service.updateItem('o1', 'i1', { quantity: 3 }, 'u1'),
+      completed.service.updateItem(COMPANY_ID, 'o1', 'i1', { quantity: 3 }, 'u1'),
     ).rejects.toBeInstanceOf(BadRequestException);
     expect(completed.inventory.applyMovement).not.toHaveBeenCalled();
   });
@@ -527,10 +559,10 @@ describe('OrdersService.updateItem / removeItem (corregir o quitar productos)', 
     const { service } = createService(order());
 
     await expect(
-      service.removeItem('o1', 'ghost', 'u1'),
+      service.removeItem(COMPANY_ID, 'o1', 'ghost', 'u1'),
     ).rejects.toBeInstanceOf(NotFoundException);
     await expect(
-      service.updateItem('o1', 'ghost', { quantity: 1 }, 'u1'),
+      service.updateItem(COMPANY_ID, 'o1', 'ghost', { quantity: 1 }, 'u1'),
     ).rejects.toBeInstanceOf(NotFoundException);
   });
 
@@ -538,7 +570,7 @@ describe('OrdersService.updateItem / removeItem (corregir o quitar productos)', 
     const { service, tx } = createService(order({ paidAmount: 120 }));
 
     await expect(
-      service.updateItem('o1', 'i1', { quantity: 1 }, 'u1'),
+      service.updateItem(COMPANY_ID, 'o1', 'i1', { quantity: 1 }, 'u1'),
     ).rejects.toBeInstanceOf(BadRequestException);
     expect(tx.order.update).not.toHaveBeenCalled();
   });

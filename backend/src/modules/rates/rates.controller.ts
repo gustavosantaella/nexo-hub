@@ -10,53 +10,62 @@ import {
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { Role } from '../../common/constants/enums';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
-import { Public } from '../../common/decorators/public.decorator';
 import { Roles } from '../../common/decorators/roles.decorator';
 import { RolesGuard } from '../../common/guards/roles.guard';
+import type { AuthenticatedUser } from '../../common/interfaces/authenticated-user.interface';
 import { UpdateCustomRateDto } from './dto/update-custom-rate.dto';
 import { RatesService } from './rates.service';
 
 /**
- * Tasas de cambio.
+ * Tasas de cambio de la empresa activa.
  *
- * - `GET /rates` lo consume el frontend para mostrar todos los montos "al
- *   cambio"; es publico a proposito (la tasa del BCV es informacion publica).
- * - Guardar/limpiar la tasa personalizada queda restringido a ADMIN/MANAGER.
+ * Las tasas oficiales del BCV son publicas (vienen del tercero), pero la tasa
+ * personalizada y las monedas configuradas son POR EMPRESA: por eso todo el
+ * controlador requiere sesion y trabaja con el `companyId` del token.
  */
 @ApiTags('Tasas de cambio')
+@ApiBearerAuth()
 @Controller('rates')
 export class RatesController {
   constructor(private readonly ratesService: RatesService) {}
 
-  @Public()
   @Get()
   @ApiOperation({
-    summary: 'Tasas BCV (dolar/euro) y tasa personalizada del local',
+    summary: 'Tasas BCV (dolar/euro) y tasa personalizada de la empresa',
   })
-  current(@Query('refresh') refresh?: string) {
-    return this.ratesService.snapshot(refresh === 'true' || refresh === '1');
+  current(
+    @CurrentUser('companyId') companyId: string,
+    @Query('refresh') refresh?: string,
+  ) {
+    return this.ratesService.snapshot(
+      companyId,
+      refresh === 'true' || refresh === '1',
+    );
   }
 
-  @ApiBearerAuth()
   @Put('custom')
   @UseGuards(RolesGuard)
   @Roles(Role.ADMIN, Role.MANAGER)
   @ApiOperation({ summary: 'Guardar la tasa personalizada (Bs por dolar)' })
   updateCustom(
+    @CurrentUser() user: AuthenticatedUser,
     @Body() dto: UpdateCustomRateDto,
-    @CurrentUser('id') userId: string,
   ) {
-    return this.ratesService.setCustomRate(dto.usd ?? null, userId);
+    return this.ratesService.setCustomRate(
+      user.companyId,
+      dto.usd ?? null,
+      user.id,
+    );
   }
 
-  @ApiBearerAuth()
   @Delete('custom')
   @UseGuards(RolesGuard)
   @Roles(Role.ADMIN, Role.MANAGER)
   @ApiOperation({
     summary: 'Eliminar la tasa personalizada (vuelve a las tasas del BCV)',
   })
-  clearCustom() {
-    return this.ratesService.setCustomRate(null);
+  clearCustom(@CurrentUser('companyId') companyId: string) {
+    return this.ratesService.setCustomRate(companyId, null);
   }
 }
+

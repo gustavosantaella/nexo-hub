@@ -27,6 +27,7 @@ import {
   buildPaginatedResult,
   toSkip,
 } from '../../common/utils/pagination.util';
+import { tenantWhere } from '../../common/utils/tenant.util';
 import { PrismaService } from '../../prisma/prisma.service';
 import { CashService } from '../cash/cash.service';
 import { RatesService } from '../rates/rates.service';
@@ -55,15 +56,20 @@ export class PayablesService {
     private readonly rates: RatesService,
   ) {}
 
-  async create(dto: CreatePayableDto, userId: string) {
+  async create(companyId: string, dto: CreatePayableDto, userId: string) {
     // El monto se guarda en la moneda de la cuenta y su equivalente en USD
     // (`baseAmount`), que es el que suman los reportes y contra el que se
     // comparan los abonos (siempre en moneda base).
     const amount = toMoney(dto.amount);
-    const conversion = await this.rates.resolvePayment(amount, dto.currency);
+    const conversion = await this.rates.resolvePayment(
+      companyId,
+      amount,
+      dto.currency,
+    );
 
     const payable = await this.prisma.accountPayable.create({
       data: {
+        companyId,
         supplierId: normalizeNullableId(dto.supplierId),
         description: dto.description,
         amount,
@@ -82,10 +88,11 @@ export class PayablesService {
     return this.withBalance(payable);
   }
 
-  async findAll(query: PayableQueryDto) {
+  async findAll(companyId: string, query: PayableQueryDto) {
     const today = startOfToday();
 
     const where: Prisma.AccountPayableWhereInput = {
+      ...tenantWhere(companyId),
       ...(query.status ? { status: query.status } : {}),
       ...(query.supplierId ? { supplierId: query.supplierId } : {}),
       ...(query.search ? { description: { contains: query.search } } : {}),
@@ -135,9 +142,9 @@ export class PayablesService {
     };
   }
 
-  async findOne(id: string) {
-    const payable = await this.prisma.accountPayable.findUnique({
-      where: { id },
+  async findOne(companyId: string, id: string) {
+    const payable = await this.prisma.accountPayable.findFirst({
+      where: { id, ...tenantWhere(companyId) },
       include: PAYABLE_INCLUDE,
     });
     if (!payable) throw new NotFoundException('Cuenta por pagar no encontrada');
@@ -163,8 +170,8 @@ export class PayablesService {
    * Actualiza datos de la cuenta. El monto y la moneda solo pueden cambiarse
    * mientras no existan abonos registrados (los abonos ya impactaron la caja).
    */
-  async update(id: string, dto: UpdatePayableDto) {
-    const payable = await this.findOne(id);
+  async update(companyId: string, id: string, dto: UpdatePayableDto) {
+    const payable = await this.findOne(companyId, id);
 
     // Cambiar el monto o la moneda altera el equivalente en USD y el saldo.
     const monetaryChange =
@@ -184,11 +191,15 @@ export class PayablesService {
     // Solo se recalcula la conversion si cambio el monto o la moneda.
     const amount = toMoney(dto.amount ?? payable.amount);
     const conversion = monetaryChange
-      ? await this.rates.resolvePayment(amount, dto.currency ?? payable.currency)
+      ? await this.rates.resolvePayment(
+          companyId,
+          amount,
+          dto.currency ?? payable.currency,
+        )
       : null;
 
-    const updated = await this.prisma.accountPayable.update({
-      where: { id },
+    await this.prisma.accountPayable.updateMany({
+      where: { id, ...tenantWhere(companyId) },
       data: {
         ...(dto.supplierId !== undefined
           ? { supplierId: normalizeNullableId(dto.supplierId) }
@@ -210,18 +221,22 @@ export class PayablesService {
         ...(dto.reference !== undefined ? { reference: dto.reference } : {}),
         ...(dto.notes !== undefined ? { notes: dto.notes } : {}),
       },
-      include: PAYABLE_INCLUDE,
     });
 
-    return this.withBalance(updated);
+    return this.findOne(companyId, id);
   }
 
   /**
    * Registra un abono. Si se paga en efectivo (`payFromCash`, por defecto true
    * cuando el metodo es CASH) genera el egreso correspondiente en la caja.
    */
-  async addPayment(id: string, dto: PayPayableDto, userId: string) {
-    const payable = await this.findOne(id);
+  async addPayment(
+    companyId: string,
+    id: string,
+    dto: PayPayableDto,
+    userId: string,
+  ) {
+    const payable = await this.findOne(companyId, id);
 
     if (payable.status === AccountStatus.CANCELLED) {
       throw new BadRequestException('La cuenta esta anulada');
@@ -230,7 +245,11 @@ export class PayablesService {
     // `amount` viene en la moneda del pago; el saldo de la cuenta esta en la
     // moneda base (USD), por eso se compara el equivalente convertido.
     const amount = toMoney(dto.amount);
-    const conversion = await this.rates.resolvePayment(amount, dto.currency);
+    const conversion = await this.rates.resolvePayment(
+      companyId,
+      amount,
+      dto.currency,
+    );
     const { currency, exchangeRate } = conversion;
 
     const balance = money.sub(payable.baseAmount, payable.paidAmount);
@@ -249,6 +268,7 @@ export class PayablesService {
     return this.prisma.$transaction(async (tx) => {
       const payment = await tx.payablePayment.create({
         data: {
+          companyId,
           payableId: id,
           amount,
           method,
@@ -261,8 +281,9 @@ export class PayablesService {
       });
 
       if (payFromCash) {
-        const session = await this.cash.getOpenSessionOrThrow(tx);
+        const session = await this.cash.getOpenSessionOrThrow(companyId, tx);
         await this.cash.registerMovement(
+          companyId,
           {
             sessionId: session.id,
             type: CashMovementType.OUT,
@@ -281,24 +302,28 @@ export class PayablesService {
       }
 
       const paidAmount = money.add(payable.paidAmount, baseAmount);
-      await tx.accountPayable.update({
-        where: { id },
+      await tx.accountPayable.updateMany({
+        where: { id, ...tenantWhere(companyId) },
         data: {
           paidAmount,
           status: resolveAccountStatus(payable.baseAmount, paidAmount),
         },
       });
 
-      return tx.accountPayable.findUniqueOrThrow({
-        where: { id },
+      const updated = await tx.accountPayable.findFirst({
+        where: { id, ...tenantWhere(companyId) },
         include: PAYABLE_INCLUDE,
       });
+      if (!updated) {
+        throw new NotFoundException('Cuenta por pagar no encontrada');
+      }
+      return this.withBalance(updated);
     });
   }
 
   /** Anula la cuenta (solo si no tiene abonos). */
-  async cancel(id: string) {
-    const payable = await this.findOne(id);
+  async cancel(companyId: string, id: string) {
+    const payable = await this.findOne(companyId, id);
 
     if (compareMoney(payable.paidAmount, 0) > 0) {
       throw new BadRequestException(
@@ -309,17 +334,16 @@ export class PayablesService {
       return payable;
     }
 
-    const updated = await this.prisma.accountPayable.update({
-      where: { id },
+    await this.prisma.accountPayable.updateMany({
+      where: { id, ...tenantWhere(companyId) },
       data: { status: AccountStatus.CANCELLED },
-      include: PAYABLE_INCLUDE,
     });
-    return this.withBalance(updated);
+    return this.findOne(companyId, id);
   }
 
   /** Elimina la cuenta (solo si no tiene abonos). */
-  async remove(id: string) {
-    const payable = await this.findOne(id);
+  async remove(companyId: string, id: string) {
+    const payable = await this.findOne(companyId, id);
 
     if (compareMoney(payable.paidAmount, 0) > 0) {
       throw new BadRequestException(
@@ -327,23 +351,29 @@ export class PayablesService {
       );
     }
 
-    await this.prisma.accountPayable.delete({ where: { id } });
+    await this.prisma.accountPayable.deleteMany({
+      where: { id, ...tenantWhere(companyId) },
+    });
     return { id, deleted: true };
   }
 
   /** Resumen por estado + saldo total pendiente. */
-  async summary() {
+  async summary(companyId: string) {
     // Promise.all (y no $transaction): Prisma pierde la inferencia de tipos de
     // `groupBy` dentro del arreglo de la transaccion. Solo son lecturas.
     const [byStatus, aggregate] = await Promise.all([
       this.prisma.accountPayable.groupBy({
         by: ['status'],
+        where: tenantWhere(companyId),
         orderBy: { status: 'asc' },
         _sum: { baseAmount: true, paidAmount: true },
         _count: { _all: true },
       }),
       this.prisma.accountPayable.aggregate({
-        where: { status: { in: [AccountStatus.PENDING, AccountStatus.PARTIAL] } },
+        where: {
+          status: { in: [AccountStatus.PENDING, AccountStatus.PARTIAL] },
+          ...tenantWhere(companyId),
+        },
         _sum: { baseAmount: true, paidAmount: true },
         _count: { _all: true },
       }),
@@ -371,9 +401,12 @@ export class PayablesService {
   }
 
   /** Saldo total pendiente de pago (para estadisticas del dashboard). */
-  async outstandingBalance() {
+  async outstandingBalance(companyId: string) {
     const result = await this.prisma.accountPayable.aggregate({
-      where: { status: { in: [AccountStatus.PENDING, AccountStatus.PARTIAL] } },
+      where: {
+        status: { in: [AccountStatus.PENDING, AccountStatus.PARTIAL] },
+        ...tenantWhere(companyId),
+      },
       _sum: { baseAmount: true, paidAmount: true },
     });
     return money.sub(

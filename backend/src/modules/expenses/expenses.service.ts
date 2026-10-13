@@ -17,6 +17,7 @@ import {
   buildPaginatedResult,
   toSkip,
 } from '../../common/utils/pagination.util';
+import { tenantWhere } from '../../common/utils/tenant.util';
 import { PrismaService, type PrismaClientLike } from '../../prisma/prisma.service';
 import { CashService } from '../cash/cash.service';
 import { RatesService } from '../rates/rates.service';
@@ -45,15 +46,20 @@ export class ExpensesService {
    * El monto se guarda en la moneda del pago y su equivalente en USD
    * (`baseAmount`), que es el que suman los reportes.
    */
-  async create(dto: CreateExpenseDto, userId: string) {
+  async create(companyId: string, dto: CreateExpenseDto, userId: string) {
     const amount = toMoney(dto.amount);
-    const conversion = await this.rates.resolvePayment(amount, dto.currency);
+    const conversion = await this.rates.resolvePayment(
+      companyId,
+      amount,
+      dto.currency,
+    );
     const paymentMethod = dto.paymentMethod ?? PaymentMethod.CASH;
     const payFromCash = dto.payFromCash ?? paymentMethod === PaymentMethod.CASH;
 
     return this.prisma.$transaction(async (tx) => {
       const expense = await tx.expense.create({
         data: {
+          companyId,
           category: dto.category,
           description: dto.description,
           amount,
@@ -67,10 +73,11 @@ export class ExpensesService {
         },
       });
 
-      if (!payFromCash) return this.findWithInclude(tx, expense.id);
+      if (!payFromCash) return this.findWithInclude(companyId, tx, expense.id);
 
-      const session = await this.cash.getOpenSessionOrThrow(tx);
+      const session = await this.cash.getOpenSessionOrThrow(companyId, tx);
       await this.cash.registerMovement(
+        companyId,
         {
           sessionId: session.id,
           type: CashMovementType.OUT,
@@ -86,24 +93,32 @@ export class ExpensesService {
         tx,
       );
 
-      await tx.expense.update({
-        where: { id: expense.id },
+      await tx.expense.updateMany({
+        where: { id: expense.id, ...tenantWhere(companyId) },
         data: { cashSessionId: session.id },
       });
 
-      return this.findWithInclude(tx, expense.id);
+      return this.findWithInclude(companyId, tx, expense.id);
     });
   }
 
-  private findWithInclude(tx: PrismaClientLike, id: string) {
-    return tx.expense.findUniqueOrThrow({
-      where: { id },
+  /** Relee el gasto dentro de su empresa (nunca cruza datos entre empresas). */
+  private async findWithInclude(
+    companyId: string,
+    tx: PrismaClientLike,
+    id: string,
+  ) {
+    const expense = await tx.expense.findFirst({
+      where: { id, ...tenantWhere(companyId) },
       include: EXPENSE_INCLUDE,
     });
+    if (!expense) throw new NotFoundException('Gasto no encontrado');
+    return expense;
   }
 
-  async findAll(query: ExpenseQueryDto) {
+  async findAll(companyId: string, query: ExpenseQueryDto) {
     const where: Prisma.ExpenseWhereInput = {
+      ...tenantWhere(companyId),
       ...(query.category ? { category: query.category } : {}),
       ...(query.paymentMethod ? { paymentMethod: query.paymentMethod } : {}),
       ...(query.supplierId ? { supplierId: query.supplierId } : {}),
@@ -135,9 +150,9 @@ export class ExpensesService {
     };
   }
 
-  async findOne(id: string) {
-    const expense = await this.prisma.expense.findUnique({
-      where: { id },
+  async findOne(companyId: string, id: string) {
+    const expense = await this.prisma.expense.findFirst({
+      where: { id, ...tenantWhere(companyId) },
       include: EXPENSE_INCLUDE,
     });
     if (!expense) throw new NotFoundException('Gasto no encontrado');
@@ -145,8 +160,9 @@ export class ExpensesService {
   }
 
   /** Totales agregados por categoria/metodo para el panel de gastos. */
-  async summary(query: ExpenseQueryDto) {
+  async summary(companyId: string, query: ExpenseQueryDto) {
     const where: Prisma.ExpenseWhereInput = {
+      ...tenantWhere(companyId),
       ...(query.category ? { category: query.category } : {}),
       ...(query.supplierId ? { supplierId: query.supplierId } : {}),
       ...(query.from || query.to
@@ -197,8 +213,8 @@ export class ExpensesService {
    * puede tocar (registro inmutable). Si la sesion sigue abierta y cambia el
    * monto, se ajusta el movimiento de caja para mantener el arqueo coherente.
    */
-  async update(id: string, dto: UpdateExpenseDto) {
-    const expense = await this.findOne(id);
+  async update(companyId: string, id: string, dto: UpdateExpenseDto) {
+    const expense = await this.findOne(companyId, id);
     const amount =
       dto.amount !== undefined ? toMoney(dto.amount) : expense.amount;
     const currency = dto.currency ?? expense.currency;
@@ -213,7 +229,7 @@ export class ExpensesService {
     const changed =
       dto.amount !== undefined || dto.currency !== undefined;
     const conversion = changed
-      ? await this.rates.resolvePayment(amount, currency)
+      ? await this.rates.resolvePayment(companyId, amount, currency)
       : {
           currency: expense.currency,
           exchangeRate: expense.exchangeRate,
@@ -223,15 +239,19 @@ export class ExpensesService {
     return this.prisma.$transaction(async (tx) => {
       if (expense.cashSessionId && changed) {
         const movement = await tx.cashMovement.findFirst({
-          where: { referenceType: 'EXPENSE', referenceId: expense.id },
+          where: {
+            referenceType: 'EXPENSE',
+            referenceId: expense.id,
+            ...tenantWhere(companyId),
+          },
         });
         if (!movement) {
           throw new BadRequestException(
             'Inconsistencia: el gasto no tiene movimiento de caja asociado',
           );
         }
-        await tx.cashMovement.update({
-          where: { id: movement.id },
+        await tx.cashMovement.updateMany({
+          where: { id: movement.id, ...tenantWhere(companyId) },
           data: {
             amount,
             currency: conversion.currency,
@@ -242,8 +262,8 @@ export class ExpensesService {
         });
       }
 
-      await tx.expense.update({
-        where: { id },
+      await tx.expense.updateMany({
+        where: { id, ...tenantWhere(companyId) },
         data: {
           ...(dto.category !== undefined ? { category: dto.category } : {}),
           ...(dto.description !== undefined
@@ -269,7 +289,7 @@ export class ExpensesService {
         },
       });
 
-      return this.findWithInclude(tx, id);
+      return this.findWithInclude(companyId, tx, id);
     });
   }
 
@@ -277,8 +297,8 @@ export class ExpensesService {
    * Elimina el gasto. Si impacto caja solo se permite mientras la sesion siga
    * abierta: en ese caso se elimina tambien el movimiento de caja.
    */
-  async remove(id: string) {
-    const expense = await this.findOne(id);
+  async remove(companyId: string, id: string) {
+    const expense = await this.findOne(companyId, id);
 
     if (expense.cashSession?.status === CashSessionStatus.CLOSED) {
       throw new BadRequestException(
@@ -288,17 +308,21 @@ export class ExpensesService {
 
     return this.prisma.$transaction(async (tx) => {
       await tx.cashMovement.deleteMany({
-        where: { referenceType: 'EXPENSE', referenceId: expense.id },
+        where: {
+          referenceType: 'EXPENSE',
+          referenceId: expense.id,
+          ...tenantWhere(companyId),
+        },
       });
-      await tx.expense.delete({ where: { id } });
+      await tx.expense.deleteMany({ where: { id, ...tenantWhere(companyId) } });
       return { id, deleted: true };
     });
   }
 
   /** Suma de gastos del rango en USD (usado por estadisticas). */
-  async totalForRange(from: Date, to: Date) {
+  async totalForRange(companyId: string, from: Date, to: Date) {
     const result = await this.prisma.expense.aggregate({
-      where: { date: { gte: from, lte: to } },
+      where: { date: { gte: from, lte: to }, ...tenantWhere(companyId) },
       _sum: { baseAmount: true },
     });
     return money.add(result._sum.baseAmount ?? 0, 0);

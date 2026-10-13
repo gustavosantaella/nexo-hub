@@ -5,6 +5,9 @@ import type { PrismaService } from '../../prisma/prisma.service';
 import type { CurrenciesService } from '../currencies/currencies.service';
 import { CUSTOM_RATE_KEY, RatesService } from './rates.service';
 
+/** Empresa de prueba usada en todas las llamadas (multi-tenant). */
+const COMPANY_ID = 'company-1';
+
 /** Monedas configuradas por defecto en las pruebas (USD + VES, nada mas). */
 const DEFAULT_CURRENCIES: CurrencySetting[] = [
   {
@@ -115,7 +118,7 @@ describe('RatesService', () => {
   it('devuelve solo las 2 tasas BCV cuando no hay tasa personalizada', async () => {
     const { service } = buildService({ fetchImpl: fetchMock });
 
-    const snapshot = await service.snapshot();
+    const snapshot = await service.snapshot(COMPANY_ID);
 
     expect(snapshot.rates).toHaveLength(2);
     expect(snapshot.rates.map((rate) => rate.key)).toEqual([
@@ -132,7 +135,7 @@ describe('RatesService', () => {
   });
 
   it('agrega la tercera tasa cuando existe una personalizada', async () => {
-    const { service } = buildService({
+    const { service, prisma } = buildService({
       fetchImpl: fetchMock,
       setting: {
         key: CUSTOM_RATE_KEY,
@@ -142,7 +145,7 @@ describe('RatesService', () => {
       },
     });
 
-    const snapshot = await service.snapshot();
+    const snapshot = await service.snapshot(COMPANY_ID);
 
     expect(snapshot.rates).toHaveLength(3);
     expect(snapshot.rates[2]).toMatchObject({
@@ -153,13 +156,21 @@ describe('RatesService', () => {
     });
     expect(snapshot.activeKey).toBe('CUSTOM_USD');
     expect(snapshot.custom?.updatedBy).toBe('Administrador');
+    // La tasa personalizada se lee por empresa (clave compuesta).
+    expect(prisma.findUnique).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: {
+          companyId_key: { companyId: COMPANY_ID, key: CUSTOM_RATE_KEY },
+        },
+      }),
+    );
   });
 
   it('reutiliza la cache y no golpea el endpoint externo dos veces', async () => {
     const { service } = buildService({ fetchImpl: fetchMock });
 
-    await service.snapshot();
-    await service.snapshot();
+    await service.snapshot(COMPANY_ID);
+    await service.snapshot(COMPANY_ID);
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
@@ -167,18 +178,18 @@ describe('RatesService', () => {
   it('vuelve a consultar el endpoint cuando se pide refresh', async () => {
     const { service } = buildService({ fetchImpl: fetchMock });
 
-    await service.snapshot();
-    await service.snapshot(true);
+    await service.snapshot(COMPANY_ID);
+    await service.snapshot(COMPANY_ID, true);
 
     expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
   it('devuelve la ultima tasa conocida marcada como stale si el BCV falla', async () => {
     const { service } = buildService({ fetchImpl: fetchMock });
-    await service.snapshot();
+    await service.snapshot(COMPANY_ID);
 
     fetchMock.mockRejectedValueOnce(new Error('timeout'));
-    const snapshot = await service.snapshot(true);
+    const snapshot = await service.snapshot(COMPANY_ID, true);
 
     expect(snapshot.bcv.stale).toBe(true);
     expect(snapshot.rates[0].rate).toBe(876.7976);
@@ -188,7 +199,7 @@ describe('RatesService', () => {
     const { service } = buildService({ fetchImpl: fetchMock });
     fetchMock.mockRejectedValueOnce(new Error('timeout'));
 
-    await expect(service.snapshot()).rejects.toBeInstanceOf(
+    await expect(service.snapshot(COMPANY_ID)).rejects.toBeInstanceOf(
       ServiceUnavailableException,
     );
   });
@@ -201,13 +212,13 @@ describe('RatesService', () => {
       json: () => Promise.resolve({ current: { usd: 0, eur: 0 } }),
     });
 
-    await expect(service.snapshot()).rejects.toBeInstanceOf(
+    await expect(service.snapshot(COMPANY_ID)).rejects.toBeInstanceOf(
       ServiceUnavailableException,
     );
   });
 
   it('elimina la tasa personalizada al guardar null', async () => {
-    const { service } = buildService({
+    const { service, prisma } = buildService({
       setting: {
         key: CUSTOM_RATE_KEY,
         value: '900',
@@ -215,14 +226,18 @@ describe('RatesService', () => {
       },
     });
 
-    await expect(service.setCustomRate(null)).resolves.toBeNull();
+    await expect(service.setCustomRate(COMPANY_ID, null)).resolves.toBeNull();
+    // El borrado se limita a la empresa (clave compuesta del negocio).
+    expect(prisma.deleteMany).toHaveBeenCalledWith({
+      where: { companyId: COMPANY_ID, key: CUSTOM_RATE_KEY },
+    });
   });
 
   describe('monedas y conversiones de pago', () => {
     it('expone las monedas con su tasa en bolivares (USD y VES)', async () => {
       const { service } = buildService({ fetchImpl: fetchMock });
 
-      const snapshot = await service.snapshot();
+      const snapshot = await service.snapshot(COMPANY_ID);
 
       expect(snapshot.currencies.map((item) => item.code)).toEqual([
         'USD',
@@ -250,7 +265,7 @@ describe('RatesService', () => {
         },
       });
 
-      const snapshot = await service.snapshot();
+      const snapshot = await service.snapshot(COMPANY_ID);
 
       expect(snapshot.currencies[0].bsPerUnit).toBe(950);
       expect(snapshot.currencies[0].bsPerUsd).toBe(950);
@@ -266,7 +281,7 @@ describe('RatesService', () => {
         ],
       });
 
-      const snapshot = await service.snapshot();
+      const snapshot = await service.snapshot(COMPANY_ID);
       const eur = snapshot.currencies.find((item) => item.code === 'EUR');
 
       expect(eur?.bsPerUnit).toBeCloseTo(982.00454402, 6);
@@ -282,7 +297,7 @@ describe('RatesService', () => {
         ],
       });
 
-      const snapshot = await service.snapshot();
+      const snapshot = await service.snapshot(COMPANY_ID);
       const cop = snapshot.currencies.find((item) => item.code === 'COP');
 
       expect(cop?.bsPerUnit).toBe(0.22);
@@ -295,7 +310,7 @@ describe('RatesService', () => {
         currencies: [...DEFAULT_CURRENCIES, currencySetting({ code: 'COP' })],
       });
 
-      const snapshot = await service.snapshot();
+      const snapshot = await service.snapshot(COMPANY_ID);
       const cop = snapshot.currencies.find((item) => item.code === 'COP');
 
       expect(cop?.bsPerUnit).toBeNull();
@@ -305,7 +320,7 @@ describe('RatesService', () => {
     it('convierte un cobro en bolivares al equivalente en dolares', async () => {
       const { service } = buildService({ fetchImpl: fetchMock });
 
-      const payment = await service.resolvePayment(876.7976, 'VES');
+      const payment = await service.resolvePayment(COMPANY_ID, 876.7976, 'VES');
 
       expect(payment).toMatchObject({
         currency: 'VES',
@@ -324,7 +339,7 @@ describe('RatesService', () => {
       });
 
       // 1000 COP * 0.22 = 220 Bs -> 220 / 876.7976 = 0.25 USD
-      const payment = await service.resolvePayment(1000, 'COP');
+      const payment = await service.resolvePayment(COMPANY_ID, 1000, 'COP');
 
       expect(payment.baseAmount).toBe(0.25);
       expect(payment.exchangeRate).toBe(0.22);
@@ -333,11 +348,11 @@ describe('RatesService', () => {
     it('deja intacto un cobro en la moneda base', async () => {
       const { service } = buildService({ fetchImpl: fetchMock });
 
-      await expect(service.resolvePayment(25.5, 'USD')).resolves.toMatchObject({
+      await expect(service.resolvePayment(COMPANY_ID, 25.5, 'USD')).resolves.toMatchObject({
         currency: 'USD',
         baseAmount: 25.5,
       });
-      await expect(service.resolvePayment(25.5, undefined)).resolves.toMatchObject(
+      await expect(service.resolvePayment(COMPANY_ID, 25.5, undefined)).resolves.toMatchObject(
         { currency: 'USD', baseAmount: 25.5 },
       );
     });
@@ -351,10 +366,10 @@ describe('RatesService', () => {
         ],
       });
 
-      await expect(service.resolvePayment(10, 'EUR')).rejects.toBeInstanceOf(
+      await expect(service.resolvePayment(COMPANY_ID, 10, 'EUR')).rejects.toBeInstanceOf(
         BadRequestException,
       );
-      await expect(service.resolvePayment(10, 'COP')).rejects.toBeInstanceOf(
+      await expect(service.resolvePayment(COMPANY_ID, 10, 'COP')).rejects.toBeInstanceOf(
         BadRequestException,
       );
     });
@@ -365,7 +380,7 @@ describe('RatesService', () => {
         currencies: [...DEFAULT_CURRENCIES, currencySetting({ code: 'COP' })],
       });
 
-      await expect(service.resolvePayment(10, 'COP')).rejects.toBeInstanceOf(
+      await expect(service.resolvePayment(COMPANY_ID, 10, 'COP')).rejects.toBeInstanceOf(
         BadRequestException,
       );
     });
@@ -373,7 +388,7 @@ describe('RatesService', () => {
     it('expresa un monto de la moneda base en otra moneda', async () => {
       const { service } = buildService({ fetchImpl: fetchMock });
 
-      await expect(service.toCurrencyAmount(2, 'VES')).resolves.toBe(1753.6);
+      await expect(service.toCurrencyAmount(COMPANY_ID, 2, 'VES')).resolves.toBe(1753.6);
     });
   });
 });

@@ -30,19 +30,26 @@ export class InventoryController {
     @Body() dto: CreateMovementDto,
     @CurrentUser() user: AuthenticatedUser,
   ) {
-    return this.inventoryService.create(dto, user.id);
+    return this.inventoryService.create(user.companyId, dto, user.id);
   }
 
   @Get('movements')
   @ApiOperation({ summary: 'Historial de movimientos (paginado)' })
-  findMovements(@Query() query: MovementQueryDto) {
-    return this.inventoryService.findMovements(query);
+  findMovements(
+    @CurrentUser('companyId') companyId: string,
+    @Query() query: MovementQueryDto,
+  ) {
+    return this.inventoryService.findMovements(companyId, query);
   }
 
   @Get('stock')
   @ApiOperation({ summary: 'Niveles de stock actuales' })
-  stock(@Query('lowOnly') lowOnly?: string, @Query('search') search?: string) {
-    return this.inventoryService.getStockLevels({
+  stock(
+    @CurrentUser('companyId') companyId: string,
+    @Query('lowOnly') lowOnly?: string,
+    @Query('search') search?: string,
+  ) {
+    return this.inventoryService.getStockLevels(companyId, {
       lowOnly: lowOnly === 'true',
       search,
     });
@@ -50,8 +57,8 @@ export class InventoryController {
 
   @Get('low-stock')
   @ApiOperation({ summary: 'Productos bajo stock minimo' })
-  lowStock() {
-    return this.inventoryService.getStockLevels({ lowOnly: true });
+  lowStock(@CurrentUser('companyId') companyId: string) {
+    return this.inventoryService.getStockLevels(companyId, { lowOnly: true });
   }
 
   @Post('products/:productId/adjust')
@@ -62,6 +69,11 @@ export class InventoryController {
     @Body() dto: AdjustStockDto,
     @CurrentUser() user: AuthenticatedUser,
   ) {
-    return this.inventoryService.adjustStock(productId, dto, user.id);
+    return this.inventoryService.adjustStock(
+      user.companyId,
+      productId,
+      dto,
+      user.id,
+    );
   }
 }

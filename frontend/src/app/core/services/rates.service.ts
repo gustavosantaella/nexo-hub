@@ -48,6 +48,8 @@ export class RatesService {
   private readonly _loading = signal(false);
   private readonly _error = signal<string | null>(null);
   private readonly _conversions = signal(storedConversions());
+  /** Última petición lanzada (para ignorar respuestas obsoletas). */
+  private requestId = 0;
 
   readonly snapshot = this._snapshot.asReadonly();
   readonly loading = this._loading.asReadonly();
@@ -81,21 +83,28 @@ export class RatesService {
 
   /**
    * Carga (o recarga) las tasas. `force` pide al backend ignorar su caché y
-   * volver a consultar el BCV.
+   * volver a consultar el BCV; además, en multi-empresa, se usa tras iniciar
+   * sesión o cambiar de empresa para traer las tasas/ monedas de esa empresa.
    */
   load(force = false): void {
-    if (this._loading()) return;
+    if (this._loading() && !force) return;
+
+    // Identificador de petición: descarta respuestas obsoletas si el usuario
+    // cambia de empresa antes de que llegue la anterior.
+    const requestId = ++this.requestId;
     this._loading.set(true);
 
     this.http
       .get<RatesSnapshot>(`${this.baseUrl}${force ? '?refresh=true' : ''}`)
       .subscribe({
         next: (snapshot) => {
+          if (requestId !== this.requestId) return;
           this._snapshot.set(snapshot);
           this._error.set(null);
           this._loading.set(false);
         },
         error: (error: Error) => {
+          if (requestId !== this.requestId) return;
           this._error.set(error.message ?? 'No se pudieron cargar las tasas');
           this._loading.set(false);
         },

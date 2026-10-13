@@ -28,38 +28,51 @@ export class ProductsController {
   @Roles(Role.ADMIN, Role.MANAGER)
   @ApiOperation({ summary: 'Crear producto' })
   create(@Body() dto: CreateProductDto, @CurrentUser() user: AuthenticatedUser) {
-    return this.productsService.create(dto, user.id);
+    return this.productsService.create(user.companyId, dto, user.id);
   }
 
   @Get()
   @ApiOperation({ summary: 'Listar productos (paginado)' })
-  findAll(@Query() query: ProductQueryDto) {
-    return this.productsService.findAll(query);
+  findAll(
+    @CurrentUser('companyId') companyId: string,
+    @Query() query: ProductQueryDto,
+  ) {
+    return this.productsService.findAll(companyId, query);
   }
 
   @Get('options')
   @ApiOperation({ summary: 'Productos activos para selects / POS' })
-  findOptions() {
-    return this.productsService.findOptions();
+  findOptions(@CurrentUser('companyId') companyId: string) {
+    return this.productsService.findOptions(companyId);
   }
 
   @Get(':id')
   @ApiOperation({ summary: 'Obtener producto por id' })
-  findOne(@Param('id') id: string) {
-    return this.productsService.findOne(id);
+  findOne(
+    @CurrentUser('companyId') companyId: string,
+    @Param('id') id: string,
+  ) {
+    return this.productsService.findOne(companyId, id);
   }
 
   @Patch(':id')
   @Roles(Role.ADMIN, Role.MANAGER)
   @ApiOperation({ summary: 'Actualizar producto' })
-  update(@Param('id') id: string, @Body() dto: UpdateProductDto) {
-    return this.productsService.update(id, dto);
+  update(
+    @CurrentUser('companyId') companyId: string,
+    @Param('id') id: string,
+    @Body() dto: UpdateProductDto,
+  ) {
+    return this.productsService.update(companyId, id, dto);
   }
 
   @Delete(':id')
   @Roles(Role.ADMIN, Role.MANAGER)
   @ApiOperation({ summary: 'Desactivar producto (baja logica)' })
-  remove(@Param('id') id: string) {
-    return this.productsService.remove(id);
+  remove(
+    @CurrentUser('companyId') companyId: string,
+    @Param('id') id: string,
+  ) {
+    return this.productsService.remove(companyId, id);
   }
 }

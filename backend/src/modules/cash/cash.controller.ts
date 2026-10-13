@@ -29,49 +29,67 @@ export class CashController {
   @ApiOperation({
     summary: 'Sesion de caja abierta + arqueo en vivo (session=null si esta cerrada)',
   })
-  current() {
-    return this.cashService.getCurrentSession();
+  current(@CurrentUser('companyId') companyId: string) {
+    return this.cashService.getCurrentSession(companyId);
   }
 
   @Post('open')
   @Roles(...CASH_ROLES)
   @ApiOperation({ summary: 'Abrir caja (fondo inicial)' })
-  open(@Body() dto: OpenSessionDto, @CurrentUser() user: AuthenticatedUser) {
-    return this.cashService.openSession(dto, user.id);
+  open(
+    @CurrentUser('companyId') companyId: string,
+    @Body() dto: OpenSessionDto,
+    @CurrentUser() user: AuthenticatedUser,
+  ) {
+    return this.cashService.openSession(companyId, dto, user.id);
   }
 
   @Post('close')
   @Roles(...CASH_ROLES)
   @ApiOperation({ summary: 'Cerrar caja con arqueo (contado vs esperado)' })
-  close(@Body() dto: CloseSessionDto, @CurrentUser() user: AuthenticatedUser) {
-    return this.cashService.closeSession(dto, user.id);
+  close(
+    @CurrentUser('companyId') companyId: string,
+    @Body() dto: CloseSessionDto,
+    @CurrentUser() user: AuthenticatedUser,
+  ) {
+    return this.cashService.closeSession(companyId, dto, user.id);
   }
 
   @Post('movements')
   @Roles(...CASH_ROLES)
   @ApiOperation({ summary: 'Registrar ingreso/egreso manual de caja' })
   addMovement(
+    @CurrentUser('companyId') companyId: string,
     @Body() dto: CreateCashMovementDto,
     @CurrentUser() user: AuthenticatedUser,
   ) {
-    return this.cashService.addMovement(dto, user.id);
+    return this.cashService.addMovement(companyId, dto, user.id);
   }
 
   @Get('movements')
   @ApiOperation({ summary: 'Historial de movimientos de caja (paginado)' })
-  movements(@Query() query: CashMovementQueryDto) {
-    return this.cashService.listMovements(query);
+  movements(
+    @CurrentUser('companyId') companyId: string,
+    @Query() query: CashMovementQueryDto,
+  ) {
+    return this.cashService.listMovements(companyId, query);
   }
 
   @Get('sessions')
   @ApiOperation({ summary: 'Historial de sesiones de caja (paginado)' })
-  sessions(@Query() query: CashSessionQueryDto) {
-    return this.cashService.listSessions(query);
+  sessions(
+    @CurrentUser('companyId') companyId: string,
+    @Query() query: CashSessionQueryDto,
+  ) {
+    return this.cashService.listSessions(companyId, query);
   }
 
   @Get('sessions/:id')
   @ApiOperation({ summary: 'Detalle de una sesion con sus movimientos y arqueo' })
-  session(@Param('id') id: string) {
-    return this.cashService.getSessionById(id);
+  session(
+    @CurrentUser('companyId') companyId: string,
+    @Param('id') id: string,
+  ) {
+    return this.cashService.getSessionById(companyId, id);
   }
 }

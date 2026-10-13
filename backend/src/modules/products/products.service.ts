@@ -1,5 +1,6 @@
 import {
   BadRequestException,
+  ConflictException,
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
@@ -9,6 +10,7 @@ import { PaginationQueryDto } from '../../common/dto/pagination-query.dto';
 import { buildPaginatedResult, toSkip } from '../../common/utils/pagination.util';
 import { toMoney } from '../../common/utils/money.util';
 import { normalizeNullableId } from '../../common/utils/normalize.util';
+import { tenantWhere } from '../../common/utils/tenant.util';
 import { PrismaService } from '../../prisma/prisma.service';
 import { InventoryService } from '../inventory/inventory.service';
 import { CreateProductDto } from './dto/create-product.dto';
@@ -27,13 +29,18 @@ export class ProductsService {
     private readonly inventory: InventoryService,
   ) {}
 
-  async create(dto: CreateProductDto, userId?: string) {
+  async create(companyId: string, dto: CreateProductDto, userId?: string) {
     const { stock, cost, categoryId, supplierId, sku, ...rest } = dto;
+
+    const finalSku = sku?.trim() || (await this.generateSku(companyId, dto.name));
+    await this.assertSkuAvailable(companyId, finalSku);
+    await this.assertRelationsInCompany(companyId, categoryId, supplierId);
 
     const product = await this.prisma.product.create({
       data: {
         ...rest,
-        sku: sku?.trim() || (await this.generateSku(dto.name)),
+        companyId,
+        sku: finalSku,
         price: toMoney(dto.price),
         cost: toMoney(cost ?? 0),
         stock: 0,
@@ -47,9 +54,9 @@ export class ProductsService {
       include: PRODUCT_INCLUDE,
     });
 
-    // Stock inicial => movimiento de inventario trazable.
+    // Stock inicial => movimiento de inventario trazable (siempre en la empresa).
     if (stock && stock > 0) {
-      await this.inventory.applyMovement({
+      await this.inventory.applyMovement(companyId, {
         productId: product.id,
         type: StockMovementType.IN,
         quantity: stock,
@@ -60,11 +67,12 @@ export class ProductsService {
       });
     }
 
-    return this.findOne(product.id);
+    return this.findOne(companyId, product.id);
   }
 
-  async findAll(query: ProductQueryDto) {
+  async findAll(companyId: string, query: ProductQueryDto) {
     const where: Prisma.ProductWhereInput = {
+      ...tenantWhere(companyId),
       ...(query.search
         ? {
             OR: [
@@ -96,9 +104,9 @@ export class ProductsService {
   }
 
   /** Productos activos para selects (POS / pedidos). */
-  findOptions() {
+  findOptions(companyId: string) {
     return this.prisma.product.findMany({
-      where: { active: true },
+      where: { active: true, ...tenantWhere(companyId) },
       select: {
         id: true,
         sku: true,
@@ -111,18 +119,23 @@ export class ProductsService {
     });
   }
 
-  async findOne(id: string) {
-    const product = await this.prisma.product.findUnique({
-      where: { id },
+  async findOne(companyId: string, id: string) {
+    const product = await this.prisma.product.findFirst({
+      where: { id, ...tenantWhere(companyId) },
       include: PRODUCT_INCLUDE,
     });
     if (!product) throw new NotFoundException('Producto no encontrado');
     return product;
   }
 
-  async update(id: string, dto: UpdateProductDto) {
-    await this.findOne(id);
+  async update(companyId: string, id: string, dto: UpdateProductDto) {
+    await this.findOne(companyId, id);
     const { cost, categoryId, supplierId, sku, ...rest } = dto;
+
+    if (sku !== undefined && sku.trim()) {
+      await this.assertSkuAvailable(companyId, sku.trim(), id);
+    }
+    await this.assertRelationsInCompany(companyId, categoryId, supplierId);
 
     const data: Prisma.ProductUpdateInput = {
       ...rest,
@@ -137,20 +150,24 @@ export class ProductsService {
         : {}),
     };
 
-    await this.prisma.product.update({ where: { id }, data });
-    return this.findOne(id);
+    // updateMany + filtro por empresa: nunca se toca un producto de otra.
+    await this.prisma.product.updateMany({
+      where: { id, ...tenantWhere(companyId) },
+      data,
+    });
+    return this.findOne(companyId, id);
   }
 
-  async remove(id: string) {
-    await this.findOne(id);
-    return this.prisma.product.update({
-      where: { id },
+  async remove(companyId: string, id: string) {
+    await this.findOne(companyId, id);
+    return this.prisma.product.updateMany({
+      where: { id, ...tenantWhere(companyId) },
       data: { active: false },
     });
   }
 
-  /** Genera un SKU unico y legible a partir del nombre. */
-  private async generateSku(name: string): Promise<string> {
+  /** Genera un SKU unico por empresa y legible a partir del nombre. */
+  private async generateSku(companyId: string, name: string): Promise<string> {
     const base = name
       .normalize('NFD')
       .replace(/[\u0300-\u036f]/g, '')
@@ -161,12 +178,60 @@ export class ProductsService {
 
     for (let attempt = 0; attempt < 20; attempt += 1) {
       const candidate = `${base}-${Math.floor(1000 + Math.random() * 9000)}`;
-      const exists = await this.prisma.product.findUnique({
-        where: { sku: candidate },
+      const exists = await this.prisma.product.findFirst({
+        where: { sku: candidate, ...tenantWhere(companyId) },
+        select: { id: true },
       });
       if (!exists) return candidate;
     }
     throw new BadRequestException('No se pudo generar un SKU unico');
+  }
+
+  /** El SKU es unico por empresa (no global). */
+  private async assertSkuAvailable(
+    companyId: string,
+    sku: string,
+    excludeId?: string,
+  ): Promise<void> {
+    const existing = await this.prisma.product.findFirst({
+      where: {
+        ...tenantWhere(companyId),
+        sku,
+        ...(excludeId ? { id: { not: excludeId } } : {}),
+      },
+      select: { id: true },
+    });
+    if (existing) {
+      throw new ConflictException(
+        'Ya existe un producto con ese SKU en esta empresa',
+      );
+    }
+  }
+
+  /** La categoria/proveedor enlazados deben pertenecer a la empresa activa. */
+  private async assertRelationsInCompany(
+    companyId: string,
+    categoryId?: string | null,
+    supplierId?: string | null,
+  ): Promise<void> {
+    if (categoryId) {
+      const category = await this.prisma.category.findFirst({
+        where: { id: categoryId, ...tenantWhere(companyId) },
+        select: { id: true },
+      });
+      if (!category) {
+        throw new BadRequestException('La categoria indicada no existe');
+      }
+    }
+    if (supplierId) {
+      const supplier = await this.prisma.supplier.findFirst({
+        where: { id: supplierId, ...tenantWhere(companyId) },
+        select: { id: true },
+      });
+      if (!supplier) {
+        throw new BadRequestException('El proveedor indicado no existe');
+      }
+    }
   }
 }
 
