@@ -18,6 +18,7 @@ const COMPANY_SELECT = {
   phone: true,
   email: true,
   address: true,
+  logoUrl: true,
   notes: true,
   active: true,
   createdAt: true,
@@ -117,6 +118,8 @@ export class CompaniesService {
     if (dto.email !== undefined) data.email = dto.email.toLowerCase();
     if (dto.address !== undefined) data.address = dto.address;
     if (dto.notes !== undefined) data.notes = dto.notes;
+    // El logo viaja como URL o data URL: cadena vacia = quitar el logo.
+    if (dto.logoUrl !== undefined) data.logoUrl = dto.logoUrl.trim() || null;
     if (dto.rif !== undefined) {
       const rif = dto.rif.trim().toUpperCase();
       await this.assertRifAvailable(rif, companyId);

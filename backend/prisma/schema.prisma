@@ -39,6 +39,9 @@ model Company {
   email     String?
   address   String?
   notes     String?
+  // Logo que se imprime en los reportes: URL publica o data URL (base64) del
+  // archivo, que el navegador ya reduce antes de guardarlo (ver utils/image.ts).
+  logoUrl   String?
   active    Boolean  @default(true)
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt

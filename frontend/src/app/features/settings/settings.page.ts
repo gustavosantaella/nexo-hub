@@ -31,7 +31,8 @@ import { PreferencesService, type DialogView } from '../../core/services/prefere
 import { ThemeService, type Theme } from '../../core/services/theme.service';
 import { RatesService } from '../../core/services/rates.service';
 import { ToastService } from '../../core/services/toast.service';
-import { bs, dateTime, rate, signedPercent } from '../../core/utils/format';
+import { bs, dateTime, rate, signedPercent, apiErrorMessage } from '../../core/utils/format';
+import { toLogoDataUrl } from '../../core/utils/image';
 import { EmptyStateComponent, LoaderComponent } from '../../shared/components/feedback.component';
 import { IconComponent } from '../../shared/components/icon.component';
 import { ModalComponent } from '../../shared/components/modal.component';
@@ -792,6 +793,67 @@ interface CurrencyRow {
                   [(ngModel)]="companyForm.address"
                 />
               </div>
+
+              <!-- Logo que encabeza los reportes -->
+              <div class="sm:col-span-2">
+                <span class="label">Logo de la empresa</span>
+                <div class="flex flex-wrap items-start gap-4">
+                  <span
+                    class="flex h-20 w-20 shrink-0 items-center justify-center overflow-hidden rounded-xl border border-slate-200 bg-slate-50"
+                  >
+                    @if (companyForm.logoUrl) {
+                      <img
+                        class="h-full w-full object-contain"
+                        [src]="companyForm.logoUrl"
+                        alt="Logo de la empresa"
+                      />
+                    } @else {
+                      <app-icon name="image" size="h-7 w-7" class="text-slate-400" />
+                    }
+                  </span>
+
+                  <div class="min-w-[220px] flex-1 space-y-2">
+                    @if (canManage()) {
+                      <div class="flex flex-wrap items-center gap-2">
+                        <label class="btn-secondary btn-sm cursor-pointer" for="company-logo">
+                          <app-icon name="image" size="h-4 w-4" />
+                          {{ logoReading() ? 'Leyendo…' : 'Subir imagen' }}
+                        </label>
+                        <input
+                          id="company-logo"
+                          type="file"
+                          accept="image/png,image/jpeg,image/webp,image/svg+xml"
+                          class="hidden"
+                          (change)="onLogoSelected($event)"
+                        />
+                        @if (companyForm.logoUrl) {
+                          <button
+                            type="button"
+                            class="btn-ghost btn-sm text-rose-600"
+                            (click)="clearLogo()"
+                          >
+                            <app-icon name="trash" size="h-4 w-4" />
+                            Quitar
+                          </button>
+                        }
+                      </div>
+                      <input
+                        name="companyLogo"
+                        class="input"
+                        placeholder="…o pega la URL del logo"
+                        [(ngModel)]="companyForm.logoUrl"
+                      />
+                    }
+                    <p class="text-xs text-slate-500">
+                      Aparece en la esquina superior izquierda de los reportes. La imagen
+                      se reduce sola a 400 px para guardarla en el sistema.
+                    </p>
+                    @if (logoError(); as error) {
+                      <p class="text-xs font-medium text-rose-600">{{ error }}</p>
+                    }
+                  </div>
+                </div>
+              </div>
             </div>
 
             <div class="flex flex-wrap items-center justify-between gap-2 border-t border-slate-200 pt-4">
@@ -1180,10 +1242,13 @@ export class SettingsPage implements OnInit {
 
   // ------------------------------ Empresa activa -----------------------------
   /** Datos de la empresa activa (se sincronizan con la sesión). */
-  companyForm = { name: '', rif: '', phone: '', email: '', address: '' };
+  companyForm = { name: '', rif: '', phone: '', email: '', address: '', logoUrl: '' };
   readonly companySaving = signal(false);
   readonly companyCreating = signal(false);
   readonly companyModalOpen = signal(false);
+  /** Lectura del archivo del logo en curso y error del último intento. */
+  readonly logoReading = signal(false);
+  readonly logoError = signal<string | null>(null);
   /** Borrador para crear otra empresa. */
   companyDraft = { name: '', rif: '', phone: '', email: '', address: '' };
 
@@ -1238,7 +1303,36 @@ export class SettingsPage implements OnInit {
       phone: company.phone ?? '',
       email: company.email ?? '',
       address: company.address ?? '',
+      logoUrl: company.logoUrl ?? '',
     };
+  }
+
+  /**
+   * Lee el archivo elegido y lo deja en el formulario como data URL ya reducido
+   * (así no viaja un archivo de varios megabytes en cada petición de sesión).
+   */
+  async onLogoSelected(event: Event): Promise<void> {
+    const input = event.target as HTMLInputElement;
+    const file = input.files?.[0];
+    // Se limpia el input para poder volver a elegir el mismo archivo.
+    input.value = '';
+    if (!file) return;
+
+    this.logoError.set(null);
+    this.logoReading.set(true);
+    try {
+      this.companyForm.logoUrl = await toLogoDataUrl(file);
+    } catch (error) {
+      this.logoError.set(apiErrorMessage(error));
+    } finally {
+      this.logoReading.set(false);
+    }
+  }
+
+  /** Quita el logo de la empresa (se guarda al enviar el formulario). */
+  clearLogo(): void {
+    this.companyForm.logoUrl = '';
+    this.logoError.set(null);
   }
 
   private loadCompany(): void {
@@ -1258,6 +1352,7 @@ export class SettingsPage implements OnInit {
         phone: this.companyForm.phone.trim(),
         email: this.companyForm.email.trim(),
         address: this.companyForm.address.trim(),
+        logoUrl: this.companyForm.logoUrl.trim(),
       })
       .subscribe({
         next: () => {

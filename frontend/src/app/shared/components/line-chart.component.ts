@@ -1,6 +1,6 @@
 import { ChangeDetectionStrategy, Component, Input } from '@angular/core';
 import type { ChartColor } from '../../core/constants/chart';
-import { money, number } from '../../core/utils/format';
+import { compact, isCompact, money, moneyCompact, number } from '../../core/utils/format';
 
 /** Serie de la grafica de lineas: etiqueta, tono y un valor por periodo. */
 export interface LineSeries {
@@ -140,7 +140,7 @@ export class LineChartComponent {
     const { min, max } = this.bounds;
     return [min, (min + max) / 2, max].map((value) => ({
       position: this.yOf(value),
-      text: this.format(value),
+      text: this.formatTick(value),
     }));
   }
 
@@ -219,6 +219,15 @@ export class LineChartComponent {
 
   private format(value: number): string {
     return this.isCurrency ? money(value) : number(value, 2);
+  }
+
+  /**
+   * Texto de una marca del eje: la columna es estrecha (64 px), así que los
+   * montos grandes se abrevian; los tooltips siguen mostrando el valor exacto.
+   */
+  private formatTick(value: number): string {
+    if (!isCompact(value)) return this.format(value);
+    return this.isCurrency ? moneyCompact(value) : compact(value);
   }
 
   private round(value: number): number {

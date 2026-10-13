@@ -108,10 +108,11 @@ const WITH_CUSTOM: RatesSnapshot = {
 @Component({
   standalone: true,
   imports: [MoneyComponent],
-  template: `<app-money [amount]="amount()" />`,
+  template: `<app-money [amount]="amount()" [compact]="compact()" />`,
 })
 class HostComponent {
   readonly amount = signal<number>(10);
+  readonly compact = signal<boolean>(false);
 }
 
 /** Montos "al cambio": equivalente en bolívares con cada tasa activa. */
@@ -183,5 +184,22 @@ describe('MoneyComponent (montos al cambio)', () => {
 
     expect(fixture.nativeElement.textContent).toContain('$ 2.00');
     expect(fixture.nativeElement.textContent).toContain('Bs 1,753.60');
+  });
+
+  it('abrevia el monto y su conversion cuando no caben en el hueco', () => {
+    load(BCV_ONLY);
+
+    fixture.componentInstance.amount.set(1_250_000);
+    fixture.componentInstance.compact.set(true);
+    fixture.detectChanges();
+
+    const root = fixture.nativeElement as HTMLElement;
+    const base = root.querySelector('app-money span');
+    const text = root.textContent as string;
+
+    expect(base?.textContent?.trim()).toBe('$ 1.3m');
+    expect(base?.getAttribute('title')).toBe('$ 1,250,000.00');
+    expect(text).toContain('Bs 1.1b');
+    expect(text).not.toContain('Bs 1,095,997,000.00');
   });
 });

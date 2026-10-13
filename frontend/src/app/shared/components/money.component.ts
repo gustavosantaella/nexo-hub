@@ -6,7 +6,8 @@ import {
   inject,
 } from '@angular/core';
 import { RatesService } from '../../core/services/rates.service';
-import { money } from '../../core/utils/format';
+import type { RateConversion } from '../../core/models/rates.model';
+import { bsCompact, money, moneyCompact } from '../../core/utils/format';
 
 /**
  * Monto del sistema (moneda base, USD) con su equivalente "al cambio".
@@ -30,7 +31,9 @@ import { money } from '../../core/utils/format';
   ],
   template: `
     @if (!hideBase) {
-      <span class="whitespace-nowrap" [class.font-semibold]="strong">{{ base }}</span>
+      <span class="whitespace-nowrap" [class.font-semibold]="strong" [attr.title]="baseTitle">
+        {{ base }}
+      </span>
     }
     @if (showConversions() && conversions.length > 0) {
       <span
@@ -57,14 +60,24 @@ export class MoneyComponent {
   @Input({ transform: booleanAttribute }) alignEnd = false;
   /** Oculta el monto base y deja solo la conversión. */
   @Input({ transform: booleanAttribute }) hideBase = false;
+  /** Abrevia el monto cuando no cabe (1 250 000 → `$ 1.3m`); el exacto queda en el tooltip. */
+  @Input({ transform: booleanAttribute }) compact = false;
 
   readonly showConversions = this.rates.showConversions;
 
   get base(): string {
-    return money(this.amount);
+    return this.compact ? moneyCompact(this.amount) : money(this.amount);
   }
 
-  get conversions() {
-    return this.rates.conversions(this.amount);
+  /** Monto exacto (tooltip) cuando el visible va abreviado. */
+  get baseTitle(): string | null {
+    return this.compact ? money(this.amount) : null;
+  }
+
+  /** Conversiones "al cambio" (en modo compacto tambien se abrevian). */
+  get conversions(): RateConversion[] {
+    const items = this.rates.conversions(this.amount);
+    if (!this.compact) return items;
+    return items.map((item) => ({ ...item, text: bsCompact(item.amount) }));
   }
 }

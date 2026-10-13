@@ -23,8 +23,21 @@ import {
   paymentMethodColor,
 } from '../../core/constants/chart';
 import type { ChartColor } from '../../core/constants/chart';
+import { reportCompany } from '../../core/models/report.model';
+import type { ReportData } from '../../core/models/report.model';
+import { AuthService } from '../../core/services/auth.service';
+import { ReportService } from '../../core/services/report.service';
 import { StatsService } from '../../core/services/stats.service';
-import { moneyIn, number, toDateInput } from '../../core/utils/format';
+import {
+  apiErrorMessage,
+  compact,
+  moneyIn,
+  moneyInCompact,
+  isCompact,
+  number,
+  toDateInput,
+} from '../../core/utils/format';
+import { ToastService } from '../../core/services/toast.service';
 import { BarChartComponent } from '../../shared/components/bar-chart.component';
 import type { BarPoint } from '../../shared/components/bar-chart.component';
 import { BarListComponent } from '../../shared/components/bar-list.component';
@@ -38,6 +51,7 @@ import { IconComponent } from '../../shared/components/icon.component';
 import { PageHeaderComponent } from '../../shared/components/page-header.component';
 import { MoneyComponent } from '../../shared/components/money.component';
 import { StatCardComponent } from '../../shared/components/stat-card.component';
+import { ReportSheetComponent } from './report-sheet.component';
 
 /** Bloque de los graficos de composicion (anillo + ranking). */
 interface CompositionItem {
@@ -45,6 +59,8 @@ interface CompositionItem {
   value: number;
   /** Dato extra junto al valor (ej. "24 unidades"). */
   caption?: string;
+  /** Detalle completo (tooltip) cuando el `caption` va abreviado. */
+  captionTitle?: string;
   color: ChartColor;
 }
 
@@ -72,6 +88,7 @@ function toComposition(items: CompositionItem[]): Composition {
       label: item.label,
       value: item.value,
       caption: item.caption,
+      captionTitle: item.captionTitle,
       color: item.color,
     })),
     slices: items.map((item) => ({
@@ -100,6 +117,7 @@ function toComposition(items: CompositionItem[]): Composition {
     LineChartComponent,
     EmptyStateComponent,
     LoaderComponent,
+    ReportSheetComponent,
   ],
   changeDetection: ChangeDetectionStrategy.OnPush,
   template: `    <app-page-header
@@ -110,6 +128,15 @@ function toComposition(items: CompositionItem[]): Composition {
       <button type="button" class="btn-secondary" (click)="load()">
         <app-icon name="refresh" size="h-4 w-4" />
         Actualizar
+      </button>
+      <button
+        type="button"
+        class="btn-primary"
+        [disabled]="reportLoading()"
+        (click)="generateReport()"
+      >
+        <app-icon name="download" size="h-4 w-4" />
+        {{ reportLoading() ? 'Generando…' : 'Generar reporte' }}
       </button>
     </app-page-header>
 
@@ -149,7 +176,7 @@ function toComposition(items: CompositionItem[]): Composition {
         <app-stat-card label="Cobrado" [value]="totals()?.collected ?? 0" [isCurrency]="true" icon="wallet" tone="emerald" />
         <app-stat-card label="Gastos" [value]="totals()?.expenses ?? 0" [isCurrency]="true" icon="money" tone="rose" />
         <app-stat-card label="Utilidad" [value]="totals()?.profit ?? 0" [isCurrency]="true" icon="trend-up" tone="emerald" />
-        <app-stat-card label="Pedidos" [value]="number(totals()?.orders ?? 0)" icon="box" tone="sky" />
+        <app-stat-card label="Pedidos" [value]="totals()?.orders ?? 0" icon="box" tone="sky" />
         <app-stat-card label="Ticket promedio" [value]="totals()?.ticketAverage ?? 0" [isCurrency]="true" icon="chart" tone="amber" />
       </div>
 
@@ -360,19 +387,32 @@ function toComposition(items: CompositionItem[]): Composition {
         }
       </section>
     }
+
+    @if (report(); as sheet) {
+      <app-report-sheet [data]="sheet" (closed)="closeReport()" />
+    }
   `,
 })
 export class StatsPage implements OnInit {
   private readonly stats = inject(StatsService);
+  private readonly reports = inject(ReportService);
+  private readonly auth = inject(AuthService);
+  private readonly toast = inject(ToastService);
 
   readonly methodLabels = PAYMENT_METHOD_LABELS;
   readonly unitLabels = PRODUCT_UNIT_LABELS;
   readonly number = number;
   readonly baseCurrency = BASE_CURRENCY;
 
-  /** Formatea un monto en la moneda en la que se cobró. */
+  /**
+   * Formatea un monto en la moneda en la que se cobró. Los montos enormes (las
+   * cifras en bolívares llegan a millones) se abrevian para no desbordar el
+   * ranking; el detalle exacto queda en el tooltip de la fila.
+   */
   amountIn(value: number | null | undefined, currency?: string | null): string {
-    return moneyIn(value, currency);
+    const amount = Number(value ?? 0);
+    if (isCompact(amount)) return moneyInCompact(amount, currency);
+    return moneyIn(amount, currency);
   }
 
   readonly loading = signal(true);
@@ -383,6 +423,9 @@ export class StatsPage implements OnInit {
   readonly categories = signal<CategorySalesReport | null>(null);
   readonly lowStock = signal<LowStockItem[]>([]);
   readonly growth = signal<number | null>(null);
+  /** Reporte general abierto en la vista previa (null = cerrado). */
+  readonly report = signal<ReportData | null>(null);
+  readonly reportLoading = signal(false);
 
   filters = { from: startOfMonthIso(), to: todayIso() };
 
@@ -418,7 +461,7 @@ export class StatsPage implements OnInit {
       (this.paymentMethods()?.items ?? []).map((row, index) => ({
         label: this.methodLabels[row.method] ?? row.method,
         value: row.amount,
-        caption: `${number(row.count)} cobros`,
+        caption: this.countLabel(row.count, 'cobros'),
         color: paymentMethodColor(row.method, index),
       })),
     ),
@@ -432,7 +475,7 @@ export class StatsPage implements OnInit {
     this.topProducts().map((item) => ({
       label: item.name,
       value: item.revenue,
-      caption: `${number(item.quantity)} u.`,
+      caption: this.countLabel(item.quantity, 'u.'),
     })),
   );
 
@@ -442,7 +485,8 @@ export class StatsPage implements OnInit {
       (this.paymentsByCurrency()?.items ?? []).map((row, index) => ({
         label: row.currency,
         value: row.baseAmount,
-        caption: `${this.amountIn(row.amount, row.currency)} · ${number(row.count)} cobros`,
+        caption: `${this.amountIn(row.amount, row.currency)} · ${this.countLabel(row.count, 'cobros')}`,
+        captionTitle: `${moneyIn(row.amount, row.currency)} · ${this.countLabel(row.count, 'cobros')}`,
         color: currencyColor(row.currency, index),
       })),
     ),
@@ -457,7 +501,7 @@ export class StatsPage implements OnInit {
       (this.categories()?.items ?? []).map((row, index) => ({
         label: row.name,
         value: row.revenue,
-        caption: `${number(row.quantity)} unidades`,
+        caption: this.countLabel(row.quantity, 'unidades'),
         color: chartColor(index),
       })),
     ),
@@ -471,7 +515,7 @@ export class StatsPage implements OnInit {
     this.lowStock().map((item) => ({
       label: item.name,
       value: item.stock,
-      valueText: `${number(item.stock)} ${item.unit}`,
+      valueText: this.countLabel(item.stock, item.unit),
       caption: `mín. ${number(item.minStock)}`,
       marker: item.minStock,
       markerLabel: 'Mínimo',
@@ -485,6 +529,13 @@ export class StatsPage implements OnInit {
       value: chart.topShare > 0 ? `${number(chart.topShare, 1)} %` : '—',
       hint: chart.topLabel,
     };
+  }
+
+  /** Cantidad con su unidad, abreviada cuando es enorme (12.5k unidades). */
+  private countLabel(value: number | null | undefined, unit = ''): string {
+    const amount = Number(value ?? 0);
+    const text = isCompact(amount) ? compact(amount) : number(amount);
+    return unit ? `${text} ${unit}` : text;
   }
 
   readonly granularityLabel = computed(() => {
@@ -532,6 +583,33 @@ export class StatsPage implements OnInit {
       next: (data) => this.growth.set(data.month.growth),
       error: () => this.growth.set(null),
     });
+  }
+
+  /**
+   * Genera el reporte general con TODO lo que cayó dentro del rango de fechas
+   * elegido (ventas, cobros, gastos, productos, caja, cuentas…) y lo abre en la
+   * vista previa, desde donde se descarga en PDF.
+   */
+  generateReport(): void {
+    if (this.reportLoading()) return;
+
+    this.reportLoading.set(true);
+    this.reports
+      .build(this.filters.from, this.filters.to, reportCompany(this.auth.company()))
+      .subscribe({
+        next: (data) => {
+          this.reportLoading.set(false);
+          this.report.set(data);
+        },
+        error: (error) => {
+          this.reportLoading.set(false);
+          this.toast.error(apiErrorMessage(error), 'No se pudo generar el reporte');
+        },
+      });
+  }
+
+  closeReport(): void {
+    this.report.set(null);
   }
 
   applyPreset(kind: 'today' | 'week' | 'month' | 'previous'): void {

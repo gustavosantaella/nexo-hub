@@ -84,7 +84,7 @@ const CATEGORY_TONES: Record<string, string> = {
 
     <div class="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
       <app-stat-card label="Total gastado" [value]="summary()?.total ?? 0" [isCurrency]="true" icon="money" tone="rose" />
-      <app-stat-card label="Cantidad de gastos" [value]="number(summary()?.count ?? 0)" icon="receipt" tone="sky" />
+      <app-stat-card label="Cantidad de gastos" [value]="summary()?.count ?? 0" icon="receipt" tone="sky" />
       <app-stat-card
         label="Mayor rubro"
         [value]="topCategoryLabel()"

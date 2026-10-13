@@ -76,7 +76,7 @@ const EMPTY_META: PaginationMeta = {
       <app-stat-card label="Saldo pendiente" [value]="summary()?.openBalance ?? 0" [isCurrency]="true" icon="alert" tone="rose" />
       <app-stat-card label="Total facturado" [value]="summary()?.openAmount ?? 0" [isCurrency]="true" icon="receipt" tone="sky" />
       <app-stat-card label="Pagado" [value]="summary()?.openPaid ?? 0" [isCurrency]="true" icon="check" tone="emerald" />
-      <app-stat-card label="Cuentas abiertas" [value]="number(summary()?.openCount ?? 0)" icon="folder" tone="amber" />
+      <app-stat-card label="Cuentas abiertas" [value]="summary()?.openCount ?? 0" icon="folder" tone="amber" />
     </div>
 
     <div class="mt-4 flex flex-wrap gap-2">

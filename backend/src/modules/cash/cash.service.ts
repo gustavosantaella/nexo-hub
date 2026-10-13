@@ -509,9 +509,14 @@ export class CashService {
   }
 
   async listSessions(companyId: string, query: CashSessionQueryDto) {
+    const dateFilter = buildDateRange(query.from, query.to);
+
     const where: Prisma.CashSessionWhereInput = {
       ...tenantWhere(companyId),
       ...(query.status ? { status: query.status } : {}),
+      // El rango (opcional) se aplica sobre la apertura: las cajas que se
+      // abrieron dentro del periodo pedido.
+      ...(query.from || query.to ? { openedAt: dateFilter } : {}),
     };
 
     const [items, total] = await this.prisma.$transaction([

@@ -44,6 +44,9 @@ const ICONS: Record<string, string> = {
     '<rect x="4" y="3.5" width="16" height="17" rx="2"/><path d="M8 8h.01M12 8h.01M16 8h.01M8 12h.01M12 12h.01M16 12h.01M8 16h8"/>',
   settings:
     '<path d="M4 7h9M18.5 7H20M4 12h3M12.5 12H20M4 17h6M15.5 17H20"/><circle cx="15.5" cy="7" r="2.2"/><circle cx="9.5" cy="12" r="2.2"/><circle cx="12.5" cy="17" r="2.2"/>',
+  download: '<path d="M12 4v10"/><path d="m8 11 4 4 4-4"/><path d="M5 19h14"/>',
+  image:
+    '<rect x="3.5" y="4.5" width="17" height="15" rx="2"/><circle cx="9" cy="10" r="1.6"/><path d="m4.5 17 4.7-4.7L13 16l2.5-2.5 4 4"/>',
   exchange:
     '<path d="M4 8.5h13.5"/><path d="M14 5l3.5 3.5L14 12"/><path d="M20 15.5H6.5"/><path d="M10 12l-3.5 3.5L10 19"/>',
   sun: '<circle cx="12" cy="12" r="4"/><path d="M12 2.5v2.3M12 19.2v2.3M4.1 4.1l1.6 1.6M18.3 18.3l1.6 1.6M2.5 12h2.3M19.2 12h2.3M4.1 19.9l1.6-1.6M18.3 5.7l1.6-1.6"/>',

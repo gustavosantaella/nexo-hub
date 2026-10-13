@@ -101,6 +101,18 @@ describe('LineChartComponent (tendencia)', () => {
     expect(component.valueAt(component.series[0], 0)).toBe('12.00');
   });
 
+  it('abrevia las marcas del eje cuando el monto no cabe en la columna', () => {
+    render(['1 oct', '2 oct'], [ventas([0, 1_250_000])]);
+
+    expect(component.ticks).toEqual([
+      { position: 100, text: '$ 0.00' },
+      { position: 50, text: '$ 700k' },
+      { position: 0, text: '$ 1.4m' },
+    ]);
+    // El tooltip del periodo conserva el valor exacto.
+    expect(component.valueAt(component.series[0], 1)).toBe('$ 1,250,000.00');
+  });
+
   it('no dibuja nada cuando no hay series', () => {
     const root = render([], []);
 

@@ -1,6 +1,6 @@
 import { ChangeDetectionStrategy, Component, Input } from '@angular/core';
 import type { ChartColor } from '../../core/constants/chart';
-import { money, number } from '../../core/utils/format';
+import { money, moneyCompact, number, compact, isCompact } from '../../core/utils/format';
 
 /** Fila del ranking: barra proporcional con valor, detalle y marca opcional. */
 export interface BarRow {
@@ -10,6 +10,8 @@ export interface BarRow {
   valueText?: string;
   /** Dato adicional tras el valor (ej. "12 cobros", "24 unidades"). */
   caption?: string;
+  /** Detalle completo (tooltip) cuando el `caption` va abreviado. */
+  captionTitle?: string;
   /**
    * Posicion sobre la barra para comparar un umbral (ej. el stock minimo del
    * producto). Se tiene en cuenta para calcular la escala.
@@ -39,9 +41,9 @@ export interface BarRow {
           <div class="flex items-baseline justify-between gap-3 text-xs">
             <span class="truncate font-medium text-slate-700" [title]="row.label">{{ row.label }}</span>
             <span class="shrink-0 whitespace-nowrap">
-              <span class="font-medium text-slate-700">{{ valueOf(row) }}</span>
+              <span class="font-medium text-slate-700" [attr.title]="titleOf(row)">{{ valueOf(row) }}</span>
               @if (row.caption) {
-                <span class="text-slate-400"> · {{ row.caption }}</span>
+                <span class="text-slate-400" [attr.title]="row.captionTitle"> · {{ row.caption }}</span>
               }
             </span>
           </div>
@@ -86,9 +88,20 @@ export class BarListComponent {
     return Math.round(Math.min(1, ratio) * 100);
   }
 
-  /** Texto del valor de la fila. */
+  /**
+   * Texto del valor de la fila. Los montos enormes se abrevian (`$ 1.3m`) para
+   * que no empujen la etiqueta fuera de la tarjeta; `titleOf` da el exacto.
+   */
   valueOf(row: BarRow): string {
     if (row.valueText) return row.valueText;
+    const abbreviated = isCompact(row.value);
+    if (this.isCurrency) return abbreviated ? moneyCompact(row.value) : money(row.value);
+    return abbreviated ? compact(row.value) : number(row.value);
+  }
+
+  /** Valor exacto (tooltip) cuando el texto visible va abreviado. */
+  titleOf(row: BarRow): string | null {
+    if (row.valueText || !isCompact(row.value)) return null;
     return this.isCurrency ? money(row.value) : number(row.value);
   }
 

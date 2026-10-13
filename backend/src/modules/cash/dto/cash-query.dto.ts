@@ -11,6 +11,16 @@ export class CashSessionQueryDto extends PaginationQueryDto {
   @IsOptional()
   @IsIn(['OPEN', 'CLOSED'])
   status?: string;
+
+  @ApiPropertyOptional({ description: 'Fecha desde (ISO 8601); filtra por apertura' })
+  @IsOptional()
+  @IsString()
+  from?: string;
+
+  @ApiPropertyOptional({ description: 'Fecha hasta (ISO 8601); filtra por apertura' })
+  @IsOptional()
+  @IsString()
+  to?: string;
 }
 
 export class CashMovementQueryDto extends PaginationQueryDto {

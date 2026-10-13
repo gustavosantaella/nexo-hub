@@ -47,6 +47,8 @@ export interface Company {
   phone?: string | null;
   email?: string | null;
   address?: string | null;
+  /** Logo para los reportes: URL publica o data URL (base64) reducida. */
+  logoUrl?: string | null;
   notes?: string | null;
   active: boolean;
   createdAt: string;
@@ -132,6 +134,8 @@ export interface CompanyPayload {
   phone?: string;
   email?: string;
   address?: string;
+  /** Logo para los reportes (URL o data URL). Cadena vacia lo elimina. */
+  logoUrl?: string;
   notes?: string;
 }
 

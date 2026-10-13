@@ -1,5 +1,8 @@
 import { ChangeDetectionStrategy, Component, Input } from '@angular/core';
-import { money } from '../../core/utils/format';
+import { compact, isCompact, money, moneyCompact, number } from '../../core/utils/format';
+
+/** En las columnas estrechas del grafico conviene abreviar antes que en el resto. */
+const BAR_COMPACT_FROM = 1_000;
 
 export interface BarPoint {
   label: string;
@@ -18,7 +21,7 @@ export interface BarPoint {
         @for (point of points; track point.label) {
           <div class="group flex h-full flex-1 flex-col items-center justify-end gap-1">
             <span class="text-[10px] font-medium text-slate-500 opacity-0 transition group-hover:opacity-100">
-              {{ isCurrency ? money(point.value) : point.value }}
+              {{ valueText(point.value) }}
             </span>
             <div
               class="w-full rounded-t-md bg-brand-500/80 transition group-hover:bg-brand-600"
@@ -57,6 +60,14 @@ export class BarChartComponent {
   heightOf(value: number): number {
     const ratio = Math.max(0, value) / this.max;
     return Math.max(ratio > 0 ? 4 : 0, Math.round(ratio * 100));
+  }
+
+  /** Texto del valor sobre la barra (abreviado: el exacto va en el tooltip). */
+  valueText(value: number): string {
+    const amount = Number(value) || 0;
+    const abbreviated = isCompact(amount, BAR_COMPACT_FROM);
+    if (this.isCurrency) return abbreviated ? moneyCompact(amount) : money(amount);
+    return abbreviated ? compact(amount) : number(amount);
   }
 
   get money(): (value: number) => string {

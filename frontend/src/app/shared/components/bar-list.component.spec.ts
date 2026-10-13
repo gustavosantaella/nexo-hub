@@ -91,6 +91,46 @@ describe('BarListComponent (ranking de barras)', () => {
     expect(markers(root)[0].getAttribute('title')).toBe('Stock mínimo: 4');
   });
 
+  it('abrevia los montos enormes y deja el exacto en el tooltip', () => {
+    const root = render([{ label: 'Harina', value: 1_250_000, caption: '120 cajas' }]);
+
+    expect(root.textContent).toContain('$ 1.3m');
+    expect(root.textContent).not.toContain('$ 1,250,000.00');
+    const value = root.querySelector<HTMLElement>('span.shrink-0 > span');
+    expect(value?.textContent?.trim()).toBe('$ 1.3m');
+    expect(value?.getAttribute('title')).toBe('$ 1,250,000.00');
+  });
+
+  it('abrevia tambien las cantidades y respeta el texto de valor', () => {
+    const root = render(
+      [
+        { label: 'Sal', value: 25_000 },
+        { label: 'Azúcar', value: 25_000, valueText: 'Bs 25,000.00' },
+      ],
+      false,
+    );
+
+    const [row, custom] = Array.from(
+      root.querySelectorAll<HTMLElement>('span.shrink-0 > span'),
+    );
+
+    expect(row.textContent?.trim()).toBe('25k');
+    expect(row.getAttribute('title')).toBe('25,000');
+    expect(custom.textContent?.trim()).toBe('Bs 25,000.00');
+    expect(custom.hasAttribute('title')).toBe(false);
+  });
+
+  it('deja intactos los valores que ya caben', () => {
+    const root = render([{ label: 'Azúcar', value: 9_999 }]);
+
+    expect(root.querySelector<HTMLElement>('span.shrink-0 > span')?.textContent?.trim()).toBe(
+      '$ 9,999.00',
+    );
+    expect(
+      root.querySelector<HTMLElement>('span.shrink-0 > span')?.hasAttribute('title'),
+    ).toBe(false);
+  });
+
   it('deja las barras en cero cuando no hay valores', () => {
     const root = render([
       { label: 'Uno', value: 0 },

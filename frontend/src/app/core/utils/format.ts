@@ -39,6 +39,14 @@ export function bs(value: number | null | undefined): string {
 }
 
 /**
+ * Equivalente en bolivares abreviado, para espacios estrechos (tarjetas).
+ * Ej.: `bsCompact(1052110.66)` -> `Bs 1.1m`.
+ */
+export function bsCompact(value: number | null | undefined, digits = 1): string {
+  return `${QUOTE_CURRENCY.symbol} ${compact(Number(value ?? 0), digits)}`;
+}
+
+/**
  * Formatea una tasa de cambio (bolivares por unidad).
  * Ej.: `rate(876.7976)` -> `876.7976`.
  */
@@ -61,6 +69,78 @@ export function number(value: number | null | undefined, digits = 0): string {
     minimumFractionDigits: digits,
     maximumFractionDigits: digits,
   }).format(Number(value ?? 0));
+}
+
+/**
+ * Escalas de los numeros abreviados, de la mayor a la menor: 1 500 -> `1.5k`,
+ * 1 200 000 -> `1.2m`, 2 500 000 000 -> `2.5b`.
+ */
+const COMPACT_STEPS: { limit: number; suffix: string }[] = [
+  { limit: 1e9, suffix: 'b' },
+  { limit: 1e6, suffix: 'm' },
+  { limit: 1e3, suffix: 'k' },
+];
+
+/** Magnitud a partir de la cual conviene abreviar un numero (10 000 -> `10k`). */
+export const COMPACT_FROM = 10_000;
+
+/** `true` si el numero alcanza la magnitud a partir de la cual se abrevia. */
+export function isCompact(
+  value: number | null | undefined,
+  from = COMPACT_FROM,
+): boolean {
+  return Math.abs(Number(value ?? 0)) >= from;
+}
+
+/**
+ * Numero abreviado con su escala y sin decimales de relleno:
+ * `compact(3000)` -> `3k`; `compact(1500)` -> `1.5k`; `compact(1250000)` -> `1.3m`.
+ *
+ * Pensado para espacios estrechos (tarjetas, ejes y rankings): el valor exacto
+ * se sigue mostrando en el `title` (tooltip) de quien lo pinta.
+ */
+export function compact(value: number | null | undefined, digits = 1): string {
+  const amount = Number(value ?? 0);
+  if (!Number.isFinite(amount)) return number(0);
+
+  const sign = amount < 0 ? '-' : '';
+  const absolute = Math.abs(amount);
+  let index = COMPACT_STEPS.findIndex((step) => absolute >= step.limit);
+  if (index === -1) {
+    return `${sign}${Number.isInteger(absolute) ? number(absolute) : number(absolute, digits)}`;
+  }
+
+  let scaled = roundTo(absolute / COMPACT_STEPS[index].limit, digits);
+  // 999 999 no debe quedar como "1000k": se sube a la escala mayor ("1m").
+  if (index > 0 && scaled >= 1000) {
+    index -= 1;
+    scaled = roundTo(absolute / COMPACT_STEPS[index].limit, digits);
+  }
+  return `${sign}${scaledText(scaled, digits)}${COMPACT_STEPS[index].suffix}`;
+}
+
+/** Monto de la moneda base abreviado. Ej.: `moneyCompact(1250000)` -> `$ 1.3m`. */
+export function moneyCompact(value: number | null | undefined, digits = 1): string {
+  return `${BASE_CURRENCY.symbol} ${compact(value, digits)}`;
+}
+
+/** Monto abreviado en la moneda indicada. Ej.: `moneyInCompact(3200, 'VES')` -> `Bs 3.2k`. */
+export function moneyInCompact(
+  value: number | null | undefined,
+  code?: string | null,
+  digits = 1,
+): string {
+  return `${currencyMeta(code).symbol} ${compact(value, digits)}`;
+}
+
+/** Redondea a `digits` decimales. */
+function roundTo(value: number, digits: number): number {
+  return Number(value.toFixed(digits));
+}
+
+/** Texto de un valor ya escalado, sin ceros de relleno: `1.50` -> `1.5`, `3.00` -> `3`. */
+function scaledText(value: number, digits: number): string {
+  return Number.isInteger(value) ? number(value) : number(value, digits);
 }
 
 
