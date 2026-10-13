@@ -36,12 +36,13 @@ import {
   mulMoney,
   sumMoney,
 } from '../../core/utils/format';
+import { DialogComponent } from '../../shared/components/dialog.component';
 import { EmptyStateComponent, LoaderComponent } from '../../shared/components/feedback.component';
 import { IconComponent } from '../../shared/components/icon.component';
-import { ModalComponent } from '../../shared/components/modal.component';
 import { MoneyComponent } from '../../shared/components/money.component';
 import { PageHeaderComponent } from '../../shared/components/page-header.component';
 import { PaginationComponent } from '../../shared/components/pagination.component';
+import { PreferencesService } from '../../core/services/preferences.service';
 import { ConfirmService } from '../../shared/services/confirm.service';
 import type { CashSession } from '../../core/models/operations.model';
 
@@ -79,7 +80,7 @@ const NEXT_STATUS: Partial<Record<OrderStatus, OrderStatus>> = {
     IconComponent,
     PageHeaderComponent,
     PaginationComponent,
-    ModalComponent,
+    DialogComponent,
     MoneyComponent,
     CurrencySelectComponent,
     EmptyStateComponent,
@@ -343,7 +344,17 @@ const NEXT_STATUS: Partial<Record<OrderStatus, OrderStatus>> = {
       </div>
     }
 
-    <app-modal [open]="createOpen()" title="Nuevo pedido" size="xl" (closed)="closeCreate()">
+    <app-dialog
+      [open]="createOpen()"
+      [variant]="dialogView()"
+      title="Nuevo pedido"
+      size="xl"
+      [body]="createBody"
+      [footer]="createFooter"
+      (closed)="closeCreate()"
+    />
+
+    <ng-template #createBody>
       <div class="grid gap-5 lg:grid-cols-3">
         <div class="space-y-4 lg:col-span-2">
           <div class="grid gap-3 sm:grid-cols-3">
@@ -652,8 +663,10 @@ const NEXT_STATUS: Partial<Record<OrderStatus, OrderStatus>> = {
           </div>
         </div>
       </div>
+    </ng-template>
 
-      <div modalFooter class="flex w-full items-center justify-between gap-2">
+    <ng-template #createFooter>
+      <div class="flex w-full items-center justify-between gap-2">
         <p class="text-xs text-slate-500">
           Stock y totales se validan contra el inventario antes de registrar la venta.
         </p>
@@ -669,15 +682,20 @@ const NEXT_STATUS: Partial<Record<OrderStatus, OrderStatus>> = {
           </button>
         </div>
       </div>
-    </app-modal>
+    </ng-template>
 
 
-    <app-modal
+    <app-dialog
       [open]="detailOpen()"
+      [variant]="dialogView()"
       [title]="'Pedido ' + (detailOrder()?.code || '')"
       size="lg"
+      [body]="detailBody"
+      [footer]="detailFooter"
       (closed)="closeDetail()"
-    >
+    />
+
+    <ng-template #detailBody>
       @if (detailOrder(); as order) {
         <div class="grid gap-4 sm:grid-cols-2">
           <div class="space-y-1 text-sm">
@@ -820,8 +838,10 @@ const NEXT_STATUS: Partial<Record<OrderStatus, OrderStatus>> = {
           </div>
         </div>
       }
+    </ng-template>
 
-      <div modalFooter class="flex w-full justify-end gap-2">
+    <ng-template #detailFooter>
+      <div class="flex w-full justify-end gap-2">
         @if (detailOrder(); as order) {
           @if (canAddItems(order)) {
             <button type="button" class="btn-primary" (click)="openAdd(order)">
@@ -832,14 +852,19 @@ const NEXT_STATUS: Partial<Record<OrderStatus, OrderStatus>> = {
         }
         <button type="button" class="btn-secondary" (click)="closeDetail()">Cerrar</button>
       </div>
-    </app-modal>
+    </ng-template>
 
-    <app-modal
+    <app-dialog
       [open]="addOpen()"
+      [variant]="dialogView()"
       [title]="'Agregar productos a ' + (addOrder()?.code || '')"
       size="xl"
+      [body]="addBody"
+      [footer]="addFooter"
       (closed)="closeAdd()"
-    >
+    />
+
+    <ng-template #addBody>
       <div class="space-y-4">
         <p class="rounded-lg bg-slate-50 px-3 py-2 text-xs text-slate-500">
           Los productos que ya están en el pedido se suman en su línea. El stock se
@@ -1010,8 +1035,10 @@ const NEXT_STATUS: Partial<Record<OrderStatus, OrderStatus>> = {
           <p class="field-error">{{ formError() }}</p>
         }
       </div>
+    </ng-template>
 
-      <div modalFooter class="flex w-full flex-wrap items-center justify-between gap-3">
+    <ng-template #addFooter>
+      <div class="flex w-full flex-wrap items-center justify-between gap-3">
         <span class="text-sm text-slate-500">
           Subtotal: <app-money [amount]="subtotal" alignEnd="true" />
         </span>
@@ -1028,13 +1055,18 @@ const NEXT_STATUS: Partial<Record<OrderStatus, OrderStatus>> = {
           </button>
         </span>
       </div>
-    </app-modal>
+    </ng-template>
 
-    <app-modal
+    <app-dialog
       [open]="payOpen()"
+      [variant]="dialogView()"
       [title]="'Cobrar ' + (payOrder()?.code || '')"
+      [body]="payBody"
+      [footer]="payFooter"
       (closed)="closePay()"
-    >
+    />
+
+    <ng-template #payBody>
       @if (payOrder(); as order) {
         <div class="space-y-3">
           <div class="rounded-lg bg-slate-50 px-3 py-2 text-sm">
@@ -1126,14 +1158,16 @@ const NEXT_STATUS: Partial<Record<OrderStatus, OrderStatus>> = {
           </p>
         </div>
       }
+    </ng-template>
 
-      <div modalFooter class="flex w-full justify-end gap-2">
+    <ng-template #payFooter>
+      <div class="flex w-full justify-end gap-2">
         <button type="button" class="btn-secondary" (click)="closePay()">Cancelar</button>
         <button type="button" class="btn-primary" [disabled]="saving()" (click)="submitPay()">
           {{ saving() ? 'Procesando…' : 'Registrar pago' }}
         </button>
       </div>
-    </app-modal>
+    </ng-template>
   `,
 })
 export class OrdersPage implements OnInit {
@@ -1145,6 +1179,13 @@ export class OrdersPage implements OnInit {
   private readonly customersService = inject(CustomersService);
   private readonly toast = inject(ToastService);
   private readonly confirm = inject(ConfirmService);
+  private readonly preferences = inject(PreferencesService);
+
+  /**
+   * Presentación de los formularios (ventana modal o panel lateral), según la
+   * preferencia del usuario en Configuración.
+   */
+  readonly dialogView = this.preferences.dialogView;
 
   readonly dateTime = dateTime;
   readonly baseCurrency = BASE_CURRENCY;

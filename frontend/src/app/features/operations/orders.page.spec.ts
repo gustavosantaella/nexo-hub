@@ -5,6 +5,7 @@ import { provideRouter } from '@angular/router';
 import { environment } from '../../../environments/environment';
 import type { PaginationMeta, ProductOption } from '../../core/models/api.model';
 import type { Order, OrderItem } from '../../core/models/operations.model';
+import { PreferencesService } from '../../core/services/preferences.service';
 import { RatesService } from '../../core/services/rates.service';
 import { ConfirmService } from '../../shared/services/confirm.service';
 import { OrdersPage } from './orders.page';
@@ -60,7 +61,11 @@ describe('OrdersPage (formulario del cajero)', () => {
     rates = TestBed.inject(RatesService);
   });
 
-  afterEach(() => http.verify());
+  afterEach(() => {
+    http.verify();
+    // La preferencia vive en `localStorage`: se limpia para no pasarla de una prueba a otra.
+    localStorage.clear();
+  });
 
   function mount(options: { cashOpen?: boolean } = {}): {
     fixture: ComponentFixture<OrdersPage>;
@@ -549,5 +554,69 @@ describe('OrdersPage (formulario del cajero)', () => {
     expect(page.payForm.amount).toBe(30);
 
     flushReload();
+  });
+
+  // ------------------ Preferencia de la interfaz (modal / lateral) --------------
+
+  /** Elige la presentación de los formularios antes de montar la página. */
+  function preferForms(view: 'modal' | 'sidebar'): void {
+    TestBed.inject(PreferencesService).setDialogView(view);
+  }
+
+  it('abre el nuevo pedido en una ventana modal por defecto', () => {
+    const { fixture, page } = mount();
+    openCreate(fixture, page);
+    fixture.detectChanges();
+
+    const root: HTMLElement = fixture.nativeElement;
+    const modal = root.querySelector('app-modal');
+    expect(modal).not.toBeNull();
+    expect(root.querySelector('app-sidebar')).toBeNull();
+    // El mismo formulario (cuerpo y pie) se dibuja dentro de la ventana.
+    expect(modal!.textContent).toContain('Productos del inventario');
+    expect(modal!.querySelector('.dialog-footer button')!.textContent).toContain('Cancelar');
+  });
+
+  it('abre el nuevo pedido en el panel lateral si esa es la preferencia', () => {
+    preferForms('sidebar');
+    const { fixture, page } = mount();
+    openCreate(fixture, page);
+    fixture.detectChanges();
+
+    const root: HTMLElement = fixture.nativeElement;
+    const aside = root.querySelector('app-sidebar aside');
+    expect(aside).not.toBeNull();
+    expect(root.querySelector('app-modal')).toBeNull();
+    expect(aside!.textContent).toContain('Nuevo pedido');
+    expect(aside!.textContent).toContain('Productos del inventario');
+
+    // El pie vive en la barra inferior del panel y sigue respondiendo al host.
+    const cancel: HTMLButtonElement = aside!.querySelector('.dialog-footer button')!;
+    expect(cancel.textContent).toContain('Cancelar');
+    cancel.click();
+    fixture.detectChanges();
+    expect(page.createOpen()).toBeFalse();
+    expect(root.querySelector('app-sidebar aside')).toBeNull();
+  });
+
+  it('abre el detalle del pedido en el panel lateral y lo cierra desde su pie', () => {
+    preferForms('sidebar');
+    const { fixture, page } = mount();
+    openDetailWithItem(fixture, page, detailOrderWithItem());
+
+    const root: HTMLElement = fixture.nativeElement;
+    const aside = root.querySelector('app-sidebar aside');
+    expect(aside).not.toBeNull();
+    expect(root.querySelector('app-modal')).toBeNull();
+    expect(aside!.textContent).toContain('Pedido PED-0001');
+
+    const close = Array.from(
+      aside!.querySelectorAll<HTMLButtonElement>('.dialog-footer button'),
+    ).find((button) => button.textContent?.includes('Cerrar'));
+    expect(close).toBeDefined();
+    close!.click();
+    fixture.detectChanges();
+    expect(page.detailOpen()).toBeFalse();
+    expect(root.querySelector('app-sidebar aside')).toBeNull();
   });
 });

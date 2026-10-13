@@ -22,6 +22,7 @@ import { BASE_CURRENCY, MIXED_CURRENCY_CODE } from '../../core/constants/currenc
 import { CurrencySelectComponent } from '../../shared/components/currency-select.component';
 import { RatesService } from '../../core/services/rates.service';
 import { CashService } from '../../core/services/cash.service';
+import { PreferencesService } from '../../core/services/preferences.service';
 import { ToastService } from '../../core/services/toast.service';
 import { ConfirmService } from '../../shared/services/confirm.service';
 import {
@@ -33,7 +34,7 @@ import {
 } from '../../core/utils/format';
 import { EmptyStateComponent, LoaderComponent } from '../../shared/components/feedback.component';
 import { IconComponent } from '../../shared/components/icon.component';
-import { ModalComponent } from '../../shared/components/modal.component';
+import { DialogComponent } from '../../shared/components/dialog.component';
 import { MoneyComponent } from '../../shared/components/money.component';
 import { PageHeaderComponent } from '../../shared/components/page-header.component';
 import { PaginationComponent } from '../../shared/components/pagination.component';
@@ -59,7 +60,7 @@ const EMPTY_META: PaginationMeta = {
     IconComponent,
     PageHeaderComponent,
     PaginationComponent,
-    ModalComponent,
+    DialogComponent,
     StatCardComponent,
     MoneyComponent,
     CurrencySelectComponent,
@@ -485,38 +486,62 @@ const EMPTY_META: PaginationMeta = {
       }
     </div>
 
-    <app-modal [open]="movOpen()" title="Registrar movimiento" (closed)="closeMovement()">
-      <div class="space-y-3">
+    <app-dialog
+      [open]="movOpen()"
+      [variant]="dialogView()"
+      title="Registrar movimiento"
+      subtitle="Entradas y salidas de efectivo de la sesión abierta"
+      [body]="movementBody"
+      [footer]="movementFooter"
+      (closed)="closeMovement()"
+    />
+
+    <ng-template #movementBody>
+      <div class="space-y-4">
         <div>
-          <label class="label">Categoría</label>
-          <select class="input" [(ngModel)]="movForm.category" (ngModelChange)="onCategoryChange()">
+          <label class="label" for="movement-category">Categoría</label>
+          <select
+            id="movement-category"
+            class="input"
+            [(ngModel)]="movForm.category"
+            (ngModelChange)="onCategoryChange()"
+          >
             @for (option of categoryOptions; track option.value) {
               <option [value]="option.value">{{ option.label }}</option>
             }
           </select>
         </div>
+
         @if (needsManualType) {
           <div>
-            <label class="label">Tipo</label>
-            <select class="input" [(ngModel)]="movForm.type">
+            <label class="label" for="movement-type">Tipo</label>
+            <select id="movement-type" class="input" [(ngModel)]="movForm.type">
               @for (option of movementTypeOptions; track option.value) {
                 <option [value]="option.value">{{ option.label }}</option>
               }
             </select>
           </div>
         }
+
         <div>
-          <label class="label">Método de pago</label>
-          <select class="input" [(ngModel)]="movForm.paymentMethod">
+          <label class="label" for="movement-method">Método de pago</label>
+          <select id="movement-method" class="input" [(ngModel)]="movForm.paymentMethod">
             @for (option of methodOptions; track option.value) {
               <option [value]="option.value">{{ option.label }}</option>
             }
           </select>
         </div>
-        <div class="grid gap-3 sm:grid-cols-2">
+
+        <div class="space-y-3 rounded-xl border border-slate-200 bg-slate-50/60 p-4">
           <div>
-            <label class="label">Monto</label>
-            <input type="number" class="input" min="0" [(ngModel)]="movForm.amount" />
+            <label class="label" for="movement-amount">Monto</label>
+            <input
+              id="movement-amount"
+              type="number"
+              class="input"
+              min="0"
+              [(ngModel)]="movForm.amount"
+            />
           </div>
           <app-currency-select
             id="movement-currency"
@@ -524,74 +549,121 @@ const EMPTY_META: PaginationMeta = {
             [(value)]="movForm.currency"
             [amount]="movForm.amount"
           />
+          <p class="text-xs text-slate-500">
+            Se contabiliza en {{ baseCurrency.label }} con la tasa vigente.
+          </p>
         </div>
+
         <div>
-          <label class="label">Descripción</label>
-          <input class="input" [(ngModel)]="movForm.description" placeholder="Opcional" />
+          <label class="label" for="movement-description">Descripción</label>
+          <input
+            id="movement-description"
+            class="input"
+            [(ngModel)]="movForm.description"
+            placeholder="Opcional"
+          />
         </div>
       </div>
+    </ng-template>
 
-      <div modalFooter class="flex w-full justify-end gap-2">
+    <ng-template #movementFooter>
+      <div class="flex w-full justify-end gap-2">
         <button type="button" class="btn-secondary" (click)="closeMovement()">Cancelar</button>
         <button type="button" class="btn-primary" [disabled]="saving()" (click)="submitMovement()">
           {{ saving() ? 'Guardando…' : 'Registrar' }}
         </button>
       </div>
-    </app-modal>
+    </ng-template>
 
-    <app-modal [open]="closeOpen()" title="Cerrar caja" (closed)="closeClose()">
-      <div class="space-y-3">
-        <div class="rounded-lg bg-slate-50 px-3 py-2 text-sm">
-          <div class="flex justify-between"><span class="text-slate-500">Efectivo esperado</span><app-money [amount]="expectedCash" alignEnd="true" /></div>
-        </div>
-        @if (openingFund.length > 0) {
-          <ul class="space-y-1 rounded-lg border border-slate-200 px-3 py-2 text-xs text-slate-600">
-            <li class="font-medium text-slate-500">
-              Fondo inicial por moneda
-            </li>
-            @for (line of openingFund; track line.currency) {
-              <li class="flex justify-between gap-2">
-                <span class="text-slate-500">Fondo en {{ line.currency }}</span>
-                <span class="text-right">
-                  <span class="block font-medium">{{ amountIn(line.amount, line.currency) }}</span>
-                  <span class="block text-[10px] text-slate-400">
-                    {{ amountIn(line.baseAmount, baseCurrency.code) }} equivalente
-                  </span>
-                </span>
-              </li>
-            }
-          </ul>
-        }
-        @if (byCurrency.length > 0) {
-          <ul class="space-y-1 rounded-lg border border-slate-200 px-3 py-2 text-xs text-slate-600">
-            @for (row of byCurrency; track row.currency) {
-              <li class="flex justify-between gap-2">
-                <span class="text-slate-500">
-                  Efectivo en {{ row.currency }}
-                </span>
-                <span class="text-right">
-                  <span class="block font-medium">{{ amountIn(row.net, row.currency) }}</span>
-                  <span class="block text-[10px] text-slate-400">
-                    {{ amountIn(row.baseNet, baseCurrency.code) }} equivalente
-                  </span>
-                </span>
-              </li>
-            }
-          </ul>
-        }
-        <div class="grid gap-3 sm:grid-cols-2">
-          <div>
-            <label class="label">Monto contado</label>
-            <input type="number" class="input" min="0" [(ngModel)]="closeForm.countedAmount" />
+    <app-dialog
+      [open]="closeOpen()"
+      [variant]="dialogView()"
+      title="Cerrar caja"
+      subtitle="Cuenta el efectivo del cajón y compáralo con lo esperado"
+      [body]="closeBody"
+      [footer]="closeFooter"
+      (closed)="closeClose()"
+    />
+
+    <ng-template #closeBody>
+      <div class="space-y-4">
+        <div class="space-y-2 rounded-xl border border-slate-200 bg-slate-50/60 p-4">
+          <div class="flex items-center justify-between gap-3 text-sm">
+            <span class="text-slate-500">Efectivo esperado en el cajón</span>
+            <app-money [amount]="expectedCash" alignEnd="true" />
           </div>
-          <app-currency-select
-            id="counted-currency"
-            label="Moneda contada"
-            [(value)]="closeForm.countedCurrency"
-            [amount]="closeForm.countedAmount"
+          <p class="text-xs text-slate-500">
+            Fondo inicial + entradas − salidas, en {{ baseCurrency.label }}.
+          </p>
+        </div>
+
+        @if (openingFund.length > 0) {
+          <div>
+            <p class="label">Fondo inicial por moneda</p>
+            <ul
+              class="divide-y divide-slate-100 rounded-xl border border-slate-200 text-xs text-slate-600"
+            >
+              @for (line of openingFund; track line.currency) {
+                <li class="flex items-center justify-between gap-3 px-3 py-2">
+                  <span class="text-slate-500">Fondo en {{ line.currency }}</span>
+                  <span class="text-right">
+                    <span class="block font-medium text-slate-800">
+                      {{ amountIn(line.amount, line.currency) }}
+                    </span>
+                    <span class="block text-[10px] text-slate-400">
+                      {{ amountIn(line.baseAmount, baseCurrency.code) }} equivalente
+                    </span>
+                  </span>
+                </li>
+              }
+            </ul>
+          </div>
+        }
+
+        @if (byCurrency.length > 0) {
+          <div>
+            <p class="label">Efectivo por moneda</p>
+            <ul
+              class="divide-y divide-slate-100 rounded-xl border border-slate-200 text-xs text-slate-600"
+            >
+              @for (row of byCurrency; track row.currency) {
+                <li class="flex items-center justify-between gap-3 px-3 py-2">
+                  <span class="text-slate-500">Efectivo en {{ row.currency }}</span>
+                  <span class="text-right">
+                    <span class="block font-medium text-slate-800">
+                      {{ amountIn(row.net, row.currency) }}
+                    </span>
+                    <span class="block text-[10px] text-slate-400">
+                      {{ amountIn(row.baseNet, baseCurrency.code) }} equivalente
+                    </span>
+                  </span>
+                </li>
+              }
+            </ul>
+          </div>
+        }
+
+        <div>
+          <label class="label" for="counted-amount">Monto contado</label>
+          <input
+            id="counted-amount"
+            type="number"
+            class="input"
+            min="0"
+            [(ngModel)]="closeForm.countedAmount"
           />
         </div>
-        <div class="flex justify-between text-sm">
+
+        <app-currency-select
+          id="counted-currency"
+          label="Moneda contada"
+          [(value)]="closeForm.countedCurrency"
+          [amount]="closeForm.countedAmount"
+        />
+
+        <div
+          class="flex items-center justify-between gap-3 rounded-xl border border-slate-200 px-4 py-3 text-sm"
+        >
           <span class="text-slate-500">Diferencia</span>
           <app-money
             [amount]="closeDifference"
@@ -601,29 +673,43 @@ const EMPTY_META: PaginationMeta = {
             [class.text-rose-600]="closeDifference < 0"
           />
         </div>
+
         <div>
-          <label class="label">Notas de cierre</label>
-          <textarea class="input" rows="2" [(ngModel)]="closeForm.closingNotes"></textarea>
+          <label class="label" for="closing-notes">Notas de cierre</label>
+          <textarea
+            id="closing-notes"
+            class="input"
+            rows="3"
+            [(ngModel)]="closeForm.closingNotes"
+          ></textarea>
         </div>
       </div>
+    </ng-template>
 
-      <div modalFooter class="flex w-full justify-end gap-2">
+    <ng-template #closeFooter>
+      <div class="flex w-full justify-end gap-2">
         <button type="button" class="btn-secondary" (click)="closeClose()">Cancelar</button>
         <button type="button" class="btn-primary" [disabled]="closing()" (click)="submitClose()">
           {{ closing() ? 'Cerrando…' : 'Cerrar caja' }}
         </button>
       </div>
-    </app-modal>
+    </ng-template>
 
-    <app-modal
+    <app-dialog
       [open]="detailOpen()"
+      [variant]="dialogView()"
       [title]="'Sesión ' + (detailSession()?.code || '')"
+      subtitle="Resumen del turno y movimientos registrados"
       size="lg"
+      [body]="detailBody"
+      [footer]="detailFooter"
       (closed)="closeSessionDetail()"
-    >
+    />
+
+    <ng-template #detailBody>
       @if (detailSession(); as detail) {
         <div class="space-y-4">
-          <div class="grid gap-3 sm:grid-cols-2 lg:grid-cols-4 text-sm">
+          <div class="grid grid-cols-2 gap-3 text-sm sm:grid-cols-4">
             <div class="rounded-lg bg-slate-50 px-3 py-2">
               <p class="text-slate-500">Apertura</p>
               <p class="font-medium">{{ dateTime(detail.openedAt) }}</p>
@@ -688,6 +774,8 @@ const EMPTY_META: PaginationMeta = {
             <p class="text-sm text-slate-500">Notas de cierre: {{ detail.closingNotes }}</p>
           }
 
+          <p class="label">Movimientos de la sesión</p>
+
           @if ((detail.movements?.length ?? 0) === 0) {
             <p class="text-sm text-slate-400">Sin movimientos en esta sesión.</p>
           } @else {
@@ -734,11 +822,13 @@ const EMPTY_META: PaginationMeta = {
           }
         </div>
       }
+    </ng-template>
 
-      <div modalFooter class="flex w-full justify-end gap-2">
+    <ng-template #detailFooter>
+      <div class="flex w-full justify-end gap-2">
         <button type="button" class="btn-secondary" (click)="closeSessionDetail()">Cerrar</button>
       </div>
-    </app-modal>
+    </ng-template>
   `,
 })
 export class CashPage implements OnInit {
@@ -746,11 +836,17 @@ export class CashPage implements OnInit {
   private readonly toast = inject(ToastService);
   private readonly rates = inject(RatesService);
   private readonly confirm = inject(ConfirmService);
+  private readonly preferences = inject(PreferencesService);
 
   readonly dateTime = dateTime;
   readonly moneyIn = moneyIn;
   readonly rate = rate;
   readonly baseCurrency = BASE_CURRENCY;
+  /**
+   * Cómo presenta la caja sus formularios (modal o panel lateral). El usuario lo
+   * elige en Configuración → Preferencias de la interfaz.
+   */
+  readonly dialogView = this.preferences.dialogView;
   /** Monedas configuradas (para el filtro del historial). */
   readonly currencies = this.rates.currencies;
   readonly categoryLabels = CASH_CATEGORY_LABELS;

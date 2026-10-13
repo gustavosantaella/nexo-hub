@@ -2,6 +2,7 @@ import {
   ChangeDetectionStrategy,
   Component,
   OnInit,
+  computed,
   effect,
   inject,
   signal,
@@ -26,6 +27,7 @@ import type {
 import { AuthService } from '../../core/services/auth.service';
 import { CompaniesService } from '../../core/services/companies.service';
 import { CurrenciesService } from '../../core/services/currencies.service';
+import { PreferencesService, type DialogView } from '../../core/services/preferences.service';
 import { RatesService } from '../../core/services/rates.service';
 import { ToastService } from '../../core/services/toast.service';
 import { bs, dateTime, rate, signedPercent } from '../../core/utils/format';
@@ -90,6 +92,47 @@ interface CurrencyRow {
         Actualizar tasas
       </button>
     </app-page-header>
+
+    <!-- Preferencias de la interfaz: elegir cómo se abren los formularios. -->
+    <section class="card mb-4">
+      <div class="card-header">
+        <div>
+          <h2 class="text-sm font-semibold text-slate-900">Preferencias de la interfaz</h2>
+          <p class="mt-0.5 text-xs text-slate-500">
+            Cómo se abren los formularios de caja y de pedidos. Se guarda en este navegador.
+          </p>
+        </div>
+        <span class="badge bg-slate-100 text-slate-600">{{ dialogViewLabel() }}</span>
+      </div>
+
+      <div class="card-body grid gap-3 sm:grid-cols-2">
+        @for (option of dialogViewOptions; track option.value) {
+          <button
+            type="button"
+            class="flex items-start gap-3 rounded-xl border px-4 py-3 text-left transition"
+            [class]="
+              dialogView() === option.value
+                ? 'border-brand-300 bg-brand-50/60'
+                : 'border-slate-200 hover:border-slate-300 hover:bg-slate-50'
+            "
+            [attr.aria-pressed]="dialogView() === option.value"
+            (click)="setDialogView(option.value)"
+          >
+            <app-icon
+              [name]="option.icon"
+              size="h-5 w-5 shrink-0"
+              [class]="dialogView() === option.value ? 'text-brand-600' : 'text-slate-400'"
+            />
+            <span class="min-w-0">
+              <span class="block text-sm font-semibold text-slate-900">
+                {{ option.label }}
+              </span>
+              <span class="mt-0.5 block text-xs text-slate-500">{{ option.hint }}</span>
+            </span>
+          </button>
+        }
+      </div>
+    </section>
 
     @if (loading() && !snapshot()) {
       <app-loader label="Consultando las tasas del BCV…" />
@@ -880,6 +923,7 @@ export class SettingsPage implements OnInit {
   private readonly toast = inject(ToastService);
   private readonly confirm = inject(ConfirmService);
   private readonly companiesService = inject(CompaniesService);
+  private readonly preferences = inject(PreferencesService);
   readonly auth = inject(AuthService);
 
   readonly rateMeta = RATE_META;
@@ -902,6 +946,36 @@ export class SettingsPage implements OnInit {
   readonly showConversions = this.ratesService.showConversions;
   /** Tasa USDT/VES de referencia (informativa, no entra en los cálculos). */
   readonly reference = this.ratesService.reference;
+
+  // -------------------------- Preferencias de la interfaz --------------------
+  /** Cómo se abren los formularios de caja y pedidos: `modal` o `sidebar`. */
+  readonly dialogView = this.preferences.dialogView;
+
+  /** Presentaciones disponibles y qué las distingue. */
+  readonly dialogViewOptions: {
+    value: DialogView;
+    label: string;
+    hint: string;
+    icon: string;
+  }[] = [
+    {
+      value: 'modal',
+      label: 'Ventana modal',
+      hint: 'El formulario aparece centrado sobre la página y se cierra al terminar.',
+      icon: 'box',
+    },
+    {
+      value: 'sidebar',
+      label: 'Panel lateral',
+      hint: 'El formulario se desliza desde la derecha sin tapar toda la página.',
+      icon: 'menu',
+    },
+  ];
+
+  /** Nombre de la presentación elegida (chip de la cabecera). */
+  readonly dialogViewLabel = computed(
+    () => this.dialogViewOptions.find((option) => option.value === this.dialogView())?.label ?? '',
+  );
 
   // ----------------------------- Monedas aceptadas ---------------------------
   readonly currencySaving = this.currenciesService.saving;
@@ -1102,6 +1176,15 @@ export class SettingsPage implements OnInit {
 
   toggleConversions(): void {
     this.ratesService.setConversions(!this.showConversions());
+  }
+
+  /**
+   * Cambia la presentación de los formularios de caja y pedidos. Como el resto
+   * de las preferencias de interfaz, se guarda solo en este navegador.
+   */
+  setDialogView(view: DialogView): void {
+    if (this.dialogView() === view) return;
+    this.preferences.setDialogView(view);
   }
 
   saveCustom(): void {

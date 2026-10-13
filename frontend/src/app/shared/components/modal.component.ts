@@ -43,7 +43,11 @@ import { IconComponent } from './icon.component';
             <ng-content />
           </div>
 
-          <div class="flex flex-wrap items-center justify-end gap-2 border-t border-slate-200 px-5 py-4">
+          <!-- Mismo gancho (dialog-footer) que el panel lateral: el pie se
+               dibuja siempre en la barra inferior, nunca junto al cuerpo. -->
+          <div
+            class="dialog-footer flex flex-wrap items-center justify-end gap-2 border-t border-slate-200 px-5 py-4"
+          >
             <ng-content select="[modalFooter]" />
           </div>
         </div>
