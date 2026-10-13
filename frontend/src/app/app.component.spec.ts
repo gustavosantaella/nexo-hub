@@ -72,7 +72,15 @@ describe('AppComponent (shell global)', () => {
     fixture.detectChanges();
   });
 
-  afterEach(() => localStorage.clear());
+  afterEach(() => {
+    localStorage.clear();
+    document.documentElement.classList.remove('dark');
+  });
+
+  /** Botón de tema de la cabecera (icono sol/luna). */
+  function themeButton(label: string): HTMLButtonElement | null {
+    return fixture.nativeElement.querySelector(`button[aria-label="${label}"]`);
+  }
 
   function findButton(text: string, root: HTMLElement = fixture.nativeElement): HTMLButtonElement | undefined {
     const found: NodeListOf<HTMLButtonElement> = root.querySelectorAll('button');
@@ -82,6 +90,25 @@ describe('AppComponent (shell global)', () => {
   it('monta los hosts globales de notificaciones y confirmacion', () => {
     expect(fixture.nativeElement.querySelector('app-toast-host')).not.toBeNull();
     expect(fixture.nativeElement.querySelector('app-confirm-host')).not.toBeNull();
+  });
+
+  it('alterna el modo oscuro desde la cabecera', () => {
+    const enable = themeButton('Activar modo oscuro');
+    expect(enable).withContext('botón de tema en la cabecera').not.toBeNull();
+    expect(document.documentElement.classList.contains('dark')).toBeFalse();
+
+    enable!.click();
+    fixture.detectChanges();
+
+    expect(document.documentElement.classList.contains('dark')).toBeTrue();
+    // El botón pasa a ofrecer el modo contrario.
+    expect(themeButton('Activar modo claro')).not.toBeNull();
+
+    themeButton('Activar modo claro')!.click();
+    fixture.detectChanges();
+
+    expect(document.documentElement.classList.contains('dark')).toBeFalse();
+    expect(themeButton('Activar modo oscuro')).not.toBeNull();
   });
 
   it('el dialogo de confirmacion aparece al pulsar Cerrar sesión', () => {

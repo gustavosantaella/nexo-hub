@@ -215,7 +215,7 @@ interface SupplierForm {
             />
           </div>
           <div>
-            <label class="label" for="sup-taxId">RUC / Documento</label>
+            <label class="label" for="sup-taxId">RIF / Documento</label>
             <input
               id="sup-taxId"
               name="taxId"

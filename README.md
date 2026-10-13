@@ -224,7 +224,7 @@ La URL base de la API se configura en `src/environments/environment.ts`.
 | `/panel/productos`, `/panel/categorias`, `/panel/proveedores`, `/panel/clientes` | Catálogo |
 | `/panel/gastos`, `/panel/cuentas-por-pagar`, `/panel/cuentas-por-cobrar` | Finanzas |
 | `/panel/reportes` | Series de ventas/gastos/utilidad, top productos, métodos de pago y cobros por moneda |
-| `/panel/configuracion` | Datos de la empresa, mis datos, tasas del BCV (dólar/euro, solo lectura), tasa USDT de referencia (solo informativa), tasa personalizada, monedas aceptadas y vista previa |
+| `/panel/configuracion` | Por pestañas: **Tasas** (tasas del BCV dólar/euro solo lectura, tasa USDT de referencia solo informativa, tasa personalizada, monedas aceptadas y vista previa), **Apariencia** (modo claro/oscuro y cómo se abren los formularios de caja y pedidos), **Empresa** (datos de la empresa activa y crear otras) y **Mis datos** (perfil y contraseña) |
 | `/panel/usuarios` | Usuarios de la empresa activa (solo ADMIN) |
 
 Todo el back-office vive bajo el prefijo `/panel` (protegido por `authGuard`);

@@ -7,6 +7,7 @@ import type { CashSession } from '../core/models/operations.model';
 import { AuthService } from '../core/services/auth.service';
 import { CashService } from '../core/services/cash.service';
 import { RatesService } from '../core/services/rates.service';
+import { ThemeService } from '../core/services/theme.service';
 import { ToastService } from '../core/services/toast.service';
 import { RATE_META } from '../core/constants/currency';
 import { money, rate } from '../core/utils/format';
@@ -175,6 +176,17 @@ interface NavGroup {
               Caja cerrada
             }
           </a>
+
+          <button
+            type="button"
+            class="flex h-9 w-9 shrink-0 items-center justify-center rounded-full border border-slate-200 bg-slate-50 text-slate-600 transition hover:bg-slate-100 hover:text-slate-700"
+            [title]="themeTitle()"
+            [attr.aria-label]="themeTitle()"
+            [attr.aria-pressed]="isDark()"
+            (click)="toggleTheme()"
+          >
+            <app-icon [name]="isDark() ? 'sun' : 'moon'" size="h-4 w-4" />
+          </button>
         </header>
 
         <main class="flex-1 px-4 py-6 lg:px-6">
@@ -194,6 +206,16 @@ export class MainLayoutComponent {
 
   readonly sidebarOpen = signal(false);
   readonly showConversions = this.rates.showConversions;
+
+  // ------------------------------- Apariencia --------------------------------
+  private readonly theme = inject(ThemeService);
+  /** `true` cuando está activo el modo oscuro. */
+  readonly isDark = this.theme.isDark;
+
+  /** Acción del botón de tema (se adapta al tema activo). */
+  readonly themeTitle = computed(() =>
+    this.isDark() ? 'Activar modo claro' : 'Activar modo oscuro',
+  );
 
   /**
    * Chip de la cabecera: tasa activa con la que se muestran los montos "al
@@ -329,6 +351,11 @@ export class MainLayoutComponent {
 
   closeSidebarOnMobile(): void {
     this.sidebarOpen.set(false);
+  }
+
+  /** Alterna el modo claro/oscuro desde la cabecera (misma preferencia que Configuración). */
+  toggleTheme(): void {
+    this.theme.toggleTheme();
   }
 
   /**

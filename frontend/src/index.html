@@ -8,6 +8,18 @@
   <link rel="icon" type="image/svg+xml" href="favicon.svg" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <meta name="theme-color" content="#1b31b5" />
+  <script>
+    // Aplica el tema guardado antes de que Angular arranque: si esperáramos al
+    // servicio, la página se pintaría en claro y saltaría a oscuro al cargar.
+    // La clave la comparte con `ThemeService`.
+    try {
+      if (localStorage.getItem('nexo-hub.theme') === 'dark') {
+        document.documentElement.classList.add('dark');
+      }
+    } catch (error) {
+      /* almacenamiento no disponible (modo privado): se usa el tema claro */
+    }
+  </script>
 </head>
 
 <body>

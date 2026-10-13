@@ -844,7 +844,7 @@ export class CashPage implements OnInit {
   readonly baseCurrency = BASE_CURRENCY;
   /**
    * Cómo presenta la caja sus formularios (modal o panel lateral). El usuario lo
-   * elige en Configuración → Preferencias de la interfaz.
+   * elige en Configuración → «Formularios de caja y pedidos».
    */
   readonly dialogView = this.preferences.dialogView;
   /** Monedas configuradas (para el filtro del historial). */
