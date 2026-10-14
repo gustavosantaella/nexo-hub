@@ -5,6 +5,10 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import type { Prisma } from '@prisma/client';
+import {
+  BASE_CURRENCY_CODE,
+  normalizeCurrencyCode,
+} from '../../common/constants/currencies';
 import { buildCode } from '../../common/utils/code.util';
 import { money, toMoney } from '../../common/utils/money.util';
 import {
@@ -15,6 +19,7 @@ import { buildPaginatedResult, toSkip } from '../../common/utils/pagination.util
 import { toQty, toQtyMilli } from '../../common/utils/quantity.util';
 import { tenantWhere } from '../../common/utils/tenant.util';
 import { PrismaService, type PrismaClientLike } from '../../prisma/prisma.service';
+import { RatesService } from '../rates/rates.service';
 import { CreateMenuDto, MenuIngredientDto } from './dto/menu.dto';
 import { MenuQueryDto } from './dto/menu-query.dto';
 import { UpdateMenuDto } from './dto/update-menu.dto';
@@ -29,6 +34,9 @@ const INGREDIENT_PRODUCT_SELECT = {
   cost: true,
   stock: true,
   trackStock: true,
+  // Un producto desactivado despues de armar la receta deja el menu invendible:
+  // la interfaz y el motor de pedidos lo necesitan para avisar.
+  active: true,
 } satisfies Prisma.ProductSelect;
 
 const INGREDIENT_INCLUDE = {
@@ -49,10 +57,19 @@ const MENU_LIST_INCLUDE = {
   category: { select: { id: true, name: true, color: true } },
   ingredients: {
     select: {
+      // La receta del listado la reusa el formulario de edicion: sin
+      // `productId` (ni la nota/seccion) editar un menu desde la tabla borraba
+      // los ingredientes al abrir el modal.
+      productId: true,
       quantity: true,
       section: true,
-      product: { select: { id: true, name: true, stock: true, trackStock: true } },
+      note: true,
+      sortOrder: true,
+      product: {
+        select: { id: true, name: true, stock: true, trackStock: true, active: true },
+      },
     },
+    orderBy: { sortOrder: 'asc' },
   },
 } satisfies Prisma.MenuInclude;
 
@@ -74,7 +91,14 @@ const MENU_OPTION_SELECT = {
       quantity: true,
       section: true,
       product: {
-        select: { id: true, name: true, unit: true, stock: true, trackStock: true },
+        select: {
+          id: true,
+          name: true,
+          unit: true,
+          stock: true,
+          trackStock: true,
+          active: true,
+        },
       },
     },
   },
@@ -87,7 +111,14 @@ export interface MenuRecipe {
   name: string;
   price: number;
   active: boolean;
-  ingredients: { productId: string; quantity: number }[];
+  ingredients: {
+    productId: string;
+    quantity: number;
+    /** Nombre del producto (para los avisos de validacion). */
+    productName?: string;
+    /** `false` cuando el producto se desactivo despues de armar la receta. */
+    active?: boolean;
+  }[];
 }
 
 /** Receta resuelta y validada antes de guardarla. */
@@ -103,7 +134,15 @@ interface ResolvedIngredient {
 
 interface RecipeLike {
   quantity: number;
-  product: { trackStock: boolean; stock: number } | null;
+  product: {
+    /** Datos para el aviso de "ingrediente inactivo" (siempre vienen del API). */
+    id?: string;
+    name?: string;
+    trackStock: boolean;
+    stock: number;
+    /** `false` = producto desactivado despues de armar la receta. */
+    active?: boolean;
+  } | null;
 }
 
 /**
@@ -126,9 +165,34 @@ export function servingsAvailable(ingredients: RecipeLike[]): number | null {
   return max;
 }
 
+/**
+ * Ingredientes cuyo producto fue DESACTIVADO despues de armar la receta.
+ *
+ * Mientras sigan en la receta el menu no se puede vender: el motor de pedidos
+ * rechaza la venta y el POS lo muestra bloqueado. Se listan para que la
+ * interfaz explique el motivo (en vez de un "agotado" sin salida).
+ */
+export function inactiveIngredientRefs(
+  ingredients: RecipeLike[],
+): { id: string; name: string }[] {
+  const refs: { id: string; name: string }[] = [];
+  for (const line of ingredients) {
+    const product = line.product;
+    if (!product || product.active !== false) continue;
+    refs.push({
+      id: product.id ?? product.name ?? `producto-${refs.length + 1}`,
+      name: product.name ?? 'Producto',
+    });
+  }
+  return refs;
+}
+
 @Injectable()
 export class MenusService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly rates: RatesService,
+  ) {}
 
   // =========================================================================
   //  CRUD
@@ -140,6 +204,7 @@ export class MenusService {
     await this.assertCategoryInCompany(companyId, dto.categoryId);
 
     const ingredients = await this.resolveIngredients(companyId, dto.ingredients);
+    const price = await this.priceColumns(companyId, dto.price, dto.priceCurrency);
 
     const menu = await this.prisma.menu.create({
       data: {
@@ -148,7 +213,10 @@ export class MenusService {
         name: dto.name.trim(),
         description: dto.description,
         imageUrl: normalizeImageUrl(dto.imageUrl),
-        price: toMoney(dto.price),
+        price: price.base,
+        priceCurrency: price.currency,
+        priceRate: price.rate,
+        priceEntered: price.entered,
         cost: this.recipeCost(ingredients),
         availability: dto.availability ?? 'ALL',
         preparationMinutes: dto.preparationMinutes ?? null,
@@ -168,6 +236,11 @@ export class MenusService {
   }
 
   async findAll(companyId: string, query: MenuQueryDto) {
+    // Elegir una categoria principal tambien trae lo agrupado en sus subcategorias.
+    const categoryIds = query.categoryId
+      ? await this.categoryScopeIds(companyId, query.categoryId)
+      : undefined;
+
     const where: Prisma.MenuWhereInput = {
       ...tenantWhere(companyId),
       ...(query.search
@@ -179,7 +252,7 @@ export class MenusService {
             ],
           }
         : {}),
-      ...(query.categoryId ? { categoryId: query.categoryId } : {}),
+      ...(categoryIds ? { categoryId: { in: categoryIds } } : {}),
       ...(query.onlyActive ? { active: true } : {}),
     };
 
@@ -242,6 +315,15 @@ export class MenusService {
     const ingredients = dto.ingredients
       ? await this.resolveIngredients(companyId, dto.ingredients)
       : null;
+    const price =
+      dto.price !== undefined || dto.priceCurrency !== undefined
+        ? await this.priceColumns(
+            companyId,
+            dto.price,
+            dto.priceCurrency ?? current.priceCurrency,
+            current.price,
+          )
+        : null;
 
     await this.prisma.$transaction(async (tx) => {
       await tx.menu.update({
@@ -253,7 +335,14 @@ export class MenusService {
           ...(dto.imageUrl !== undefined
             ? { imageUrl: normalizeImageUrl(dto.imageUrl) }
             : {}),
-          ...(dto.price !== undefined ? { price: toMoney(dto.price) } : {}),
+          ...(price
+            ? {
+                price: price.base,
+                priceCurrency: price.currency,
+                priceRate: price.rate,
+                priceEntered: price.entered,
+              }
+            : {}),
           ...(dto.availability !== undefined
             ? { availability: dto.availability }
             : {}),
@@ -322,7 +411,15 @@ export class MenusService {
         name: true,
         price: true,
         active: true,
-        ingredients: { select: { productId: true, quantity: true } },
+        ingredients: {
+          select: {
+            productId: true,
+            quantity: true,
+            // El producto viaja con su estado para que el motor de pedidos pueda
+            // rechazar la venta de un menu con ingredientes desactivados.
+            product: { select: { name: true, active: true } },
+          },
+        },
       },
     });
 
@@ -338,6 +435,8 @@ export class MenusService {
           ingredients: menu.ingredients.map((ingredient) => ({
             productId: ingredient.productId,
             quantity: ingredient.quantity,
+            productName: ingredient.product?.name,
+            active: ingredient.product?.active ?? true,
           })),
         } satisfies MenuRecipe,
       ]),
@@ -347,6 +446,45 @@ export class MenusService {
   // =========================================================================
   //  AYUDAS INTERNAS
   // =========================================================================
+
+  /**
+   * Contexto de moneda del precio del menu: `base` en USD (lo que usan POS y
+   * reportes), `entered` (lo que escribio el usuario) y `rate` (bolivares por 1
+   * unidad de la moneda). Cuando solo cambia la moneda (`amount` ausente) se
+   * conserva el valor en USD ya guardado.
+   */
+  private async priceColumns(
+    companyId: string,
+    amount: number | undefined,
+    currency?: string | null,
+    currentBase?: number,
+  ): Promise<{
+    currency: string;
+    base: number;
+    entered: number;
+    rate: number | null;
+  }> {
+    const code = normalizeCurrencyCode(currency) || BASE_CURRENCY_CODE;
+
+    if (amount === undefined) {
+      const base = toMoney(currentBase ?? 0);
+      return {
+        currency: code,
+        base,
+        entered: await this.rates.toCurrencyAmount(companyId, base, code),
+        rate: (await this.rates.resolveAmount(companyId, 1, code)).exchangeRate,
+      };
+    }
+
+    const entered = toMoney(amount);
+    const conversion = await this.rates.resolveAmount(companyId, entered, code);
+    return {
+      currency: conversion.currency,
+      base: conversion.baseAmount,
+      entered,
+      rate: conversion.exchangeRate,
+    };
+  }
 
   /** Suma el costo de la receta (costo del producto x cantidad) en moneda base. */
   private recipeCost(ingredients: ResolvedIngredient[]): number {
@@ -437,11 +575,17 @@ export class MenusService {
     },
   >(menu: T) {
     const maxServings = servingsAvailable(menu.ingredients);
+    // Un ingrediente desactivado deja el menu invendible: se avisa cual es para
+    // que se corrija la receta en vez de fallar al cobrar.
+    const inactiveIngredients = inactiveIngredientRefs(menu.ingredients);
     return {
       ...menu,
       margin: money.sub(menu.price, menu.cost),
       maxServings,
-      available: maxServings === null || maxServings > 0,
+      inactiveIngredients,
+      available:
+        inactiveIngredients.length === 0 &&
+        (maxServings === null || maxServings > 0),
     };
   }
 
@@ -480,6 +624,22 @@ export class MenusService {
     if (!category) {
       throw new BadRequestException('La categoria de menu indicada no existe');
     }
+  }
+
+  /**
+   * Ids que abarca el filtro de categoria de menu: la categoria elegida y sus
+   * subcategorias (un solo nivel), para que filtrar por "Almuerzos" incluya lo
+   * agrupado en "Sopas".
+   */
+  private async categoryScopeIds(
+    companyId: string,
+    categoryId: string,
+  ): Promise<string[]> {
+    const subcategories = await this.prisma.menuCategory.findMany({
+      where: { parentId: categoryId, ...tenantWhere(companyId) },
+      select: { id: true },
+    });
+    return [categoryId, ...subcategories.map((subcategory) => subcategory.id)];
   }
 
   /** Codigo legible y unico por empresa: MEN-YYYYMMDD-NNNN. */

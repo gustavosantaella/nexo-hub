@@ -124,20 +124,31 @@ model User {
 
 // ============================== Catalogo ===================================
 
+// Categoria de productos. Puede ser una categoria PRINCIPAL o una SUBCATEGORIA
+// (`parentId`): como maximo dos niveles y la subcategoria es OPCIONAL, tanto
+// para la categoria (no esta obligada a tener hijas) como para el producto (se
+// puede agrupar en la principal o en una subcategoria concreta).
 model Category {
   id          String   @id @default(cuid())
   companyId   String
   name        String
   description String?
+  // Categoria principal a la que pertenece (`null` = es una principal).
+  parentId    String?
   active      Boolean  @default(true)
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 
-  company  Company   @relation(fields: [companyId], references: [id], onDelete: Cascade)
-  products Product[]
+  company       Company    @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  // Al eliminar la principal sus subcategorias no se borran: pasan a ser
+  // principales (SetNull), igual que los productos quedan sin categoria.
+  parent        Category?  @relation("CategoryHierarchy", fields: [parentId], references: [id], onDelete: SetNull)
+  subcategories Category[] @relation("CategoryHierarchy")
+  products      Product[]
 
   @@unique([companyId, name])
   @@index([companyId])
+  @@index([parentId])
   @@map("categories")
 }
 
@@ -198,6 +209,50 @@ model Product {
   imageUrl    String?
   price       Int      @default(0)
   cost        Int      @default(0)
+  // ---------------------------------------------------------------------------
+  // CONTEXTO DE MONEDA DE LOS PRECIOS.
+  // `price`, `cost`, `unitPrice` y `unitCost` SIEMPRE se guardan en dolares
+  // (moneda base contable del sistema), pero el usuario puede escribir el
+  // precio/costo en la
+  // moneda que quiera y al cambio que quiera. Estas columnas recuerdan en que
+  // moneda lo escribio (`priceCurrency`), cuanto escribio (`priceEntered`,
+  // centavos de ESA moneda), la tasa aplicada (`priceRate` = bolivares por 1
+  // unidad de esa moneda) y CUAL de las tasas del sistema uso
+  // (`priceRateKey`: BCV_USD, BCV_EUR o CUSTOM_USD). Con las cuatro se
+  // reconstruye la conversion exacta aunque el valor quede en USD.
+  // ---------------------------------------------------------------------------
+  priceCurrency   String @default("USD")
+  priceRate       Float?
+  priceRateKey    String?
+  priceEntered    Int?
+  costCurrency    String @default("USD")
+  costRate        Float?
+  costRateKey     String?
+  costEntered     Int?
+  // PRECIO DE VENTA de UNA unidad individual cuando el producto se vende por
+  // presentacion (caja, paquete, six-pack): `price` es el de la presentacion
+  // completa y `unitPrice` el de la unidad suelta (los dos SIEMPRE en USD). Tiene
+  // su PROPIA moneda (`unitPriceCurrency`) y tasa (`unitPriceRate` /
+  // `unitPriceRateKey`), igual que el resto de montos del catalogo. Con
+  // `unitPrice = 0` (sin definir) la interfaz reparte `price / unitsPerBox`, para
+  // que los productos anteriores a esta columna sigan vendiendose igual.
+  unitPrice         Int    @default(0)
+  unitPriceEntered  Int?
+  unitPriceCurrency String @default("USD")
+  unitPriceRate     Float?
+  unitPriceRateKey  String?
+  // Costo de UNA unidad individual cuando se compra por presentacion (caja,
+  // paquete, six-pack): `cost` es el de la presentacion completa y `unitCost` el
+  // de la unidad suelta (los dos SIEMPRE en USD). El costo unitario tiene su
+  // PROPIA moneda (`unitCostCurrency`: no sigue a `costCurrency` porque el
+  // operador elige una moneda por campo): `unitCostEntered` es lo que escribio en
+  // esa moneda, `unitCostRate` la tasa aplicada y `unitCostRateKey` la tasa
+  // elegida (igual que el precio y el costo de la presentacion).
+  unitCost        Int    @default(0)
+  unitCostEntered Int?
+  unitCostCurrency String @default("USD")
+  unitCostRate    Float?
+  unitCostRateKey String?
   // Existencias en la unidad del producto. Es decimal (`Float`) porque las
   // recetas consumen fracciones: 100 g de un producto que se controla en kilos
   // son 0.1. El redondeo a 3 decimales ocurre en el motor de inventario, que es
@@ -207,7 +262,8 @@ model Product {
   unit        String   @default("UND") // UND | KG | LT | CAJA | PAQUETE
   // Unidades individuales que trae la presentacion (caja/paquete). El `price`
   // sigue siendo el de la presentacion completa y el stock se lleva en unidades
-  // individuales: el POS vende sueltas a `price / unitsPerBox`. 1 = suelto.
+  // individuales: el POS vende sueltas a `unitPrice` y, si esta sin definir (0),
+  // a `price / unitsPerBox`. 1 = suelto.
   unitsPerBox Int      @default(1)
   trackStock  Boolean  @default(true)
   active      Boolean  @default(true)
@@ -244,7 +300,18 @@ model StockMovement {
   quantity      Float
   stockBefore   Float
   stockAfter    Float
+  // Como lo escribio el operador: `inputUnit` es la unidad con la que penso el
+  // movimiento (CAJA, UND, KG, G, LT, ML) e `inputQuantity` la cantidad escrita
+  // en ESA unidad. `quantity` (arriba) ya viene convertida a la unidad de stock
+  // del producto, que es la unica que mueve el inventario.
+  inputUnit     String?
+  inputQuantity Float?
   unitCost      Int?
+  // Contexto de moneda del costo unitario (mismo criterio que en Product):
+  // `unitCost` queda en USD y estas columnas recuerdan lo que se escribio.
+  unitCostCurrency String @default("USD")
+  unitCostRate     Float?
+  unitCostEntered  Int?
   reason        String?
   referenceType String? // ORDER | PURCHASE | MANUAL | ADJUSTMENT
   referenceId   String?
@@ -276,6 +343,20 @@ model Order {
   discount      Int      @default(0)
   tax           Int      @default(0)
   tip           Int      @default(0) // Propina del cliente (no paga IGV)
+  // ---------------------------------------------------------------------------
+  // COSTO ADICIONAL POR DELIVERY (opcional).
+  // Solo se usa en los pedidos a domicilio; `deliveryFee` va en USD como el resto
+  // del dinero y, igual que la propina, NO paga IGV (se suma al final del total).
+  // El contexto de moneda recuerda lo que escribio el operador para volver a
+  // mostrarlo tal cual: `deliveryFeeEntered` (centavos de `deliveryFeeCurrency`),
+  // la tasa aplicada (`deliveryFeeRate`, bolivares por 1 unidad de esa moneda) y
+  // CUAL de las tasas del sistema eligio (`deliveryFeeRateKey`).
+  // ---------------------------------------------------------------------------
+  deliveryFee         Int      @default(0)
+  deliveryFeeEntered  Int?
+  deliveryFeeCurrency String   @default("USD")
+  deliveryFeeRate     Float?
+  deliveryFeeRateKey  String?
   total         Int      @default(0)
   paidAmount    Int      @default(0)
   paymentStatus String   @default("UNPAID") // UNPAID | PARTIAL | PAID
@@ -311,6 +392,13 @@ model OrderItem {
   quantity  Int
   unitPrice Int
   total     Int
+  // CONSUMO DE INVENTARIO CONGELADO al vender (JSON `[{productId, quantity}]`).
+  // `quantity` es lo que consume UNA unidad de la linea (en un menu, su receta).
+  // Al cancelar el pedido, quitar la linea o corregir la cantidad se devuelve
+  // EXACTAMENTE lo que se desconto, aunque la receta del menu haya cambiado
+  // despues de la venta. `null` = linea sin snapshot (producto suelto o pedido
+  // anterior a esta columna): se resuelve con la receta vigente.
+  consumption String?
 
   company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
   order   Order   @relation(fields: [orderId], references: [id], onDelete: Cascade)
@@ -353,7 +441,9 @@ model OrderPayment {
 
 // Agrupacion comercial del menu (Desayunos, Almuerzos, Combos, Postres). Es
 // independiente de las categorias de productos: un menu se agrupa por como se
-// vende, no por como se compra.
+// vende, no por como se compra. Igual que las de productos, admite un nivel de
+// SUBCATEGORIAS (`parentId`, opcional) para afinar la carta (Almuerzos >
+// Sopas).
 model MenuCategory {
   id          String   @id @default(cuid())
   companyId   String
@@ -363,16 +453,22 @@ model MenuCategory {
   // Tailwind o hex). Opcional: sin color usa el estilo por defecto.
   color       String?
   sortOrder   Int      @default(0)
+  // Categoria principal a la que pertenece (`null` = es una principal).
+  parentId    String?
   active      Boolean  @default(true)
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 
-  company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
-  menus   Menu[]
+  company       Company        @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  // Al eliminar la principal sus subcategorias pasan a ser principales (SetNull).
+  parent        MenuCategory?  @relation("MenuCategoryHierarchy", fields: [parentId], references: [id], onDelete: SetNull)
+  subcategories MenuCategory[] @relation("MenuCategoryHierarchy")
+  menus         Menu[]
 
   @@unique([companyId, name])
   @@index([companyId])
   @@index([sortOrder])
+  @@index([parentId])
   @@map("menu_categories")
 }
 
@@ -384,7 +480,13 @@ model Menu {
   name        String
   description String?
   imageUrl    String?
-  price       Int      @default(0) // precio de venta (centavos)
+  price       Int      @default(0) // precio de venta (centavos, en USD)
+  // Contexto de moneda del precio (mismo criterio que en Product): `price` queda
+  // en USD y estas columnas recuerdan en que moneda lo escribio el usuario,
+  // cuanto escribio (`priceEntered`) y con que tasa se convirtio (`priceRate`).
+  priceCurrency String @default("USD")
+  priceRate     Float?
+  priceEntered  Int?
   // Costo de la receta (ingredientes x costo del producto). Se recalcula al
   // guardar y sirve para medir el margen sin abrir la ficha.
   cost        Int      @default(0)

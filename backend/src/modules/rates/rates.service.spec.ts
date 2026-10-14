@@ -504,6 +504,99 @@ describe('RatesService', () => {
 
       await expect(service.toCurrencyAmount(COMPANY_ID, 2, 'VES')).resolves.toBe(1753.6);
     });
+
+    /**
+     * El operador puede elegir CON CUAL de las tasas del sistema se convierte un
+     * monto del catalogo (precio, costo, costo unitario): la elegida reemplaza al
+     * puente por defecto (`personalizada ?? BCV dolar`).
+     */
+    it('convierte un monto con la tasa elegida (BCV euro)', async () => {
+      const { service } = buildService({ fetchImpl: fetchMock });
+
+      // 9.820,05 Bs al cambio del euro (982,00454402 Bs por USD) = 10 USD. Con la
+      // tasa activa del dolar (876,7976) habrian sido 11,20 USD.
+      const conversion = await service.resolveAmount(
+        COMPANY_ID,
+        9820.05,
+        'VES',
+        'BCV_EUR',
+      );
+
+      expect(conversion.baseAmount).toBe(10);
+      // La tasa aplicada sigue siendo la de la moneda (1 Bs por 1 Bs).
+      expect(conversion.exchangeRate).toBe(1);
+    });
+
+    it('usa la tasa activa cuando no se elige tasa o la elegida no existe', async () => {
+      const { service } = buildService({ fetchImpl: fetchMock });
+
+      const chosen = await service.resolveAmount(COMPANY_ID, 876.7976, 'VES', 'BCV_USD');
+      // Sin tasa personalizada configurada, `CUSTOM_USD` cae en la activa (BCV $).
+      const missing = await service.resolveAmount(
+        COMPANY_ID,
+        876.7976,
+        'VES',
+        'CUSTOM_USD',
+      );
+      const none = await service.resolveAmount(COMPANY_ID, 876.7976, 'VES');
+
+      expect(chosen.baseAmount).toBe(1);
+      expect(missing.baseAmount).toBe(1);
+      expect(none.baseAmount).toBe(1);
+    });
+
+    it('prefiere la tasa personalizada cuando se elige y existe', async () => {
+      const { service } = buildService({
+        fetchImpl: fetchMock,
+        setting: {
+          key: CUSTOM_RATE_KEY,
+          value: '905.5',
+          updatedAt: new Date('2026-10-13T12:00:00.000Z'),
+          updatedBy: null,
+        },
+      });
+
+      const conversion = await service.resolveAmount(
+        COMPANY_ID,
+        905.5,
+        'VES',
+        'CUSTOM_USD',
+      );
+
+      expect(conversion.baseAmount).toBe(1);
+    });
+
+    it('usa la tasa elegida como puente al convertir otra moneda', async () => {
+      const { service } = buildService({
+        fetchImpl: fetchMock,
+        currencies: [
+          ...DEFAULT_CURRENCIES,
+          currencySetting({ code: 'COP', rate: 0.22 }),
+        ],
+      });
+
+      // 1000 COP x 0,22 = 220 Bs; al cambio del euro son 0,22 USD (con la tasa
+      // activa, 876,7976, habrian sido 0,25).
+      const conversion = await service.resolveAmount(
+        COMPANY_ID,
+        1000,
+        'COP',
+        'BCV_EUR',
+      );
+
+      expect(conversion.baseAmount).toBe(0.22);
+      expect(conversion.exchangeRate).toBe(0.22);
+    });
+
+    it('re-expresa un monto en bolivares con la misma tasa elegida', async () => {
+      const { service } = buildService({ fetchImpl: fetchMock });
+
+      // 10 USD al cambio del euro: 10 x 982,00454402 = 9.820,05 Bs. Con la tasa
+      // activa habrian sido 8.767,98 Bs.
+      await expect(
+        service.toCurrencyAmount(COMPANY_ID, 10, 'VES', 'BCV_EUR'),
+      ).resolves.toBe(9820.05);
+    });
   });
 
   describe('moneda base (lo que se muestra primero)', () => {

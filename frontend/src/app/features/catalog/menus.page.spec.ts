@@ -142,6 +142,7 @@ describe('MenusPage (receta y costos)', () => {
       description: undefined,
       imageUrl: undefined,
       price: 18,
+      priceCurrency: 'USD',
       availability: 'ALL',
       preparationMinutes: undefined,
       categoryId: null,

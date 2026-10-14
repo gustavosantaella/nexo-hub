@@ -12,8 +12,8 @@ import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { Role } from '../../common/constants/enums';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { Roles } from '../../common/decorators/roles.decorator';
-import { PaginationQueryDto } from '../../common/dto/pagination-query.dto';
 import { CategoriesService } from './categories.service';
+import { CategoryQueryDto } from './dto/category-query.dto';
 import { CreateCategoryDto } from './dto/create-category.dto';
 import { UpdateCategoryDto } from './dto/update-category.dto';
 
@@ -34,16 +34,18 @@ export class CategoriesController {
   }
 
   @Get()
-  @ApiOperation({ summary: 'Listar categorias (paginado)' })
+  @ApiOperation({ summary: 'Listar categorias (paginado, con jerarquia)' })
   findAll(
     @CurrentUser('companyId') companyId: string,
-    @Query() query: PaginationQueryDto,
+    @Query() query: CategoryQueryDto,
   ) {
     return this.categoriesService.findAll(companyId, query);
   }
 
   @Get('options')
-  @ApiOperation({ summary: 'Categorias activas para selects' })
+  @ApiOperation({
+    summary: 'Categorias activas para selects (principales y sus subcategorias)',
+  })
   findOptions(@CurrentUser('companyId') companyId: string) {
     return this.categoriesService.findOptions(companyId);
   }

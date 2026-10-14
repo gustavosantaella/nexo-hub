@@ -385,17 +385,55 @@ export const moneyCodec = Prisma.defineExtension({
         needs: { cost: true },
         compute: (row) => fromCents(row.cost),
       },
+      priceEntered: {
+        needs: { priceEntered: true },
+        compute: (row) =>
+          row.priceEntered == null ? null : fromCents(row.priceEntered),
+      },
+      costEntered: {
+        needs: { costEntered: true },
+        compute: (row) =>
+          row.costEntered == null ? null : fromCents(row.costEntered),
+      },
+      unitCost: {
+        needs: { unitCost: true },
+        compute: (row) => fromCents(row.unitCost),
+      },
+      unitCostEntered: {
+        needs: { unitCostEntered: true },
+        compute: (row) =>
+          row.unitCostEntered == null ? null : fromCents(row.unitCostEntered),
+      },
+      unitPrice: {
+        needs: { unitPrice: true },
+        compute: (row) => fromCents(row.unitPrice),
+      },
+      unitPriceEntered: {
+        needs: { unitPriceEntered: true },
+        compute: (row) =>
+          row.unitPriceEntered == null ? null : fromCents(row.unitPriceEntered),
+      },
     },
     stockMovement: {
       unitCost: {
         needs: { unitCost: true },
         compute: (row) => (row.unitCost == null ? null : fromCents(row.unitCost)),
       },
+      unitCostEntered: {
+        needs: { unitCostEntered: true },
+        compute: (row) =>
+          row.unitCostEntered == null ? null : fromCents(row.unitCostEntered),
+      },
     },
     menu: {
       price: {
         needs: { price: true },
         compute: (row) => fromCents(row.price),
+      },
+      priceEntered: {
+        needs: { priceEntered: true },
+        compute: (row) =>
+          row.priceEntered == null ? null : fromCents(row.priceEntered),
       },
       cost: {
         needs: { cost: true },
@@ -418,6 +456,17 @@ export const moneyCodec = Prisma.defineExtension({
       tip: {
         needs: { tip: true },
         compute: (row) => fromCents(row.tip),
+      },
+      deliveryFee: {
+        needs: { deliveryFee: true },
+        compute: (row) => fromCents(row.deliveryFee),
+      },
+      deliveryFeeEntered: {
+        needs: { deliveryFeeEntered: true },
+        compute: (row) =>
+          row.deliveryFeeEntered == null
+            ? null
+            : fromCents(row.deliveryFeeEntered),
       },
       total: {
         needs: { total: true },

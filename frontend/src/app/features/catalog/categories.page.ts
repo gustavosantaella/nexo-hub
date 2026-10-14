@@ -1,9 +1,17 @@
-import { ChangeDetectionStrategy, Component, OnInit, inject, signal } from '@angular/core';
+import {
+  ChangeDetectionStrategy,
+  Component,
+  OnInit,
+  computed,
+  inject,
+  signal,
+} from '@angular/core';
 import { FormsModule } from '@angular/forms';
 import type { Category, PaginationMeta } from '../../core/models/api.model';
 import { AuthService } from '../../core/services/auth.service';
 import { CategoriesService } from '../../core/services/catalog.service';
 import { ToastService } from '../../core/services/toast.service';
+import { categoryOptionLabel } from '../../core/utils/category-tree';
 import { apiErrorMessage } from '../../core/utils/format';
 import { EmptyStateComponent, LoaderComponent } from '../../shared/components/feedback.component';
 import { IconComponent } from '../../shared/components/icon.component';
@@ -53,7 +61,7 @@ const EMPTY_META: PaginationMeta = {
 
     <section class="card">
       <div class="card-header">
-        <div class="flex w-full max-w-sm items-center gap-2">
+        <div class="flex w-full max-w-xl flex-wrap items-center gap-2">
           <div class="relative flex-1">
             <span class="pointer-events-none absolute left-3 top-2.5 text-slate-400">
               <app-icon name="search" size="h-4 w-4" />
@@ -66,6 +74,14 @@ const EMPTY_META: PaginationMeta = {
             />
           </div>
           <button type="button" class="btn-secondary" (click)="applySearch()">Buscar</button>
+          @if (parentFilter(); as parent) {
+            <span class="badge bg-slate-100 text-slate-600">
+              Subcategorías de {{ parent.name }}
+            </span>
+            <button type="button" class="btn-ghost btn-sm" (click)="clearParentFilter()">
+              Ver todas
+            </button>
+          }
         </div>
       </div>
 
@@ -83,8 +99,10 @@ const EMPTY_META: PaginationMeta = {
             <thead>
               <tr>
                 <th>Nombre</th>
+                <th>Principal</th>
                 <th>Descripción</th>
                 <th class="text-center">Productos</th>
+                <th class="text-center">Subcategorías</th>
                 <th class="text-center">Estado</th>
                 <th class="text-right">Acciones</th>
               </tr>
@@ -92,9 +110,33 @@ const EMPTY_META: PaginationMeta = {
             <tbody>
               @for (item of items(); track item.id) {
                 <tr>
-                  <td class="font-medium text-slate-900">{{ item.name }}</td>
+                  <td class="font-medium text-slate-900">
+                    <span class="flex items-center gap-2">
+                      @if (item.parentId) {
+                        <span class="text-slate-300">↳</span>
+                      }
+                      {{ item.name }}
+                    </span>
+                  </td>
+                  <td class="text-slate-500">
+                    {{ item.parent?.name || 'Principal' }}
+                  </td>
                   <td class="max-w-xs truncate text-slate-500">{{ item.description || '—' }}</td>
                   <td class="text-center">{{ item._count?.products ?? 0 }}</td>
+                  <td class="text-center">
+                    @if (item._count?.subcategories) {
+                      <button
+                        type="button"
+                        class="btn-ghost btn-sm"
+                        title="Ver subcategorías"
+                        (click)="filterByParent(item)"
+                      >
+                        {{ item._count?.subcategories }}
+                      </button>
+                    } @else {
+                      <span class="text-slate-400">—</span>
+                    }
+                  </td>
                   <td class="text-center">
                     <span
                       class="badge"
@@ -106,6 +148,16 @@ const EMPTY_META: PaginationMeta = {
                   <td>
                     <div class="flex justify-end gap-1">
                       @if (auth.canManage()) {
+                        @if (!item.parentId) {
+                          <button
+                            type="button"
+                            class="btn-ghost btn-sm"
+                            title="Nueva subcategoría"
+                            (click)="openCreateSub(item)"
+                          >
+                            <app-icon name="plus" size="h-4 w-4" />
+                          </button>
+                        }
                         <button
                           type="button"
                           class="btn-ghost btn-sm"
@@ -160,6 +212,30 @@ const EMPTY_META: PaginationMeta = {
           />
         </div>
         <div>
+          <label class="label" for="cat-parent">Categoría principal</label>
+          <select
+            id="cat-parent"
+            name="parentId"
+            class="input"
+            [(ngModel)]="form.parentId"
+            [disabled]="hasSubcategories()"
+          >
+            <option value="">Ninguna (categoría principal)</option>
+            @for (category of parentOptions(); track category.id) {
+              <option [value]="category.id">{{ categoryOptionLabel(category) }}</option>
+            }
+          </select>
+          @if (hasSubcategories()) {
+            <p class="field-error">
+              Esta categoría tiene subcategorías: no puede ser subcategoría de otra.
+            </p>
+          } @else {
+            <p class="mt-1 text-xs text-slate-500">
+              Opcional: elige una principal para convertirla en subcategoría.
+            </p>
+          }
+        </div>
+        <div>
           <label class="label" for="cat-desc">Descripción</label>
           <textarea
             id="cat-desc"
@@ -198,20 +274,44 @@ export class CategoriesPage implements OnInit {
   readonly modalOpen = signal(false);
   readonly editing = signal<Category | null>(null);
 
+  /** Categorias activas: alimentan el select de categoria principal. */
+  readonly categoryOptions = signal<Category[]>([]);
+  /** Cuando se navega a las subcategorias de una categoria principal. */
+  readonly parentFilter = signal<Category | null>(null);
+
+  /** Solo las principales pueden ser padre (un nivel de subcategorias). */
+  readonly parentOptions = computed(() =>
+    this.categoryOptions().filter(
+      (category) => !category.parentId && category.id !== this.editing()?.id,
+    ),
+  );
+  /** Una categoria con hijas no puede convertirse en subcategoria. */
+  readonly hasSubcategories = computed(
+    () => (this.editing()?._count?.subcategories ?? 0) > 0,
+  );
+
+  readonly categoryOptionLabel = categoryOptionLabel;
+
   search = '';
   private page = 1;
   private limit = 20;
 
-  form = { name: '', description: '', active: true };
+  form = { name: '', description: '', parentId: '', active: true };
 
   ngOnInit(): void {
     this.load();
+    this.loadOptions();
   }
 
   load(): void {
     this.loading.set(true);
     this.categories
-      .list({ page: this.page, limit: this.limit, search: this.search || undefined })
+      .list({
+        page: this.page,
+        limit: this.limit,
+        search: this.search || undefined,
+        parentId: this.parentFilter()?.id,
+      })
       .subscribe({
         next: (response) => {
           this.items.set(response.items);
@@ -220,6 +320,27 @@ export class CategoriesPage implements OnInit {
         },
         error: () => this.loading.set(false),
       });
+  }
+
+  /** Refresca el select de categoria principal (se guardan cambios arriba). */
+  private loadOptions(): void {
+    this.categories.options().subscribe({
+      next: (list) => this.categoryOptions.set(list),
+      error: () => this.categoryOptions.set([]),
+    });
+  }
+
+  /** Navega a las subcategorias de una principal (un clic en el conteo). */
+  filterByParent(category: Category): void {
+    this.parentFilter.set(category);
+    this.page = 1;
+    this.load();
+  }
+
+  clearParentFilter(): void {
+    this.parentFilter.set(null);
+    this.page = 1;
+    this.load();
   }
 
   applySearch(): void {
@@ -240,7 +361,20 @@ export class CategoriesPage implements OnInit {
 
   openCreate(): void {
     this.editing.set(null);
-    this.form = { name: '', description: '', active: true };
+    // Si se esta viendo una principal, la nueva categoria nace como su hija.
+    this.form = {
+      name: '',
+      description: '',
+      parentId: this.parentFilter()?.id ?? '',
+      active: true,
+    };
+    this.modalOpen.set(true);
+  }
+
+  /** Crea una subcategoria de la principal indicada. */
+  openCreateSub(parent: Category): void {
+    this.editing.set(null);
+    this.form = { name: '', description: '', parentId: parent.id, active: true };
     this.modalOpen.set(true);
   }
 
@@ -249,6 +383,7 @@ export class CategoriesPage implements OnInit {
     this.form = {
       name: item.name,
       description: item.description ?? '',
+      parentId: item.parentId ?? '',
       active: item.active,
     };
     this.modalOpen.set(true);
@@ -265,6 +400,8 @@ export class CategoriesPage implements OnInit {
     const payload = {
       name: this.form.name.trim(),
       description: this.form.description.trim() || undefined,
+      // Vacio = categoria principal.
+      parentId: this.form.parentId || null,
       active: this.form.active,
     };
     const current = this.editing();
@@ -278,6 +415,7 @@ export class CategoriesPage implements OnInit {
         this.closeModal();
         this.toast.success(current ? 'Categoría actualizada' : 'Categoría creada');
         this.load();
+        this.loadOptions();
       },
       error: (error) => {
         this.saving.set(false);
@@ -287,9 +425,14 @@ export class CategoriesPage implements OnInit {
   }
 
   async remove(item: Category): Promise<void> {
+    const subcategories = item._count?.subcategories ?? 0;
     const confirmed = await this.confirm.ask({
       title: 'Eliminar categoría',
-      message: `¿Eliminar "${item.name}"? Los productos asociados quedarán sin categoría.`,
+      message:
+        `¿Eliminar "${item.name}"? Los productos asociados quedarán sin categoría.` +
+        (subcategories
+          ? ` Sus ${subcategories} subcategorías quedarán como categorías principales.`
+          : ''),
       confirmLabel: 'Eliminar',
       tone: 'danger',
     });
@@ -298,7 +441,10 @@ export class CategoriesPage implements OnInit {
     this.categories.remove(item.id).subscribe({
       next: () => {
         this.toast.success('Categoría eliminada');
+        // Si estabamos viendo sus subcategorias, volvemos al listado completo.
+        if (this.parentFilter()?.id === item.id) this.parentFilter.set(null);
         this.load();
+        this.loadOptions();
       },
     });
   }

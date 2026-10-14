@@ -13,6 +13,7 @@ import {
 } from 'class-validator';
 import { PRODUCT_UNITS, type ProductUnit } from '../../../common/constants/enums';
 import { QTY_DECIMALS } from '../../../common/utils/quantity.util';
+import { RATE_KEYS } from '../../rates/rates.service';
 
 export class CreateProductDto {
   @ApiPropertyOptional({ description: 'Se genera automaticamente si no se envia' })
@@ -39,11 +40,35 @@ export class CreateProductDto {
   @MaxLength(400_000, { message: 'La imagen del producto es demasiado grande' })
   imageUrl?: string;
 
-  @ApiProperty({ example: 25.0 })
+  @ApiProperty({
+    example: 25.0,
+    description:
+      'Precio de venta tal como lo escribe el usuario, EN LA MONEDA de `priceCurrency` (USD si se omite). El sistema lo guarda ademas en USD (moneda base contable) y recuerda la moneda y la tasa usadas.',
+  })
   @Type(() => Number)
   @IsNumber()
   @Min(0)
   price!: number;
+
+  @ApiPropertyOptional({
+    example: 'VES',
+    default: 'USD',
+    description:
+      'Moneda en la que se escribio el precio (USD, VES, EUR, ...). Debe estar habilitada y tener tasa configurada.',
+  })
+  @IsOptional()
+  @IsString()
+  priceCurrency?: string;
+
+  @ApiPropertyOptional({
+    enum: RATE_KEYS,
+    example: 'BCV_USD',
+    description:
+      'Tasa con la que se convierte el precio a USD: `BCV_USD` (dolar oficial), `BCV_EUR` (euro oficial) o `CUSTOM_USD` (la personalizada del local). Si se omite se conserva la guardada y, si el producto no tiene, se usa la activa del sistema.',
+  })
+  @IsOptional()
+  @IsIn(RATE_KEYS)
+  priceRateKey?: string;
 
   @ApiPropertyOptional({ example: 12.5 })
   @IsOptional()
@@ -51,6 +76,84 @@ export class CreateProductDto {
   @IsNumber()
   @Min(0)
   cost?: number;
+
+  @ApiPropertyOptional({
+    example: 'USD',
+    description:
+      'Moneda en la que se escribio el costo (por defecto la misma del precio).',
+  })
+  @IsOptional()
+  @IsString()
+  costCurrency?: string;
+
+  @ApiPropertyOptional({
+    enum: RATE_KEYS,
+    example: 'CUSTOM_USD',
+    description:
+      'Tasa con la que se convierte el costo de la presentacion a USD (independiente de la del precio y del costo unitario).',
+  })
+  @IsOptional()
+  @IsIn(RATE_KEYS)
+  costRateKey?: string;
+
+  @ApiPropertyOptional({
+    description:
+      'Costo de UNA unidad individual de la presentacion (caja/paquete), en `unitCostCurrency` (por defecto la moneda de `costCurrency`). Si se omite se calcula repartiendo el costo de la presentacion entre `unitsPerBox`.',
+  })
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  @Min(0)
+  unitCost?: number;
+
+  @ApiPropertyOptional({
+    example: 'USD',
+    description:
+      'Moneda en la que se escribio el costo unitario. Es INDEPENDIENTE de `costCurrency`: cada monto del catalogo tiene su propia moneda (por defecto, la del costo de la presentacion).',
+  })
+  @IsOptional()
+  @IsString()
+  unitCostCurrency?: string;
+
+  @ApiPropertyOptional({
+    enum: RATE_KEYS,
+    example: 'BCV_EUR',
+    description:
+      'Tasa con la que se convierte el costo unitario a USD. Es INDEPENDIENTE de las del precio y del costo de la presentacion: el operador elige una tasa por monto.',
+  })
+  @IsOptional()
+  @IsIn(RATE_KEYS)
+  unitCostRateKey?: string;
+
+  @ApiPropertyOptional({
+    example: 3.5,
+    description:
+      'PRECIO DE VENTA de UNA unidad individual de la presentacion (caja/paquete), en `unitPriceCurrency` (por defecto la moneda de `priceCurrency`). 0 = sin definir: la interfaz reparte `price / unitsPerBox`.',
+  })
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  @Min(0)
+  unitPrice?: number;
+
+  @ApiPropertyOptional({
+    example: 'USD',
+    description:
+      'Moneda en la que se escribio el precio de la unidad suelta. Es INDEPENDIENTE de `priceCurrency`: cada monto del catalogo tiene su propia moneda (por defecto, la del precio de la presentacion).',
+  })
+  @IsOptional()
+  @IsString()
+  unitPriceCurrency?: string;
+
+  @ApiPropertyOptional({
+    enum: RATE_KEYS,
+    example: 'BCV_USD',
+    description:
+      'Tasa con la que se convierte el precio de la unidad suelta a USD. Es INDEPENDIENTE de las del precio y de los costos: el operador elige una tasa por monto.',
+  })
+  @IsOptional()
+  @IsIn(RATE_KEYS)
+  unitPriceRateKey?: string;
 
   @ApiPropertyOptional({
     description:

@@ -1,4 +1,11 @@
-import { ChangeDetectionStrategy, Component, OnInit, inject, signal } from '@angular/core';
+import {
+  ChangeDetectionStrategy,
+  Component,
+  OnInit,
+  computed,
+  inject,
+  signal,
+} from '@angular/core';
 import { FormsModule } from '@angular/forms';
 import type {
   Menu,
@@ -18,7 +25,9 @@ import {
   MenusService,
 } from '../../core/services/menu.service';
 import { ProductsService } from '../../core/services/catalog.service';
+import { RatesService } from '../../core/services/rates.service';
 import { ToastService } from '../../core/services/toast.service';
+import { categoryOptionLabel } from '../../core/utils/category-tree';
 import {
   PRODUCT_IMAGE_MAX_SIZE,
   toProductImageDataUrl,
@@ -26,11 +35,19 @@ import {
 import {
   apiErrorMessage,
   money,
+  moneyIn,
   mulMoney,
   quantity,
   sumMoney,
 } from '../../core/utils/format';
+import {
+  menuStockLabel,
+  menuTitle,
+  menuUnavailableReason,
+} from '../../core/utils/menu-availability';
+import { BASE_CURRENCY_CODE } from '../../core/constants/currency';
 import { EmptyStateComponent, LoaderComponent } from '../../shared/components/feedback.component';
+import { CurrencyAmountInputComponent } from '../../shared/components/currency-amount-input.component';
 import { IconComponent } from '../../shared/components/icon.component';
 import { ModalComponent } from '../../shared/components/modal.component';
 import { MoneyComponent } from '../../shared/components/money.component';
@@ -61,7 +78,9 @@ interface MenuForm {
   name: string;
   description: string;
   imageUrl: string;
+  /** Precio de la carta tal como se escribe, en `priceCurrency`. */
   price: number;
+  priceCurrency: string;
   availability: string;
   preparationMinutes: number | null;
   categoryId: string;
@@ -74,6 +93,8 @@ interface CategoryForm {
   description: string;
   color: string;
   sortOrder: number;
+  /** Categoria de menu principal (`''` = es una categoria principal). */
+  parentId: string;
   active: boolean;
 }
 
@@ -95,6 +116,7 @@ interface CategoryForm {
     PaginationComponent,
     ModalComponent,
     MoneyComponent,
+    CurrencyAmountInputComponent,
     EmptyStateComponent,
     LoaderComponent,
   ],
@@ -148,7 +170,7 @@ interface CategoryForm {
           <select class="input w-48" [(ngModel)]="categoryId" (ngModelChange)="applyFilters()">
             <option value="">Todas las categorías</option>
             @for (category of categories(); track category.id) {
-              <option [value]="category.id">{{ category.name }}</option>
+              <option [value]="category.id">{{ categoryOptionLabel(category) }}</option>
             }
           </select>
           <label class="flex items-center gap-2 text-sm text-slate-600">
@@ -157,11 +179,21 @@ interface CategoryForm {
           </label>
           <button type="button" class="btn-secondary" (click)="applyFilters()">Buscar</button>
           <button type="button" class="btn-ghost btn-sm" (click)="resetFilters()">Limpiar</button>
-        } @else if (auth.canManage()) {
-          <button type="button" class="btn-secondary ml-auto" (click)="openCategoryCreate()">
-            <app-icon name="plus" size="h-4 w-4" />
-            Nueva categoría
-          </button>
+        } @else {
+          @if (categoryParentFilter(); as parent) {
+            <span class="badge bg-slate-100 text-slate-600">
+              Subcategorías de {{ parent.name }}
+            </span>
+            <button type="button" class="btn-ghost btn-sm" (click)="clearCategoryParentFilter()">
+              Ver todas
+            </button>
+          }
+          @if (auth.canManage()) {
+            <button type="button" class="btn-secondary ml-auto" (click)="openCategoryCreate()">
+              <app-icon name="plus" size="h-4 w-4" />
+              Nueva categoría
+            </button>
+          }
         }
       </div>
 
@@ -203,7 +235,7 @@ interface CategoryForm {
                           }
                         </span>
                         <span class="min-w-0">
-                          <span class="block truncate font-medium text-slate-900">{{ item.name }}</span>
+                          <span class="block truncate font-medium text-slate-900" [title]="menuTitle(item)">{{ item.name }}</span>
                           <span class="block text-xs text-slate-400">{{ item.code }}</span>
                         </span>
                       </div>
@@ -215,8 +247,23 @@ interface CategoryForm {
                         <span class="text-xs text-slate-400">Sin categoría</span>
                       }
                     </td>
-                    <td class="text-xs text-slate-500">{{ item.ingredients.length }} ingrediente(s)</td>
-                    <td class="text-right font-medium text-slate-900">{{ money(item.price) }}</td>
+                    <td class="text-xs text-slate-500">
+                      {{ item.ingredients.length }} ingrediente(s)
+                      @if (item.inactiveIngredients.length > 0) {
+                        <span
+                          class="badge bg-rose-100 text-rose-700"
+                          [title]="menuUnavailableReason(item) ?? ''"
+                        >
+                          Ingrediente inactivo
+                        </span>
+                      }
+                    </td>
+                    <td class="text-right font-medium text-slate-900">
+                      {{ money(item.price) }}
+                      @if (priceHint(item); as hint) {
+                        <span class="block text-[11px] font-normal text-slate-400">{{ hint }}</span>
+                      }
+                    </td>
                     <td class="text-right text-slate-600">{{ money(item.cost) }}</td>
                     <td class="text-right">
                       <span class="font-medium" [class]="item.margin >= 0 ? 'text-emerald-600' : 'text-rose-600'">
@@ -224,7 +271,14 @@ interface CategoryForm {
                       </span>
                     </td>
                     <td class="text-center">
-                      @if (item.maxServings === null) {
+                      @if (item.inactiveIngredients.length > 0) {
+                        <span
+                          class="badge bg-rose-100 text-rose-700"
+                          [title]="menuUnavailableReason(item) ?? ''"
+                        >
+                          {{ menuStockLabel(item) }}
+                        </span>
+                      } @else if (item.maxServings === null) {
                         <span class="badge bg-slate-100 text-slate-500" title="Ningún ingrediente lleva control de inventario">
                           Ilimitado
                         </span>
@@ -277,8 +331,10 @@ interface CategoryForm {
               <thead>
                 <tr>
                   <th>Nombre</th>
+                  <th>Principal</th>
                   <th>Descripción</th>
                   <th class="text-center">Menús</th>
+                  <th class="text-center">Subcategorías</th>
                   <th class="text-center">Orden</th>
                   <th class="text-center">Estado</th>
                   <th class="text-right">Acciones</th>
@@ -292,11 +348,29 @@ interface CategoryForm {
                         @if (category.color) {
                           <span class="h-3 w-3 rounded-full" [style.background]="category.color"></span>
                         }
+                        @if (category.parentId) {
+                          <span class="text-slate-300">↳</span>
+                        }
                         {{ category.name }}
                       </span>
                     </td>
+                    <td class="text-slate-500">{{ category.parent?.name || 'Principal' }}</td>
                     <td class="text-slate-600">{{ category.description || '—' }}</td>
                     <td class="text-center text-slate-600">{{ category._count?.menus ?? 0 }}</td>
+                    <td class="text-center">
+                      @if (category._count?.subcategories) {
+                        <button
+                          type="button"
+                          class="btn-ghost btn-sm"
+                          title="Ver subcategorías"
+                          (click)="filterCategoriesByParent(category)"
+                        >
+                          {{ category._count?.subcategories }}
+                        </button>
+                      } @else {
+                        <span class="text-slate-400">—</span>
+                      }
+                    </td>
                     <td class="text-center text-slate-500">{{ category.sortOrder }}</td>
                     <td class="text-center">
                       <span class="badge" [class]="category.active ? 'bg-emerald-100 text-emerald-700' : 'bg-slate-200 text-slate-600'">
@@ -306,6 +380,11 @@ interface CategoryForm {
                     <td class="text-right">
                       <div class="flex justify-end gap-1">
                         @if (auth.canManage()) {
+                          @if (!category.parentId) {
+                            <button type="button" class="btn-ghost btn-sm" title="Nueva subcategoría" (click)="openCategoryCreateSub(category)">
+                              <app-icon name="plus" size="h-4 w-4" />
+                            </button>
+                          }
                           <button type="button" class="btn-ghost btn-sm" title="Editar" (click)="openCategoryEdit(category)">
                             <app-icon name="edit" size="h-4 w-4" />
                           </button>
@@ -346,13 +425,20 @@ interface CategoryForm {
             <select class="input" name="categoryId" [(ngModel)]="form.categoryId">
               <option value="">Sin categoría</option>
               @for (category of categories(); track category.id) {
-                <option [value]="category.id">{{ category.name }}</option>
+                <option [value]="category.id">{{ categoryOptionLabel(category) }}</option>
               }
             </select>
           </div>
           <div>
-            <label class="label">Precio de venta</label>
-            <input class="input" type="number" min="0" step="0.01" name="price" required [(ngModel)]="form.price" />
+            <app-currency-amount-input
+              id="menu-price"
+              label="Precio de venta"
+              [required]="true"
+              [amount]="form.price"
+              [currency]="form.priceCurrency"
+              (amountChange)="form.price = $event"
+              (currencyChange)="form.priceCurrency = $event"
+            />
           </div>
           <div>
             <label class="label">Disponible en</label>
@@ -454,7 +540,11 @@ interface CategoryForm {
                     <app-icon name="close" size="h-4 w-4" />
                   </button>
                 </div>
-                <p class="text-xs text-slate-500">
+                <p
+                  class="text-xs text-slate-500"
+                  [class.text-rose-600]="lineInactive(line)"
+                  [class.font-medium]="lineInactive(line)"
+                >
                   {{ productLabel(line) }}
                   @if (lineCost(line) > 0) {
                     · cuesta {{ money(lineCost(line)) }} por unidad
@@ -509,6 +599,29 @@ interface CategoryForm {
           <input class="input" name="catName" required minlength="2" [(ngModel)]="categoryFields.name" placeholder="Almuerzos" />
         </div>
         <div>
+          <label class="label">Categoría principal</label>
+          <select
+            class="input"
+            name="catParent"
+            [(ngModel)]="categoryFields.parentId"
+            [disabled]="editingCategoryHasSubcategories()"
+          >
+            <option value="">Ninguna (categoría principal)</option>
+            @for (parent of categoryParentOptions(); track parent.id) {
+              <option [value]="parent.id">{{ categoryOptionLabel(parent) }}</option>
+            }
+          </select>
+          @if (editingCategoryHasSubcategories()) {
+            <p class="field-error">
+              Esta categoría tiene subcategorías: no puede ser subcategoría de otra.
+            </p>
+          } @else {
+            <p class="mt-1 text-xs text-slate-500">
+              Opcional: elige una principal para convertirla en subcategoría.
+            </p>
+          }
+        </div>
+        <div>
           <label class="label">Descripción</label>
           <input class="input" name="catDescription" [(ngModel)]="categoryFields.description" />
         </div>
@@ -541,6 +654,8 @@ export class MenusPage implements OnInit {
   private readonly menus = inject(MenusService);
   private readonly menuCategories = inject(MenuCategoriesService);
   private readonly products = inject(ProductsService);
+  /** Moneda con la que se abren los formularios (la base del sistema). */
+  private readonly rates = inject(RatesService);
   private readonly toast = inject(ToastService);
   private readonly confirm = inject(ConfirmService);
 
@@ -564,10 +679,31 @@ export class MenusPage implements OnInit {
   readonly categoriesLoading = signal(false);
   readonly categoryModalOpen = signal(false);
   readonly editingCategory = signal<MenuCategory | null>(null);
+  /** Cuando se ven las subcategorias de una categoria principal. */
+  readonly categoryParentFilter = signal<MenuCategory | null>(null);
+
+  /** Solo las principales pueden ser padre (un nivel de subcategorias). */
+  readonly categoryParentOptions = computed(() =>
+    this.categories().filter(
+      (category) =>
+        !category.parentId && category.id !== this.editingCategory()?.id,
+    ),
+  );
+  /** Una categoria con hijas no puede convertirse en subcategoria. */
+  readonly editingCategoryHasSubcategories = computed(
+    () => (this.editingCategory()?._count?.subcategories ?? 0) > 0,
+  );
+
+  readonly categoryOptionLabel = categoryOptionLabel;
 
   readonly productOptions = signal<ProductOption[]>([]);
   readonly imageReading = signal(false);
   readonly imageError = signal<string | null>(null);
+
+  /** Disponibilidad del menu: porciones, agotado o receta con un insumo inactivo. */
+  readonly menuStockLabel = menuStockLabel;
+  readonly menuUnavailableReason = menuUnavailableReason;
+  readonly menuTitle = menuTitle;
 
   search = '';
   categoryId = '';
@@ -595,6 +731,8 @@ export class MenusPage implements OnInit {
       description: '',
       imageUrl: '',
       price: 0,
+      // Los precios nuevos se cargan en la moneda base del sistema.
+      priceCurrency: this.rates.baseCode(),
       availability: 'ALL',
       preparationMinutes: null,
       categoryId: '',
@@ -632,13 +770,31 @@ export class MenusPage implements OnInit {
 
   loadCategories(): void {
     this.categoriesLoading.set(true);
-    this.menuCategories.list({ limit: 100 }).subscribe({
-      next: (response) => {
-        this.categories.set(response.items);
-        this.categoriesLoading.set(false);
-      },
-      error: () => this.categoriesLoading.set(false),
-    });
+    // Sin paginar: las categorias de la carta son pocas y alimentan tambien el
+    // select del formulario de menu.
+    this.menuCategories
+      .list({
+        limit: 100,
+        parentId: this.categoryParentFilter()?.id,
+      })
+      .subscribe({
+        next: (response) => {
+          this.categories.set(response.items);
+          this.categoriesLoading.set(false);
+        },
+        error: () => this.categoriesLoading.set(false),
+      });
+  }
+
+  /** Navega a las subcategorias de una principal (un clic en el conteo). */
+  filterCategoriesByParent(category: MenuCategory): void {
+    this.categoryParentFilter.set(category);
+    this.loadCategories();
+  }
+
+  clearCategoryParentFilter(): void {
+    this.categoryParentFilter.set(null);
+    this.loadCategories();
   }
 
   applyFilters(): void {
@@ -682,7 +838,9 @@ export class MenusPage implements OnInit {
       name: menu.name,
       description: menu.description ?? '',
       imageUrl: menu.imageUrl ?? '',
-      price: menu.price,
+      // Se recupera lo que se escribio (y en que moneda) al reabrir el formulario.
+      price: menu.priceEntered ?? menu.price,
+      priceCurrency: menu.priceCurrency,
       availability: menu.availability,
       preparationMinutes: menu.preparationMinutes ?? null,
       categoryId: menu.categoryId ?? '',
@@ -729,9 +887,17 @@ export class MenusPage implements OnInit {
     return sumMoney(this.form.ingredients.map((line) => this.lineCost(line)));
   }
 
-  /** Margen estimado del formulario: precio - costo de la receta. */
+  /** Como se cargo el precio de la carta, cuando no fue en dolares. */
+  priceHint(menu: Menu): string | null {
+    if (menu.priceCurrency === BASE_CURRENCY_CODE) return null;
+    if (menu.priceEntered == null) return null;
+    return `Cargado en ${moneyIn(menu.priceEntered, menu.priceCurrency)}`;
+  }
+
+  /** Margen estimado del formulario: precio - costo de la receta (en USD). */
   margin(): number {
-    return sumMoney([Number(this.form.price) || 0, -this.recipeCost()]);
+    const price = this.rates.toBase(this.form.price, this.form.priceCurrency);
+    return sumMoney([price ?? 0, -this.recipeCost()]);
   }
 
   /**
@@ -755,13 +921,30 @@ export class MenusPage implements OnInit {
     return servings.length === 0 ? null : Math.min(...servings);
   }
 
-  /** Texto de ayuda del ingrediente: producto, unidad y stock disponible. */
+  /**
+   * Texto de ayuda del ingrediente: producto, unidad y stock disponible. Un
+   * producto DESACTIVADO ya no llega en las opciones (`/products/options` solo
+   * devuelve activos), asi que se avisa que hay que reemplazarlo: el API no
+   * acepta guardar una receta con un ingrediente inactivo.
+   */
   productLabel(line: RecipeLine): string {
     const product = this.productOptions().find(
       (option) => option.id === line.productId,
     );
-    if (!product) return 'Selecciona un producto del inventario';
+    if (!product) {
+      return line.productId
+        ? 'Producto inactivo: reemplázalo para poder guardar la receta'
+        : 'Selecciona un producto del inventario';
+    }
     return `${product.name} · se descuenta en ${product.unit} (stock ${quantity(product.stock)})`;
+  }
+
+  /** `true` cuando la linea apunta a un producto que ya no esta activo. */
+  lineInactive(line: RecipeLine): boolean {
+    return (
+      !!line.productId &&
+      !this.productOptions().some((option) => option.id === line.productId)
+    );
   }
 
   // =========================================================================
@@ -792,7 +975,9 @@ export class MenusPage implements OnInit {
       name: this.form.name.trim(),
       description: this.form.description.trim() || undefined,
       imageUrl: this.form.imageUrl.trim() || undefined,
+      // El backend convierte a USD si el precio se cargo en otra moneda.
       price: Number(this.form.price) || 0,
+      priceCurrency: this.form.priceCurrency,
       availability: this.form.availability as MenuAvailability,
       preparationMinutes: this.form.preparationMinutes
         ? Number(this.form.preparationMinutes)
@@ -892,12 +1077,30 @@ export class MenusPage implements OnInit {
   // =========================================================================
 
   private emptyCategoryForm(): CategoryForm {
-    return { name: '', description: '', color: '', sortOrder: 0, active: true };
+    return {
+      name: '',
+      description: '',
+      color: '',
+      sortOrder: 0,
+      parentId: '',
+      active: true,
+    };
   }
 
   openCategoryCreate(): void {
     this.editingCategory.set(null);
-    this.categoryFields = this.emptyCategoryForm();
+    // Si se esta viendo una principal, la nueva categoria nace como su hija.
+    this.categoryFields = {
+      ...this.emptyCategoryForm(),
+      parentId: this.categoryParentFilter()?.id ?? '',
+    };
+    this.categoryModalOpen.set(true);
+  }
+
+  /** Crea una subcategoria de la categoria de menu indicada. */
+  openCategoryCreateSub(parent: MenuCategory): void {
+    this.editingCategory.set(null);
+    this.categoryFields = { ...this.emptyCategoryForm(), parentId: parent.id };
     this.categoryModalOpen.set(true);
   }
 
@@ -908,6 +1111,7 @@ export class MenusPage implements OnInit {
       description: category.description ?? '',
       color: category.color ?? '',
       sortOrder: category.sortOrder,
+      parentId: category.parentId ?? '',
       active: category.active,
     };
     this.categoryModalOpen.set(true);
@@ -926,6 +1130,8 @@ export class MenusPage implements OnInit {
       description: this.categoryFields.description.trim() || undefined,
       color: this.categoryFields.color.trim() || undefined,
       sortOrder: Number(this.categoryFields.sortOrder) || 0,
+      // Vacio = categoria principal (la subcategoria es opcional).
+      parentId: this.categoryFields.parentId || null,
       active: this.categoryFields.active,
     };
     const current = this.editingCategory();
@@ -951,9 +1157,14 @@ export class MenusPage implements OnInit {
   }
 
   async removeCategory(category: MenuCategory): Promise<void> {
+    const subcategories = category._count?.subcategories ?? 0;
     const confirmed = await this.confirm.ask({
       title: 'Eliminar categoría',
-      message: `¿Eliminar "${category.name}"? Los menús asociados quedan sin categoría.`,
+      message:
+        `¿Eliminar "${category.name}"? Los menús asociados quedan sin categoría.` +
+        (subcategories
+          ? ` Sus ${subcategories} subcategorías quedarán como categorías principales.`
+          : ''),
       confirmLabel: 'Eliminar',
       tone: 'danger',
     });
@@ -962,6 +1173,10 @@ export class MenusPage implements OnInit {
     this.menuCategories.remove(category.id).subscribe({
       next: () => {
         this.toast.success('Categoría eliminada');
+        // Si estabamos viendo sus subcategorias, volvemos al listado completo.
+        if (this.categoryParentFilter()?.id === category.id) {
+          this.categoryParentFilter.set(null);
+        }
         this.loadCategories();
         this.load();
       },

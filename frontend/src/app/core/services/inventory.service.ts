@@ -39,7 +39,17 @@ export class InventoryService {
   }
 
   /** Fija el stock de un producto a un valor final (crea el ajuste). */
-  adjust(productId: string, payload: { newStock: number; reason?: string }) {
+  adjust(
+    productId: string,
+    payload: {
+      newStock: number;
+      /** Unidad con la que se conto el stock final (cajas, kg, unidades...). */
+      inputUnit?: string;
+      /** Stock final tal como se conto, en `inputUnit`. */
+      inputQuantity?: number;
+      reason?: string;
+    },
+  ) {
     return this.http.post<MovementResult>(
       `${this.baseUrl}/products/${productId}/adjust`,
       payload,

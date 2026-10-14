@@ -98,11 +98,25 @@ export class CreateMenuDto {
   @MaxLength(400_000, { message: 'La imagen del menu es demasiado grande' })
   imageUrl?: string;
 
-  @ApiProperty({ example: 18.5 })
+  @ApiProperty({
+    example: 18.5,
+    description:
+      'Precio de venta tal como lo escribe el usuario, EN LA MONEDA de `priceCurrency` (USD si se omite). El sistema guarda ademas su equivalente en USD y recuerda la moneda y la tasa usadas.',
+  })
   @Type(() => Number)
   @IsNumber()
   @Min(0)
   price!: number;
+
+  @ApiPropertyOptional({
+    example: 'VES',
+    default: 'USD',
+    description:
+      'Moneda en la que se escribio el precio (debe estar habilitada y tener tasa).',
+  })
+  @IsOptional()
+  @IsString()
+  priceCurrency?: string;
 
   @ApiPropertyOptional({ enum: MENU_AVAILABILITIES, default: 'ALL' })
   @IsOptional()

@@ -20,6 +20,7 @@ import {
 } from '../../core/constants/domain';
 import { BASE_CURRENCY, MIXED_CURRENCY_CODE } from '../../core/constants/currency';
 import { CurrencySelectComponent } from '../../shared/components/currency-select.component';
+import { RateConversionsComponent } from '../../shared/components/rate-conversions.component';
 import { RatesService } from '../../core/services/rates.service';
 import { CashService } from '../../core/services/cash.service';
 import { PreferencesService } from '../../core/services/preferences.service';
@@ -68,6 +69,7 @@ const EMPTY_META: PaginationMeta = {
     PosComponent,
     MoneyComponent,
     CurrencySelectComponent,
+    RateConversionsComponent,
     EmptyStateComponent,
     LoaderComponent,
   ],
@@ -577,6 +579,10 @@ const EMPTY_META: PaginationMeta = {
             label="Moneda del pago"
             [(value)]="movForm.currency"
             [amount]="movForm.amount"
+          />
+          <app-rate-conversions
+            [amount]="movForm.amount"
+            [currency]="movForm.currency"
           />
           <p class="text-xs text-slate-500">
             Se contabiliza en {{ baseCurrency.label }} con la tasa vigente.

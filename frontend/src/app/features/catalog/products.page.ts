@@ -1,6 +1,6 @@
 import { ChangeDetectionStrategy, Component, OnInit, inject, signal } from '@angular/core';
 import { FormsModule } from '@angular/forms';
-import { BASE_CURRENCY } from '../../core/constants/currency';
+import { BASE_CURRENCY, DEFAULT_RATE_KEY, RATE_META } from '../../core/constants/currency';
 import { PRODUCT_UNIT_OPTIONS } from '../../core/constants/domain';
 import type {
   Category,
@@ -10,21 +10,34 @@ import type {
   ProductUnit,
   Supplier,
 } from '../../core/models/api.model';
+import type { RateKey } from '../../core/models/rates.model';
 import { AuthService } from '../../core/services/auth.service';
 import {
   CategoriesService,
   ProductsService,
   SuppliersService,
 } from '../../core/services/catalog.service';
+import { RatesService } from '../../core/services/rates.service';
 import { ToastService } from '../../core/services/toast.service';
-import { apiErrorMessage, divMoney, number, quantity } from '../../core/utils/format';
+import { categoryOptionLabel } from '../../core/utils/category-tree';
+import {
+  apiErrorMessage,
+  displayBaseCode,
+  divMoney,
+  moneyIn,
+  number,
+  quantity,
+} from '../../core/utils/format';
 import {
   boxUnitsOf,
   isBoxProduct,
+  loadedUnitPrice,
   soldUnitLabel,
   unitPriceOf,
 } from '../../core/utils/product-pricing';
+import { isPackUnit, packText } from '../../core/utils/pack-unit';
 import { PRODUCT_IMAGE_MAX_SIZE, toProductImageDataUrl } from '../../core/utils/image';
+import { CurrencyAmountInputComponent } from '../../shared/components/currency-amount-input.component';
 import { EmptyStateComponent, LoaderComponent } from '../../shared/components/feedback.component';
 import { IconComponent } from '../../shared/components/icon.component';
 import { ModalComponent } from '../../shared/components/modal.component';
@@ -48,8 +61,27 @@ interface ProductForm {
   description: string;
   /** Foto del producto (URL o data URL reducido en el navegador). */
   imageUrl: string;
+  /** Precio tal como se escribe, en `priceCurrency`. */
   price: number;
+  priceCurrency: string;
+  /** Tasa elegida para convertir el precio a USD. */
+  priceRateKey: RateKey;
+  /** Costo de la presentacion, en `costCurrency`. */
   cost: number;
+  costCurrency: string;
+  /** Tasa elegida para convertir el costo de la presentacion a USD. */
+  costRateKey: RateKey;
+  /**
+   * PRECIO DE VENTA de una unidad suelta (cajas/paquetes), en
+   * `unitPriceCurrency`. Es un monto de VENTA independiente del precio de la
+   * presentacion y cada monto tiene su PROPIA moneda y su PROPIA tasa: cambiar
+   * la de uno no arrastra la del otro. `0` = sin definir: al vender suelto se
+   * reparte el precio de la presentacion entre sus unidades.
+   */
+  unitPrice: number;
+  unitPriceCurrency: string;
+  /** Tasa elegida para convertir el precio unitario a USD. */
+  unitPriceRateKey: RateKey;
   stock: number;
   minStock: number;
   unit: ProductUnit;
@@ -72,6 +104,7 @@ interface ProductForm {
     PaginationComponent,
     ModalComponent,
     MoneyComponent,
+    CurrencyAmountInputComponent,
     EmptyStateComponent,
     LoaderComponent,
   ],
@@ -110,7 +143,7 @@ interface ProductForm {
           >
             <option value="">Todas las categorías</option>
             @for (category of categoryOptions(); track category.id) {
-              <option [value]="category.id">{{ category.name }}</option>
+              <option [value]="category.id">{{ categoryOptionLabel(category) }}</option>
             }
           </select>
           <select
@@ -197,18 +230,57 @@ interface ProductForm {
                   <td class="text-slate-500">{{ item.category?.name || '—' }}</td>
                   <td class="text-slate-500">{{ item.supplier?.name || '—' }}</td>
                   <td class="text-right">
-                    <app-money [amount]="item.price" alignEnd="true" />
+                    <app-money
+                      [amount]="item.price"
+                      alignEnd="true"
+                      [entered]="item.priceEntered"
+                      [currency]="item.priceCurrency"
+                      [rateKey]="item.priceRateKey"
+                    />
+                    @if (priceHint(item); as hint) {
+                      <span class="block text-[11px] text-slate-400">{{ hint }}</span>
+                    }
                     @if (isBoxProduct(item)) {
                       <span class="block text-[11px] text-slate-400">
-                        Caja de {{ boxUnitsOf(item) }} = <app-money [amount]="unitPriceOf(item)" />
+                        Caja de {{ boxUnitsOf(item) }} =
+                        <app-money
+                          [amount]="unitPriceOf(item)"
+                          [entered]="unitPriceEnteredOf(item)"
+                          [currency]="item.unitPriceCurrency"
+                          [rateKey]="unitPriceRateKeyOf(item)"
+                        />
                         / {{ soldUnitLabel(item) }}
                       </span>
                     }
                   </td>
-                  <td class="text-right text-slate-500"><app-money [amount]="item.cost" alignEnd="true" /></td>
+                  <td class="text-right text-slate-500">
+                    <app-money
+                      [amount]="item.cost"
+                      alignEnd="true"
+                      [entered]="item.costEntered"
+                      [currency]="item.costCurrency"
+                      [rateKey]="item.costRateKey"
+                    />
+                    @if (isBoxProduct(item)) {
+                      <span class="block text-[11px] text-slate-400">
+                        Unidad:
+                        <app-money
+                          [amount]="item.unitCost"
+                          [entered]="item.unitCostEntered"
+                          [currency]="item.unitCostCurrency"
+                          [rateKey]="item.unitCostRateKey"
+                        />
+                      </span>
+                    }
+                  </td>
                   <td class="text-right">
                     <span class="inline-flex items-center gap-2">
-                      <span>{{ quantity(item.stock) }} {{ soldUnitLabel(item) }}</span>
+                      <span title="{{ stockLabel(item) }}">
+                        {{ quantity(item.stock) }} {{ soldUnitLabel(item) }}
+                        @if (isBoxProduct(item)) {
+                          &middot; {{ stockLabel(item) }}
+                        }
+                      </span>
                       @if (isLowStock(item)) {
                         <span
                           class="badge bg-rose-100 text-rose-700"
@@ -358,30 +430,52 @@ interface ProductForm {
             }
           </div>
           <div>
-            <label class="label" for="prod-price">Precio ({{ baseCurrency.code }}) *</label>
-            <input
+            <app-currency-amount-input
               id="prod-price"
-              name="price"
-              type="number"
-              step="0.01"
-              min="0"
-              class="input"
-              required
-              [(ngModel)]="form.price"
+              label="Precio de venta"
+              [required]="true"
+              [amount]="form.price"
+              [currency]="form.priceCurrency"
+              [rateKey]="form.priceRateKey"
+              (amountChange)="form.price = $event"
+              (currencyChange)="form.priceCurrency = $event"
+              (rateKeyChange)="form.priceRateKey = $event"
             />
           </div>
           <div>
-            <label class="label" for="prod-cost">Costo ({{ baseCurrency.code }})</label>
-            <input
+            <app-currency-amount-input
               id="prod-cost"
-              name="cost"
-              type="number"
-              step="0.01"
-              min="0"
-              class="input"
-              [(ngModel)]="form.cost"
+              label="Costo de la presentación"
+              [amount]="form.cost"
+              [currency]="form.costCurrency"
+              [rateKey]="form.costRateKey"
+              hint="Lo que te cuesta comprar esta presentación (caja, paquete o unidad)."
+              (amountChange)="onCostChange($event)"
+              (currencyChange)="onCostCurrencyChange($event)"
+              (rateKeyChange)="onCostRateKeyChange($event)"
             />
           </div>
+          @if (isBoxForm) {
+            <div>
+              <app-currency-amount-input
+                id="prod-unit-price"
+                label="Precio de venta unitario (por unidad suelta)"
+                [amount]="form.unitPrice"
+                [currency]="form.unitPriceCurrency"
+                [rateKey]="form.unitPriceRateKey"
+                hint="Precio al que se vende una unidad suelta al abrir la caja. Déjalo en 0 para repartir el precio de la presentación entre sus unidades."
+                (amountChange)="onUnitPriceChange($event)"
+                (currencyChange)="onUnitPriceCurrencyChange($event)"
+                (rateKeyChange)="onUnitPriceRateKeyChange($event)"
+              />
+              @if (unitPriceReference; as reference) {
+                <p class="mt-1 text-[11px] text-slate-400">
+                  Referencia: {{ moneyIn(reference.amount, reference.currency) }} por unidad (precio
+                  de la presentación ÷ {{ reference.units }}); se guarda lo que escribas arriba.
+                </p>
+              }
+            </div>
+          }
           @if (editing()) {
             <div>
               <label class="label" for="prod-stock">Stock actual</label>
@@ -418,40 +512,48 @@ interface ProductForm {
           </div>
           <div>
             <label class="label" for="prod-unit">Unidad</label>
-            <select id="prod-unit" name="unit" class="input" [(ngModel)]="form.unit">
+            <select
+              id="prod-unit"
+              name="unit"
+              class="input"
+              [ngModel]="form.unit"
+              (ngModelChange)="onUnitChange($event)"
+            >
               @for (option of unitOptions; track option.value) {
                 <option [value]="option.value">{{ option.label }}</option>
               }
             </select>
           </div>
-          <div>
-            <label class="label" for="prod-units-per-box">Unidades por caja</label>
-            <input
-              id="prod-units-per-box"
-              name="unitsPerBox"
-              type="number"
-              min="1"
-              step="1"
-              class="input"
-              [(ngModel)]="form.unitsPerBox"
-            />
-            <p class="mt-1 text-[11px] text-slate-400">
-              El precio de arriba es el de la presentación; el stock se lleva en unidades sueltas.
-              Deja 1 si el producto se vende suelto.
-            </p>
-            @if (boxPreview; as box) {
-              <p class="mt-1 text-[11px] font-medium text-brand-600">
-                Caja de {{ box.units }} → la unidad suelta se vende a
-                <app-money [amount]="box.unitPrice" />
+          @if (showPackUnits) {
+            <div>
+              <label class="label" for="prod-units-per-box">{{ packUnitsLabel }}</label>
+              <input
+                id="prod-units-per-box"
+                name="unitsPerBox"
+                type="number"
+                min="1"
+                step="1"
+                class="input"
+                [(ngModel)]="form.unitsPerBox"
+              />
+              <p class="mt-1 text-[11px] text-slate-400">
+                El precio de arriba es el de la presentación; el stock se lleva en unidades sueltas.
+                Deja 1 si el producto se vende suelto.
               </p>
-            }
-          </div>
+              @if (boxPreview; as box) {
+                <p class="mt-1 text-[11px] font-medium text-brand-600">
+                  {{ box.unitLabel }} de {{ box.units }} → la unidad suelta se vende a
+                  {{ moneyIn(box.unitPrice, box.currency) }}
+                </p>
+              }
+            </div>
+          }
           <div>
             <label class="label" for="prod-category">Categoría</label>
             <select id="prod-category" name="categoryId" class="input" [(ngModel)]="form.categoryId">
               <option value="">Sin categoría</option>
               @for (category of categoryOptions(); track category.id) {
-                <option [value]="category.id">{{ category.name }}</option>
+                <option [value]="category.id">{{ categoryOptionLabel(category) }}</option>
               }
             </select>
           </div>
@@ -503,6 +605,8 @@ export class ProductsPage implements OnInit {
   readonly baseCurrency = BASE_CURRENCY;
   /** Helpers de formato expuestos a la plantilla. */
   readonly number = number;
+  /** Montos en la moneda indicada (el precio se carga en la moneda elegida). */
+  readonly moneyIn = moneyIn;
   /** Cantidades/existencias: hasta 3 decimales, sin ceros de relleno. */
   readonly quantity = quantity;
   /** `true` cuando el producto se vende por caja (precio de caja, stock por unidad). */
@@ -510,6 +614,8 @@ export class ProductsPage implements OnInit {
   readonly boxUnitsOf = boxUnitsOf;
   readonly soldUnitLabel = soldUnitLabel;
   readonly auth = inject(AuthService);
+  /** Moneda con la que se abren los formularios (la base del sistema). */
+  private readonly rates = inject(RatesService);
   private readonly products = inject(ProductsService);
   private readonly categories = inject(CategoriesService);
   private readonly suppliers = inject(SuppliersService);
@@ -530,6 +636,8 @@ export class ProductsPage implements OnInit {
   /** Lectura de la foto en curso y error del último intento. */
   readonly imageReading = signal(false);
   readonly imageError = signal<string | null>(null);
+  /** Las subcategorias se pintan indentadas bajo su principal. */
+  readonly categoryOptionLabel = categoryOptionLabel;
 
   search = '';
   categoryId = '';
@@ -556,13 +664,27 @@ export class ProductsPage implements OnInit {
   }
 
   private emptyForm(): ProductForm {
+    // Los precios nuevos se cargan en la moneda base del sistema (USD o la que
+    // el local haya elegido mostrar); el formulario deja cambiarla.
+    const currency = this.rates.baseCode() ?? BASE_CURRENCY.code;
+    // Tasa con la que cada monto se convierte a USD: arranca en la activa del
+    // sistema (la personalizada si el local la definio) y el operador la cambia.
+    const rateKey = this.activeRateKey;
     return {
       sku: '',
       name: '',
       description: '',
       imageUrl: '',
       price: 0,
+      priceCurrency: currency,
+      priceRateKey: rateKey,
       cost: 0,
+      costCurrency: currency,
+      costRateKey: rateKey,
+      unitPrice: 0,
+      // Cada monto arranca con su propia moneda y tasa (las del sistema).
+      unitPriceCurrency: currency,
+      unitPriceRateKey: rateKey,
       stock: 0,
       minStock: 0,
       unit: 'UND',
@@ -574,10 +696,113 @@ export class ProductsPage implements OnInit {
     };
   }
 
+  /** Tasa activa del sistema (la del `activeKey`), o BCV dolar si no hay datos. */
+  get activeRateKey(): RateKey {
+    return this.rates.activeKey() ?? DEFAULT_RATE_KEY;
+  }
+
+  /**
+   * Tasa con la que quedo guardado un monto, normalizada a una de las elegibles.
+   * Un producto anterior a la columna (o con una clave desconocida) arranca con la
+   * tasa activa del sistema.
+   */
+  private storedRateKey(saved?: string | null): RateKey {
+    const key = String(saved ?? '')
+      .trim()
+      .toUpperCase() as RateKey;
+    return key in RATE_META ? key : this.activeRateKey;
+  }
+
+  /** `true` cuando el formulario declara una presentacion (caja/paquete). */
+  get isBoxForm(): boolean {
+    return this.boxUnits() > 1;
+  }
+
+  /** `true` cuando la unidad elegida es una presentacion (caja o paquete). */
+  get isPackFormUnit(): boolean {
+    return isPackUnit(this.form.unit);
+  }
+
+  /**
+   * `true` cuando el formulario pide las unidades de la presentacion: al elegir
+   * caja/paquete o cuando el producto ya venia guardado con mas de una unidad
+   * por caja (asi se puede corregir la unidad sin perder ese dato).
+   */
+  get showPackUnits(): boolean {
+    return this.isPackFormUnit || this.isBoxForm;
+  }
+
+  /** Etiqueta del campo de unidades segun la presentacion elegida. */
+  get packUnitsLabel(): string {
+    return this.form.unit === 'PAQUETE' ? 'Unidades por paquete' : 'Unidades por caja';
+  }
+
+  /**
+   * Cambia la unidad del producto. Si deja de ser una presentacion se descarta lo
+   * que se habia cargado como caja (`unitsPerBox = 1`): un producto vendido
+   * suelto o medido en kg/L no tiene "unidades por caja".
+   */
+  onUnitChange(unit: ProductUnit): void {
+    this.form.unit = unit;
+    if (!isPackUnit(unit)) this.form.unitsPerBox = 1;
+  }
+
+  /**
+   * Carga el costo de la presentacion. NO toca el precio unitario: cada monto lo
+   * escribe el operador (el reparto se muestra solo como referencia en
+   * `unitPriceReference`), asi el formulario nunca le pisa un monto ya cargado.
+   */
+  onCostChange(value: number): void {
+    this.form.cost = value;
+  }
+
+  /**
+   * Cambia el precio de venta de la unidad suelta. NO recalcula el precio de la
+   * presentacion: son dos montos independientes y los decide el operador.
+   */
+  onUnitPriceChange(value: number): void {
+    this.form.unitPrice = value;
+  }
+
+  /**
+   * Cambia la moneda del costo de la presentacion. NO toca la moneda del precio
+   * unitario: cada monto tiene su propio selector y el operador decide en que
+   * moneda escribe cada uno.
+   */
+  onCostCurrencyChange(currency: string): void {
+    this.form.costCurrency = currency;
+  }
+
+  /** Cambia la tasa del costo de la presentacion (independiente de las otras). */
+  onCostRateKeyChange(key: RateKey): void {
+    this.form.costRateKey = key;
+  }
+
+  /** Cambia la moneda del precio unitario (independiente de la presentacion). */
+  onUnitPriceCurrencyChange(currency: string): void {
+    this.form.unitPriceCurrency = currency;
+  }
+
+  /** Cambia la tasa del precio unitario (independiente de las otras). */
+  onUnitPriceRateKeyChange(key: RateKey): void {
+    this.form.unitPriceRateKey = key;
+  }
+
   /** Margen estimado (precio - costo) usado como ayuda en el formulario. */
   get margin(): { amount: number; percent: number } | null {
-    const price = Number(this.form.price);
-    const cost = Number(this.form.cost);
+    // Se compara en USD (la moneda en la que se guardan ambos montos), cada monto
+    // con la tasa que el operador eligio para el.
+    const price = this.rates.toBase(
+      this.form.price,
+      this.form.priceCurrency,
+      this.form.priceRateKey,
+    );
+    const cost = this.rates.toBase(
+      this.form.cost,
+      this.form.costCurrency,
+      this.form.costRateKey,
+    );
+    if (price === null || cost === null) return null;
     if (!(price > 0 && cost > 0)) return null;
     const amount = Math.round((price - cost) * 100) / 100;
     return { amount, percent: Math.round((amount / price) * 1000) / 10 };
@@ -589,20 +814,90 @@ export class ProductsPage implements OnInit {
   }
 
   /**
-   * Presentacion que se esta editando: la caja declarada, con el precio de la
-   * presentacion repartido entre sus unidades (lo que cobra el POS al vender
-   * suelto). Devuelve `null` cuando no es un producto por caja.
+   * Presentacion que se esta editando: la caja declarada con el precio al que se
+   * vende su unidad suelta. Si el operador fijo un precio unitario, se usa ese;
+   * si lo dejo en 0, se reparte el precio de la presentacion entre sus unidades.
+   * Devuelve `null` cuando no es un producto por caja.
    */
-  get boxPreview(): { units: number; unitPrice: number } | null {
+  get boxPreview(): {
+    units: number;
+    unitLabel: string;
+    unitPrice: number;
+    currency: string;
+  } | null {
+    const units = this.boxUnits();
+    if (units <= 1) return null;
+    const explicit = Number(this.form.unitPrice) || 0;
+    const price = Number(this.form.price) || 0;
+    return {
+      units,
+      unitLabel: this.form.unit === 'PAQUETE' ? 'Paquete' : 'Caja',
+      unitPrice: explicit > 0 ? explicit : divMoney(price, units),
+      currency: explicit > 0 ? this.form.unitPriceCurrency : this.form.priceCurrency,
+    };
+  }
+
+  /**
+   * Cuanto saldria el precio de la unidad suelta si se reparte el precio de la
+   * presentacion entre sus unidades, expresado en la MONEDA Y TASA DEL PRECIO
+   * UNITARIO (que pueden ser distintas a las de la presentacion). Es SOLO una
+   * referencia de lectura: el formulario nunca escribe en el campo (el operador
+   * decide el monto que quiere vender). Devuelve `null` cuando falta la tasa para
+   * convertir.
+   */
+  get unitPriceReference(): { amount: number; units: number; currency: string } | null {
     const units = this.boxUnits();
     if (units <= 1) return null;
     const price = Number(this.form.price) || 0;
-    return { units, unitPrice: divMoney(price, units) };
+    if (price <= 0) return null;
+    const currency = this.form.unitPriceCurrency;
+    const perUnit = this.rates.toBase(
+      price,
+      this.form.priceCurrency,
+      this.form.priceRateKey,
+    );
+    if (perUnit === null) return null;
+    const amount = this.rates.fromBase(
+      divMoney(perUnit, units),
+      currency,
+      this.form.unitPriceRateKey,
+    );
+    if (amount === null) return null;
+    return { amount, units, currency };
+  }
+
+  /** Existencias descritas en el idioma del negocio ("3 cajas + 5 unidades"). */
+  stockLabel(product: Product): string {
+    return packText(product.stock, product);
+  }
+
+  /** Como se cargo el precio, cuando no fue en dolares. */
+  priceHint(product: Product): string | null {
+    if (product.priceCurrency === BASE_CURRENCY.code) return null;
+    if (product.priceEntered == null) return null;
+    // Si la lista ya muestra el monto cargado (la moneda de visualizacion es la
+    // misma en la que se escribio), el aviso repetiria el mismo numero.
+    if (product.priceCurrency === displayBaseCode()) return null;
+    return `Cargado en ${moneyIn(product.priceEntered, product.priceCurrency)}`;
   }
 
   /** Precio por unidad suelta de un producto del listado. */
   unitPriceOf(product: Product): number {
     return unitPriceOf(product);
+  }
+
+  /**
+   * Monto que el operador escribio como precio de la unidad suelta, para que la
+   * lista lo muestre tal cual (Bs 350,00 y no el equivalente en USD redondeado a
+   * centavos). `null` cuando la venta reparte el precio de la presentacion.
+   */
+  unitPriceEnteredOf(product: Product): number | null {
+    return loadedUnitPrice(product)?.amount ?? null;
+  }
+
+  /** Tasa elegida para el precio unitario cargado (solo cuando es el que se cobra). */
+  unitPriceRateKeyOf(product: Product): string | null {
+    return loadedUnitPrice(product)?.rateKey ?? null;
   }
 
   load(): void {
@@ -703,8 +998,19 @@ export class ProductsPage implements OnInit {
       name: item.name,
       description: item.description ?? '',
       imageUrl: item.imageUrl ?? '',
-      price: item.price,
-      cost: item.cost,
+      // Se recupera lo que se escribio (y en que moneda y tasa) para no perder el
+      // contexto al reabrir el formulario.
+      price: item.priceEntered ?? item.price,
+      priceCurrency: item.priceCurrency,
+      priceRateKey: this.storedRateKey(item.priceRateKey),
+      cost: item.costEntered ?? item.cost,
+      costCurrency: item.costCurrency,
+      costRateKey: this.storedRateKey(item.costRateKey),
+      unitPrice: item.unitPriceEntered ?? item.unitPrice,
+      // Los productos anteriores a la columna `unitPriceCurrency` usan la moneda
+      // del precio de la presentacion.
+      unitPriceCurrency: item.unitPriceCurrency ?? item.priceCurrency,
+      unitPriceRateKey: this.storedRateKey(item.unitPriceRateKey),
       stock: item.stock,
       minStock: item.minStock,
       unit: item.unit,
@@ -756,8 +1062,14 @@ export class ProductsPage implements OnInit {
       description: this.form.description.trim() || undefined,
       // Cadena vacia = el backend guarda `null` (producto sin foto).
       imageUrl: this.form.imageUrl.trim(),
+      // El backend convierte a USD con la tasa elegida para cada monto y guarda el
+      // contexto (moneda, monto escrito y tasa).
       price: Number(this.form.price) || 0,
+      priceCurrency: this.form.priceCurrency,
+      priceRateKey: this.form.priceRateKey,
       cost: Number(this.form.cost) || 0,
+      costCurrency: this.form.costCurrency,
+      costRateKey: this.form.costRateKey,
       minStock: Number(this.form.minStock) || 0,
       unit: this.form.unit,
       unitsPerBox: this.boxUnits(),
@@ -766,6 +1078,13 @@ export class ProductsPage implements OnInit {
       supplierId: this.form.supplierId || null,
       active: this.form.active,
     };
+    // El precio unitario solo aplica a las presentaciones (cajas/paquetes) y lleva
+    // su propia moneda y tasa: el backend convierte cada monto por separado. Si el
+    // producto deja de ser una presentacion se envia 0 (sin definir) para que el
+    // POS vuelva a repartir el precio entre las unidades.
+    payload.unitPrice = this.isBoxForm ? Number(this.form.unitPrice) || 0 : 0;
+    payload.unitPriceCurrency = this.form.unitPriceCurrency;
+    payload.unitPriceRateKey = this.form.unitPriceRateKey;
     const sku = this.form.sku.trim();
     if (sku) payload.sku = sku;
     // El stock solo se envia al crear: el backend genera el movimiento IN inicial.
@@ -795,11 +1114,23 @@ export class ProductsPage implements OnInit {
     });
     if (!confirmed) return;
 
-    this.products.remove(item.id).subscribe({
-      next: () => {
+    this.products.deactivate(item.id).subscribe({
+      next: (result) => {
         this.toast.success('Producto desactivado');
+        // Desactivar NO lo quita de las recetas que ya lo usan: esos menus
+        // quedan sin poder venderse hasta que se corrija el ingrediente.
+        const menus = result.affectedMenus ?? [];
+        if (menus.length > 0) {
+          this.toast.warning(
+            `Menú(s) que siguen usando "${item.name}": ${menus
+              .map((menu) => menu.name)
+              .join(', ')}. Quedan sin poder venderse hasta reemplazarlo en la receta.`,
+            'Revisa las recetas',
+          );
+        }
         this.load();
       },
+      error: (error) => this.toast.error(apiErrorMessage(error)),
     });
   }
 }

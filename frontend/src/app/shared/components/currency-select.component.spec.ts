@@ -126,9 +126,13 @@ describe('CurrencySelectComponent', () => {
     rates = TestBed.inject(RatesService);
 
     rates.load();
-    http.expectOne(`${API}/rates`).flush(SNAPSHOT);
 
+    // El campo se crea con la lista de monedas aun en camino (llega con las tasas)
+    // y recien despues se resuelve la peticion.
     fixture = TestBed.createComponent(HostComponent);
+    fixture.detectChanges();
+
+    http.expectOne(`${API}/rates`).flush(SNAPSHOT);
     fixture.detectChanges();
   });
 
@@ -151,6 +155,20 @@ describe('CurrencySelectComponent', () => {
       'COP',
     ]);
     expect(options()[1].textContent).toContain('Bolívares (VES)');
+  });
+
+  /**
+   * La lista de monedas llega junto con las tasas: el campo puede existir cuando se
+   * puebla y aun asi debe mostrar la moneda del pago. Con `[value]` en el `select`
+   * se quedaba en la primera opcion, asi que el operador veia "USD" mientras el
+   * pago se registraba en otra moneda.
+   */
+  it('muestra la moneda del pago cuando las monedas llegan despues', () => {
+    fixture.componentInstance.currency.set('VES');
+    fixture.detectChanges();
+
+    expect(select().value).toBe('VES');
+    expect(options().length).toBe(3);
   });
 
   it('emite el cambio de moneda', () => {

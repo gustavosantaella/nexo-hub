@@ -27,6 +27,23 @@ export const CUSTOM_RATE_KEY = 'rates.custom_usd';
 
 export type RateKey = 'BCV_USD' | 'BCV_EUR' | 'CUSTOM_USD';
 
+/**
+ * Tasas que el operador puede ELEGIR para convertir un monto del catalogo.
+ *
+ * Las tres se expresan en bolivares (por USD o por EUR), asi que cualquiera
+ * sirve de puente bolivares -> dolares: el local decide con cual trabaja
+ * (ej. cargar el precio de una caja en bolivares al cambio del euro).
+ */
+export const RATE_KEYS = ['BCV_USD', 'BCV_EUR', 'CUSTOM_USD'] as const;
+
+/** Clave de tasa valida (`null` cuando no es una de las elegibles). */
+export function normalizeRateKey(value?: string | null): RateKey | null {
+  const key = String(value ?? '')
+    .trim()
+    .toUpperCase();
+  return (RATE_KEYS as readonly string[]).includes(key) ? (key as RateKey) : null;
+}
+
 /** Punto de la serie publicada por el BCV (via dolarvzla). */
 export interface BcvPoint {
   date: string;
@@ -284,6 +301,32 @@ export class RatesService {
     return custom?.usd ?? payload.current.usd;
   }
 
+  /**
+   * Bolivares por 1 USD con la tasa ELEGIDA por el operador (`rateKey`).
+   *
+   * El local puede decidir con que tasa se convierte cada monto del catalogo:
+   * `BCV_USD` (tasa oficial del dolar), `BCV_EUR` (tasa oficial del euro, muy
+   * usada como referencia) o `CUSTOM_USD` (la tasa propia del local). Cuando no
+   * se elige ninguna —o la elegida ya no existe porque se elimino la tasa
+   * personalizada— se usa la activa del sistema.
+   */
+  private bsPerUsdOf(
+    payload: BcvPayload,
+    custom: CustomRate | null,
+    rateKey?: string | null,
+  ): number {
+    switch (normalizeRateKey(rateKey)) {
+      case 'BCV_USD':
+        return payload.current.usd;
+      case 'BCV_EUR':
+        return payload.current.eur;
+      case 'CUSTOM_USD':
+        return custom?.usd ?? this.bsPerUsd(payload, custom);
+      default:
+        return this.bsPerUsd(payload, custom);
+    }
+  }
+
   /** Arma la ficha de una moneda con su tasa en bolivares. */
   private currencyOption(
     setting: CurrencySetting,
@@ -359,14 +402,18 @@ export class RatesService {
   /**
    * Tasas necesarias para convertir un monto expresado en `currency`
    * (bolivares por USD + bolivares por unidad de la moneda).
+   *
+   * Con `rateKey` el puente bolivares -> dolares es la tasa ELEGIDA (BCV dolar,
+   * BCV euro o la personalizada del local); sin ella se usa la activa.
    */
   async conversionRates(
     companyId: string,
     currency?: string | null,
+    rateKey?: string | null,
   ): Promise<ConversionRates> {
     const { payload } = await this.bcv();
     const custom = await this.customRate(companyId);
-    const bsPerUsd = this.bsPerUsd(payload, custom);
+    const bsPerUsd = this.bsPerUsdOf(payload, custom, rateKey);
     const normalized = this.normalizeCurrency(currency);
     const setting = (await this.currencies.list(companyId)).find(
       (item) => item.code === normalized,
@@ -383,11 +430,15 @@ export class RatesService {
   /**
    * Convierte un pago a la moneda base (USD) validando que la moneda este
    * aceptada por el local y tenga tasa disponible.
+   *
+   * `rateKey` es la tasa elegida para ESE monto (opcional): reemplaza al puente
+   * por defecto (`personalizada ?? BCV dolar`).
    */
   async resolvePayment(
     companyId: string,
     amount: number,
     currency?: string | null,
+    rateKey?: string | null,
   ): Promise<PaymentConversion> {
     const normalized = this.normalizeCurrency(currency);
     const setting = (await this.currencies.list(companyId)).find(
@@ -403,7 +454,7 @@ export class RatesService {
     const conversion = convertToBase(
       amount,
       normalized,
-      await this.conversionRates(companyId, normalized),
+      await this.conversionRates(companyId, normalized, rateKey),
     );
 
     if (!conversion) {
@@ -415,7 +466,9 @@ export class RatesService {
     return conversion;
   }
 
-  /** Equivalente en la moneda base (USD) de un monto en `currency`. */
+  /**
+   * Equivalente en la moneda base (USD) de un monto en `currency`.
+   */
   async toBaseAmount(
     companyId: string,
     amount: number,
@@ -424,17 +477,41 @@ export class RatesService {
     return (await this.resolvePayment(companyId, amount, currency)).baseAmount;
   }
 
-  /** Equivalente en `currency` de un monto de la moneda base (USD). */
+  /**
+   * Contexto de moneda de un monto que NO es un cobro: precio, costo o costo
+   * unitario del catalogo, o la valorizacion de un movimiento de inventario.
+   *
+   * Hace exactamente el mismo calculo que `resolvePayment` (`baseAmount` en USD +
+   * la tasa aplicada), pero con el nombre del dominio del catalogo, que es quien
+   * lo usa desde productos, menus e inventario.
+   *
+   * `rateKey` (opcional) es la tasa elegida por el operador para ESE monto.
+   */
+  async resolveAmount(
+    companyId: string,
+    amount: number,
+    currency?: string | null,
+    rateKey?: string | null,
+  ): Promise<PaymentConversion> {
+    return this.resolvePayment(companyId, amount, currency, rateKey);
+  }
+
+  /**
+   * Equivalente en `currency` de un monto de la moneda base (USD), con la misma
+   * tasa elegida que la ida (`rateKey`): asi el monto que se recupera al reabrir
+   * el formulario vuelve a dar el mismo valor en USD.
+   */
   async toCurrencyAmount(
     companyId: string,
     amount: number,
     currency?: string | null,
+    rateKey?: string | null,
   ): Promise<number> {
     const normalized = this.normalizeCurrency(currency);
     const converted = convertFromBase(
       amount,
       normalized,
-      await this.conversionRates(companyId, normalized),
+      await this.conversionRates(companyId, normalized, rateKey),
     );
     if (converted === null) {
       throw new BadRequestException(

@@ -6,6 +6,10 @@ import {
 } from '@nestjs/common';
 import type { Prisma } from '@prisma/client';
 import {
+  BASE_CURRENCY_CODE,
+  normalizeCurrencyCode,
+} from '../../common/constants/currencies';
+import {
   CashMovementCategory,
   CashMovementType,
   OrderStatus,
@@ -16,6 +20,12 @@ import {
   type OrderStatus as OrderStatusT,
 } from '../../common/constants/enums';
 import { buildCode } from '../../common/utils/code.util';
+import {
+  blendConsumption,
+  parseConsumption,
+  serializeConsumption,
+  type ConsumptionPart,
+} from '../../common/utils/consumption.util';
 import { buildDateRange } from '../../common/utils/date.util';
 import {
   compareMoney,
@@ -35,7 +45,7 @@ import { PrismaService, type PrismaClientLike } from '../../prisma/prisma.servic
 import { CashService } from '../cash/cash.service';
 import { InventoryService } from '../inventory/inventory.service';
 import { MenusService, type MenuRecipe } from '../menus/menus.service';
-import { RatesService } from '../rates/rates.service';
+import { RatesService, normalizeRateKey } from '../rates/rates.service';
 import {
   AddOrderItemsDto,
   AddOrderPaymentDto,
@@ -87,7 +97,21 @@ export interface OrderTotals {
   discount: number;
   tax: number;
   tip: number;
+  /** Costo de delivery en USD (0 cuando el pedido no lo tiene). */
+  deliveryFee: number;
   total: number;
+}
+
+/** Contexto de moneda con el que se cargo el costo de delivery de un pedido. */
+export interface OrderDeliveryFee {
+  /** Monto ya convertido a la moneda base (USD). */
+  base: number;
+  /** Lo que escribio el operador en `currency`. */
+  entered: number;
+  currency: string;
+  /** Bolivares por 1 unidad de `currency` al momento de guardar. */
+  rate: number | null;
+  rateKey: string | null;
 }
 
 /** Item resuelto: nombre y precio congelados (snapshot) + consumo de inventario. */
@@ -125,17 +149,24 @@ interface MergedOrderLine {
   quantity: number;
   unitPrice: number;
   total: number;
+  /**
+   * Consumo de inventario de UNA unidad de la linea, congelado al vender. Si el
+   * menu ya estaba en el pedido, la cantidad nueva se pondera con el tramo
+   * anterior para que la devolucion siga siendo exacta.
+   */
+  consumption: ConsumptionPart[] | null;
 }
 
 /**
- * Calculo unico de totales de un pedido: descuento + IGV sobre el neto y la
- * propina al final (la propina NO paga IGV).
+ * Calculo unico de totales de un pedido: descuento + IGV sobre el neto y, al
+ * final, la propina y el costo de delivery (ninguno de los dos paga IGV).
  */
 export function computeOrderTotals(input: {
   items: { quantity: number; unitPrice: number }[];
   discount?: number;
   taxRate?: number;
   tip?: number;
+  deliveryFee?: number;
 }): OrderTotals {
   const subtotal = money.sum(
     input.items.map((i) => money.mul(i.unitPrice, i.quantity)),
@@ -144,12 +175,14 @@ export function computeOrderTotals(input: {
   const taxable = money.sub(subtotal, discount);
   const tax = money.mul(taxable, toMoney(input.taxRate ?? 0) / 100);
   const tip = toMoney(input.tip ?? 0);
+  const deliveryFee = toMoney(input.deliveryFee ?? 0);
   return {
     subtotal,
     discount,
     tax,
     tip,
-    total: money.add(money.add(taxable, tax), tip),
+    deliveryFee,
+    total: money.add(money.add(taxable, tax), money.add(tip, deliveryFee)),
   };
 }
 
@@ -166,12 +199,18 @@ export class OrdersService {
   /** Crea el pedido, descuenta stock y guarda el snapshot de precios. */
   async create(companyId: string, dto: CreateOrderDto, userId: string) {
     const items = await this.resolveItems(companyId, dto.items);
+    const deliveryFee = await this.resolveDeliveryFee(companyId, {
+      amount: dto.deliveryFee,
+      currency: dto.deliveryFeeCurrency,
+      rateKey: dto.deliveryFeeRateKey,
+    });
 
     const totals = computeOrderTotals({
       items,
       discount: dto.discount,
       taxRate: dto.taxRate,
       tip: dto.tip,
+      deliveryFee: deliveryFee?.base,
     });
 
     return this.prisma.$transaction(async (tx) => {
@@ -188,6 +227,7 @@ export class OrdersService {
           discount: totals.discount,
           tax: totals.tax,
           tip: totals.tip,
+          ...this.deliveryFeeWrite(deliveryFee),
           total: totals.total,
           createdById: userId,
           items: {
@@ -199,6 +239,9 @@ export class OrdersService {
               quantity: item.quantity,
               unitPrice: item.unitPrice,
               total: item.total,
+              // Consumo congelado: cancelar o corregir el pedido devuelve
+              // exactamente lo descontado hoy, no lo que diga la receta despues.
+              consumption: serializeConsumption(item.consumption),
             })),
           },
         },
@@ -262,6 +305,7 @@ export class OrdersService {
       discount: order.discount,
       taxRate: this.effectiveTaxRate(order),
       tip: order.tip,
+      deliveryFee: order.deliveryFee,
     });
 
     if (compareMoney(totals.total, order.paidAmount) < 0) {
@@ -305,6 +349,7 @@ export class OrdersService {
                     quantity: line.quantity,
                     unitPrice: line.unitPrice,
                     total: line.total,
+                    consumption: serializeConsumption(line.consumption),
                   })),
                 }
               : {}),
@@ -312,7 +357,15 @@ export class OrdersService {
               ? {
                   update: toUpdate.map((line) => ({
                     where: { id: line.itemId },
-                    data: { quantity: line.quantity, total: line.total },
+                    data: {
+                      quantity: line.quantity,
+                      total: line.total,
+                      // El consumo de la linea se pondero con la receta vigente
+                      // del tramo agregado (ver `mergeLines`).
+                      ...(line.consumption
+                        ? { consumption: serializeConsumption(line.consumption) }
+                        : {}),
+                    },
                   })),
                 }
               : {}),
@@ -453,12 +506,20 @@ export class OrdersService {
           quantity: item.quantity,
           unitPrice: item.unitPrice,
           total: item.total,
+          consumption: parseConsumption(item.consumption),
         });
         continue;
       }
       // Fila duplicada del mismo producto y precio: se consolida en la primera.
+      const previousQuantity = current.quantity;
       current.quantity += item.quantity;
       current.total = money.mul(current.unitPrice, current.quantity);
+      current.consumption = blendConsumption({
+        existing: current.consumption,
+        existingQuantity: previousQuantity,
+        added: parseConsumption(item.consumption),
+        addedQuantity: item.quantity,
+      });
       current.removeIds.push(item.id);
     }
 
@@ -475,12 +536,27 @@ export class OrdersService {
           quantity: item.quantity,
           unitPrice: item.unitPrice,
           total: item.total,
+          consumption: blendConsumption({
+            existing: null,
+            existingQuantity: 0,
+            added: item.consumption,
+            addedQuantity: item.quantity,
+          }),
         });
         continue;
       }
-      // El producto ya estaba en el pedido: se suma la cantidad.
+      // El producto ya estaba en el pedido: se suma la cantidad. El consumo se
+      // pondera por unidades para que la devolucion devuelva el total real,
+      // aunque la receta haya cambiado entre una carga y otra.
+      const previousQuantity = current.quantity;
       current.quantity += item.quantity;
       current.total = money.mul(current.unitPrice, current.quantity);
+      current.consumption = blendConsumption({
+        existing: current.consumption,
+        existingQuantity: previousQuantity,
+        added: item.consumption,
+        addedQuantity: item.quantity,
+      });
     }
 
     return [...lines.values()];
@@ -559,6 +635,19 @@ export class OrdersService {
             `El menu "${recipe.name}" no tiene receta cargada`,
           );
         }
+        // Un ingrediente desactivado despues de armar la receta deja el menu
+        // invendible: se avisa cual es para que se corrija la receta.
+        const inactive = recipe.ingredients.filter(
+          (ingredient) => ingredient.active === false,
+        );
+        if (inactive.length > 0) {
+          const names = inactive
+            .map((ingredient) => `"${ingredient.productName ?? ingredient.productId}"`)
+            .join(', ');
+          throw new BadRequestException(
+            `El menu "${recipe.name}" usa ${names}, un producto inactivo. Actualiza la receta para poder venderlo.`,
+          );
+        }
         const unitPrice = toMoney(line.unitPrice ?? recipe.price);
         return {
           productId: null,
@@ -602,6 +691,62 @@ export class OrdersService {
   }): number {
     const taxable = money.sub(order.subtotal, order.discount);
     return taxable > 0 ? (order.tax / taxable) * 100 : 0;
+  }
+
+  /**
+   * Costo de delivery de la peticion convertido a USD (moneda base).
+   *
+   * Sigue la misma convencion del catalogo (productos/menus): el monto se escribe
+   * en `currency` y, si se indica, se convierte con la tasa `rateKey`. La interfaz
+   * de pedidos captura el costo en dolares (moneda base), asi que lo normal es que
+   * `currency` sea USD y no haya nada que convertir; el resto de la convencion
+   * queda para que la API acepte el costo en cualquier moneda del sistema. En
+   * todos los casos se guarda el monto ya en USD mas el contexto (moneda, monto
+   * escrito, tasa aplicada y clave de tasa) para volver a mostrarlo tal cual.
+   *
+   * Devuelve `null` cuando no hay costo (sin monto o en 0): asi el pedido queda
+   * con `deliveryFee = 0` y sin contexto de moneda.
+   */
+  private async resolveDeliveryFee(
+    companyId: string,
+    input: { amount?: number; currency?: string | null; rateKey?: string | null },
+  ): Promise<OrderDeliveryFee | null> {
+    const amount = toMoney(input.amount ?? 0);
+    if (amount <= 0) return null;
+
+    const currency = normalizeCurrencyCode(input.currency) || BASE_CURRENCY_CODE;
+    const rateKey = normalizeRateKey(input.rateKey);
+
+    // En la moneda base (USD) el monto ya esta en dolares: no hay nada que
+    // convertir ni tasa que resolver.
+    if (currency === BASE_CURRENCY_CODE) {
+      return { base: amount, entered: amount, currency, rate: null, rateKey };
+    }
+
+    const conversion = await this.rates.resolveAmount(
+      companyId,
+      amount,
+      currency,
+      rateKey,
+    );
+    return {
+      base: toMoney(conversion.baseAmount),
+      entered: amount,
+      currency: conversion.currency,
+      rate: conversion.exchangeRate,
+      rateKey,
+    };
+  }
+
+  /** Columnas del costo de delivery (sin costo se deja el contexto vacio). */
+  private deliveryFeeWrite(fee: OrderDeliveryFee | null) {
+    return {
+      deliveryFee: fee?.base ?? 0,
+      deliveryFeeEntered: fee?.entered ?? null,
+      deliveryFeeCurrency: fee?.currency ?? BASE_CURRENCY_CODE,
+      deliveryFeeRate: fee?.rate ?? null,
+      deliveryFeeRateKey: fee?.rateKey ?? null,
+    };
   }
 
   // =========================================================================
@@ -685,11 +830,23 @@ export class OrdersService {
       throw new BadRequestException('No se puede editar un pedido cancelado');
     }
 
+    const deliveryFee = await this.resolveDeliveryFee(companyId, {
+      amount: dto.deliveryFee,
+      currency: dto.deliveryFeeCurrency,
+      rateKey: dto.deliveryFeeRateKey,
+    });
+
     const totals = computeOrderTotals({
       items: order.items,
       discount: dto.discount ?? order.discount,
       taxRate: dto.taxRate ?? this.effectiveTaxRate(order),
       tip: dto.tip ?? order.tip,
+      // Sin `deliveryFee` en la peticion se conserva lo que ya tenia el pedido;
+      // enviarlo (aunque sea 0) reemplaza el costo y sus datos de moneda.
+      deliveryFee:
+        dto.deliveryFee !== undefined
+          ? (deliveryFee?.base ?? 0)
+          : order.deliveryFee,
     });
 
     if (compareMoney(totals.total, order.paidAmount) < 0) {
@@ -714,6 +871,9 @@ export class OrdersService {
         ...(dto.tableNumber !== undefined ? { tableNumber: dto.tableNumber } : {}),
         ...(dto.notes !== undefined ? { notes: dto.notes } : {}),
         ...totals,
+        ...(dto.deliveryFee !== undefined
+          ? this.deliveryFeeWrite(deliveryFee)
+          : {}),
         paymentStatus,
       },
       include: ORDER_DETAIL_INCLUDE,
@@ -977,11 +1137,26 @@ export class OrdersService {
     return totals;
   }
 
-  /** Consumo unitario de una linea YA guardada en el pedido. */
+  /**
+   * Consumo unitario de una linea YA guardada en el pedido.
+   *
+   * La linea trae congelado lo que desconto al venderse (`consumption`), asi que
+   * ese snapshot manda: la devolucion es exacta aunque la receta del menu haya
+   * cambiado. Solo las lineas sin snapshot (pedidos anteriores a esa columna o
+   * lineas sin receta) se resuelven con la receta vigente.
+   */
   private itemConsumption(
-    item: { productId: string | null; menuId: string | null; name: string },
+    item: {
+      productId: string | null;
+      menuId: string | null;
+      name: string;
+      consumption: string | null;
+    },
     recipes: Map<string, MenuRecipe>,
   ): { productId: string; quantity: number }[] {
+    const snapshot = parseConsumption(item.consumption);
+    if (snapshot) return snapshot;
+
     if (item.menuId) {
       const recipe = recipes.get(item.menuId);
       if (!recipe) {
@@ -999,7 +1174,12 @@ export class OrdersService {
 
   /** Movimientos de una linea del pedido (producto suelto o menu). */
   private itemMovements(input: {
-    item: { productId: string | null; menuId: string | null; name: string };
+    item: {
+      productId: string | null;
+      menuId: string | null;
+      name: string;
+      consumption: string | null;
+    };
     units: number;
     type: StockMovementType;
     reason: string;
@@ -1015,13 +1195,14 @@ export class OrdersService {
       .filter((movement) => movement.quantity > 0);
   }
 
-  /** Recetas de los menus referenciados por las lineas del pedido. */
+  /** Recetas de los menus referenciados por las lineas SIN consumo congelado. */
   private loadItemRecipes(
     companyId: string,
-    items: { menuId: string | null }[],
+    items: { menuId: string | null; consumption: string | null }[],
     tx?: PrismaClientLike,
   ): Promise<Map<string, MenuRecipe>> {
     const menuIds = items
+      .filter((item) => !parseConsumption(item.consumption))
       .map((item) => item.menuId)
       .filter((menuId): menuId is string => !!menuId);
     return this.menus.loadRecipes(companyId, menuIds, tx);
@@ -1129,6 +1310,7 @@ export class OrdersService {
       discount: order.discount,
       taxRate: this.effectiveTaxRate(order),
       tip: order.tip,
+      deliveryFee: order.deliveryFee,
     });
 
     if (compareMoney(totals.total, order.paidAmount) < 0) {

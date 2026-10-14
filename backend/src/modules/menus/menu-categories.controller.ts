@@ -12,9 +12,9 @@ import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { Role } from '../../common/constants/enums';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { Roles } from '../../common/decorators/roles.decorator';
-import { PaginationQueryDto } from '../../common/dto/pagination-query.dto';
 import { MenuCategoriesService } from './menu-categories.service';
 import { CreateMenuCategoryDto } from './dto/menu-category.dto';
+import { MenuCategoryQueryDto } from './dto/menu-category-query.dto';
 import { UpdateMenuCategoryDto } from './dto/update-menu-category.dto';
 
 @ApiTags('Menus - Categorias')
@@ -34,16 +34,19 @@ export class MenuCategoriesController {
   }
 
   @Get()
-  @ApiOperation({ summary: 'Listar categorias de menu (paginado)' })
+  @ApiOperation({ summary: 'Listar categorias de menu (paginado, con jerarquia)' })
   findAll(
     @CurrentUser('companyId') companyId: string,
-    @Query() query: PaginationQueryDto,
+    @Query() query: MenuCategoryQueryDto,
   ) {
     return this.categories.findAll(companyId, query);
   }
 
   @Get('options')
-  @ApiOperation({ summary: 'Categorias de menu activas para selects y filtros' })
+  @ApiOperation({
+    summary:
+      'Categorias de menu activas para selects y filtros (con sus subcategorias)',
+  })
   findOptions(@CurrentUser('companyId') companyId: string) {
     return this.categories.findOptions(companyId);
   }

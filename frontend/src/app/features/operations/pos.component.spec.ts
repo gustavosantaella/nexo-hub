@@ -5,6 +5,8 @@ import { environment } from '../../../environments/environment';
 import type { ProductOption } from '../../core/models/api.model';
 import type { MenuOption } from '../../core/models/api.model';
 import type { Order, OrderItem } from '../../core/models/operations.model';
+import { money, setDisplayCurrency } from '../../core/utils/format';
+import { unitPriceOf } from '../../core/utils/product-pricing';
 import { PosComponent } from './pos.component';
 
 const API = environment.apiUrl;
@@ -43,10 +45,18 @@ const MENUS: MenuOption[] = [
     margin: 11,
     maxServings: 5,
     available: true,
+    inactiveIngredients: [],
     ingredients: [
       {
         quantity: 0.1,
-        product: { id: 'p1', name: 'Carne', unit: 'KG', stock: 0.5, trackStock: true },
+        product: {
+          id: 'p1',
+          name: 'Carne',
+          unit: 'KG',
+          stock: 0.5,
+          trackStock: true,
+          active: true,
+        },
       },
     ],
   },
@@ -60,7 +70,34 @@ const MENUS: MenuOption[] = [
     margin: 5,
     maxServings: 0,
     available: false,
+    inactiveIngredients: [],
     ingredients: [],
+  },
+  {
+    // Receta con un producto desactivado: hay stock, pero no se puede vender.
+    id: 'm3',
+    code: 'MEN-0003',
+    name: 'Combo con insumo viejo',
+    price: 12,
+    cost: 4,
+    availability: 'ALL',
+    margin: 8,
+    maxServings: 12,
+    available: false,
+    inactiveIngredients: [{ id: 'p9', name: 'Insumo viejo' }],
+    ingredients: [
+      {
+        quantity: 1,
+        product: {
+          id: 'p9',
+          name: 'Insumo viejo',
+          unit: 'UND',
+          stock: 12,
+          trackStock: true,
+          active: false,
+        },
+      },
+    ],
   },
 ];
 
@@ -75,6 +112,7 @@ function order(partial: Partial<Order> = {}): Order {
     discount: 0,
     tax: 0,
     tip: 0,
+    deliveryFee: 0,
     total: 100,
     paidAmount: 0,
     createdAt: '2026-10-13T10:00:00.000Z',
@@ -104,6 +142,9 @@ describe('PosComponent (vista de cajero)', () => {
   afterEach(() => {
     http.verify();
     localStorage.clear();
+    // La moneda de visualización vive en un signal global: sin esto contaminaría
+    // los montos de las demás pruebas del archivo.
+    setDisplayCurrency(null);
   });
 
   function mount(menus: MenuOption[] = []): {
@@ -150,19 +191,263 @@ describe('PosComponent (vista de cajero)', () => {
     http.match(`${API}/customers/options`).forEach((request) => request.flush([]));
   }
 
-  it('vende la unidad suelta de un producto por caja al precio repartido', () => {
+  /**
+   * Presentaciones: al agregar una caja/paquete el POS pregunta qué se entrega y
+   * cada opción se cobra a su precio (la caja al del catálogo, la unidad suelta al
+   * repartido). El carrito guarda siempre unidades de inventario.
+   */
+  it('pide elegir caja o unidad suelta al agregar un producto por presentación', () => {
     const { fixture, pos } = mount();
 
+    // Tocar la caja en la grilla abre el selector y todavía no agrega nada.
     pos.addProduct(PRODUCTS[1]);
     fixture.detectChanges();
 
-    expect(pos.lines()[0].unitPrice).toBe(1);
+    expect(pos.unitPicker()?.id).toBe('p2');
+    expect(pos.lines().length).toBe(0);
+    const text = fixture.nativeElement.textContent as string;
+    expect(text).toContain('Unidad suelta');
+    expect(text).toContain('Caja completa');
+    expect(text).toContain('$ 24.00');
+
+    // Unidad suelta: una unidad de inventario al precio repartido ($ 24 / 24).
+    pos.pickSaleUnit('UND');
+    fixture.detectChanges();
+
+    expect(pos.unitPicker()).toBeNull();
+    const suelta = pos.lines()[0];
+    expect(pos.lineKey(suelta)).toBe('p:p2|UND');
+    expect(suelta.quantity).toBe(1);
+    expect(suelta.unitPrice).toBe(1);
+    expect(pos.saleQuantity(suelta)).toBe(1);
+    expect(pos.salePrice(suelta)).toBe(1);
+    expect(pos.saleUnitLabel(suelta)).toBe('unidades sueltas');
     expect(pos.subtotal).toBe(1);
 
-    // La caja completa suma sus 24 unidades a la misma linea.
+    // Caja completa: línea aparte con su precio del catálogo y sus 24 unidades.
     pos.addBox(PRODUCTS[1]);
-    expect(pos.lines()[0].quantity).toBe(25);
+    fixture.detectChanges();
+
+    expect(pos.lines().length).toBe(2);
+    const caja = pos.lines()[1];
+    expect(pos.lineKey(caja)).toBe('p:p2|CAJA');
+    expect(caja.quantity).toBe(24);
+    expect(pos.saleQuantity(caja)).toBe(1);
+    expect(pos.salePrice(caja)).toBe(24);
+    expect(pos.saleUnitLabel(caja)).toBe('cajas');
     expect(pos.subtotal).toBe(25);
+  });
+
+  /**
+   * El precio unitario del catálogo manda al vender suelto: la caja se sigue
+   * cobrando a su precio ($ 72) y sus unidades sueltas al unitario ($ 3.50), que
+   * suele ser más caro que repartir la caja.
+   */
+  it('cobra la unidad suelta al precio unitario del catálogo y la caja a su precio', () => {
+    const { fixture, pos } = mount();
+    const malta: ProductOption = { ...PRODUCTS[1], price: 72, unitPrice: 3.5, stock: 48 };
+
+    pos.addProduct(malta);
+    pos.pickSaleUnit('UND');
+    fixture.detectChanges();
+
+    const suelta = pos.lines()[0];
+    expect(suelta.unitPrice).toBe(3.5);
+    expect(pos.salePrice(suelta)).toBe(3.5);
+    expect(pos.lineTotal(suelta)).toBe(3.5);
+    expect(pos.saleUnitLabel(suelta)).toBe('unidades sueltas');
+
+    // La caja completa se cobra al precio del catálogo, no a 24 x 3.50.
+    pos.addBox(malta);
+    fixture.detectChanges();
+
+    const caja = pos.lines()[1];
+    expect(caja.boxPrice).toBe(72);
+    expect(pos.saleQuantity(caja)).toBe(1);
+    expect(pos.salePrice(caja)).toBe(72);
+    expect(pos.lineTotal(caja)).toBe(72);
+    expect(pos.subtotal).toBe(75.5);
+  });
+
+  /**
+   * En el pedido la cantidad viaja en unidades de inventario: la caja manda sus
+   * 24 unidades al precio de la caja repartido (72 / 24 = 3) para que el pedido
+   * cobre exactamente lo que muestra el carrito.
+   */
+  it('reparte el precio de la caja entre sus unidades al guardar el pedido', () => {
+    const { fixture, pos } = mount();
+    const malta: ProductOption = { ...PRODUCTS[1], price: 72, unitPrice: 3.5, stock: 48 };
+
+    pos.setTipRate(0);
+    pos.addProduct(malta);
+    pos.pickSaleUnit('CAJA');
+    pos.submitSale(true);
+    fixture.detectChanges();
+
+    const createRequest = http.expectOne(
+      (request) => request.method === 'POST' && request.url === `${API}/orders`,
+    );
+    expect(createRequest.request.body.items).toEqual([
+      { productId: 'p2', quantity: 24, unitPrice: 3 },
+    ]);
+
+    createRequest.flush(order({ subtotal: 72, total: 72 }));
+
+    const payRequest = http.expectOne(`${API}/orders/o1/payments`);
+    expect(payRequest.request.body.amount).toBe(72);
+    payRequest.flush(order({ subtotal: 72, total: 72, paymentStatus: 'PAID' }));
+
+    expect(pos.lines().length).toBe(0);
+    flushReload();
+  });
+
+  /**
+   * La unidad de venta solo cambia cómo se cuenta la línea: una caja de 24 pasa a
+   * verse como sus 24 unidades sueltas y el monto sigue siendo el mismo.
+   */
+  it('cambia la línea de caja a unidades sueltas sin cambiar el monto', () => {
+    const { fixture, pos } = mount();
+
+    pos.addBox(PRODUCTS[1]);
+    fixture.detectChanges();
+
+    pos.setLineUnit(pos.lines()[0], 'UND');
+    fixture.detectChanges();
+
+    const suelta = pos.lines()[0];
+    expect(suelta.inputUnit).toBe('UND');
+    expect(pos.saleQuantity(suelta)).toBe(24);
+    expect(pos.salePrice(suelta)).toBe(1);
+    expect(pos.subtotal).toBe(24);
+
+    // Volver a caja conserva las mismas 24 unidades de inventario.
+    pos.setLineUnit(suelta, 'CAJA');
+    fixture.detectChanges();
+
+    expect(pos.lines()[0].inputUnit).toBe('CAJA');
+    expect(pos.saleQuantity(pos.lines()[0])).toBe(1);
+    expect(pos.subtotal).toBe(24);
+  });
+
+  /** La cantidad se escribe en cajas y se topea con el stock real (en unidades). */
+  it('cuenta las cantidades por caja sin pasarse del stock disponible', () => {
+    const { fixture, pos } = mount();
+
+    pos.addBox(PRODUCTS[1]);
+    const caja = pos.lines()[0];
+
+    pos.incLine(caja);
+    expect(pos.saleQuantity(caja)).toBe(2);
+    expect(caja.quantity).toBe(48);
+
+    // Con 48 unidades en stock no cabe una tercera caja.
+    pos.incLine(caja);
+    expect(pos.saleQuantity(caja)).toBe(2);
+    expect(pos.formError()).toContain('Stock insuficiente');
+
+    pos.decLine(caja);
+    expect(pos.saleQuantity(caja)).toBe(1);
+
+    // Escribir la cantidad a mano la convierte a unidades de inventario.
+    pos.onQuantityChange(caja, 2);
+    expect(caja.quantity).toBe(48);
+    expect(pos.subtotal).toBe(48);
+    fixture.detectChanges();
+  });
+
+  /** Sin stock para la presentación completa, queda vender unidades sueltas. */
+  it('no deja agregar la caja completa cuando el stock no alcanza', () => {
+    const { fixture, pos } = mount();
+    const casiAgotado = { ...PRODUCTS[1], stock: 5 };
+
+    pos.addProduct(casiAgotado);
+    fixture.detectChanges();
+    // El selector avisa que la caja no alcanza y no agrega la línea.
+    expect(fixture.nativeElement.textContent as string).toContain('no alcanza el stock');
+
+    pos.pickSaleUnit('CAJA');
+    expect(pos.lines().length).toBe(0);
+    expect(pos.formError()).toContain('No alcanza el stock para una caja completa');
+
+    // La unidad suelta sí se puede vender.
+    pos.addProduct(casiAgotado);
+    pos.pickSaleUnit('UND');
+    expect(pos.lines().length).toBe(1);
+    expect(pos.formError()).toBeNull();
+  });
+
+  /**
+   * Un mismo producto puede ir en dos líneas (una caja y unidades sueltas); el
+   * tope de stock se compara contra la suma de las dos.
+   */
+  it('suma cajas y unidades sueltas antes de compararlas con el stock', () => {
+    const { fixture, pos } = mount();
+    const producto = { ...PRODUCTS[1], stock: 25 };
+
+    pos.addProduct(producto);
+    pos.pickSaleUnit('CAJA');
+    pos.addProduct(producto);
+    pos.pickSaleUnit('UND');
+    fixture.detectChanges();
+
+    const suelta = pos.lines().find((line) => line.inputUnit === 'UND')!;
+    pos.onQuantityChange(suelta, 2);
+    fixture.detectChanges();
+
+    expect(pos.lines().length).toBe(2);
+    // 24 + 2 unidades superan las 25 del inventario.
+    expect(pos.stockIssues.length).toBe(2);
+
+    pos.submitSale(false);
+    expect(pos.formError()).toContain('cantidad mayor al stock disponible');
+    expect(pos.saving()).toBeFalse();
+  });
+
+  /**
+   * La caja viaja al backend como sus unidades sueltas al precio repartido: es
+   * como el pedido descuenta el stock y como el backend recalcula los totales.
+   */
+  it('cobra la caja completa como sus unidades sueltas al precio repartido', () => {
+    const { fixture, pos } = mount();
+
+    pos.setTipRate(0);
+    pos.addProduct(PRODUCTS[1]);
+    pos.pickSaleUnit('CAJA');
+    pos.submitSale(true);
+    fixture.detectChanges();
+
+    const createRequest = http.expectOne(
+      (request) => request.method === 'POST' && request.url === `${API}/orders`,
+    );
+    expect(createRequest.request.body.items).toEqual([
+      { productId: 'p2', quantity: 24, unitPrice: 1 },
+    ]);
+
+    createRequest.flush(order({ subtotal: 24, total: 24 }));
+
+    const payRequest = http.expectOne(`${API}/orders/o1/payments`);
+    expect(payRequest.request.body.amount).toBe(24);
+    payRequest.flush(order({ subtotal: 24, total: 24, paymentStatus: 'PAID' }));
+
+    expect(pos.lines().length).toBe(0);
+    flushReload();
+  });
+
+  /** El lector de códigos también pregunta: el SKU de una caja no elige solo. */
+  it('pide la unidad al agregar una caja por código de barras', () => {
+    const { fixture, pos } = mount();
+
+    pos.search = 'MALTIN-24';
+    pos.addBySearch();
+    fixture.detectChanges();
+
+    expect(pos.search).toBe('');
+    expect(pos.unitPicker()?.id).toBe('p2');
+    expect(pos.lines().length).toBe(0);
+
+    pos.pickSaleUnit('UND');
+    expect(pos.lines().length).toBe(1);
+    expect(pos.lines()[0].inputUnit).toBe('UND');
   });
 
   it('arranca con la propina sugerida (10 %) y la aplica sobre el neto', () => {
@@ -241,6 +526,100 @@ describe('PosComponent (vista de cajero)', () => {
     const payRequest = http.expectOne(`${API}/orders/o1/payments`);
     expect(payRequest.request.body.amount).toBe(140);
     payRequest.flush(order({ total: 140, paidAmount: 140, paymentStatus: 'PAID' }));
+
+    flushReload();
+  });
+
+  it('suma el delivery de un pedido a domicilio al total y lo envía al cobrar', () => {
+    const { fixture, pos } = mount();
+
+    pos.addProduct(PRODUCTS[0]);
+    pos.setTipRate(0);
+    pos.form.type = 'DELIVERY';
+    pos.form.deliveryFee = 4;
+    fixture.detectChanges();
+
+    // 30 de la venta + 4 de delivery (sin IGV ni propina).
+    expect(pos.deliveryFeeAmount).toBe(4);
+    expect(pos.total).toBe(34);
+    expect(pos.bill.deliveryFee).toBe(4);
+    expect(pos.bill.total).toBe(34);
+    expect(pos.chargeAmount).toBe(34);
+    expect(fixture.nativeElement.textContent as string).toContain('Delivery');
+
+    pos.submitSale(true);
+
+    const createRequest = http.expectOne(
+      (request) => request.method === 'POST' && request.url === `${API}/orders`,
+    );
+    expect(createRequest.request.body.deliveryFee).toBe(4);
+    expect(createRequest.request.body.deliveryFeeCurrency).toBe('USD');
+
+    createRequest.flush(order({ type: 'DELIVERY', deliveryFee: 4, total: 34 }));
+
+    const payRequest = http.expectOne(`${API}/orders/o1/payments`);
+    expect(payRequest.request.body.amount).toBe(34);
+    payRequest.flush(
+      order({ type: 'DELIVERY', deliveryFee: 4, total: 34, paymentStatus: 'PAID' }),
+    );
+
+    flushReload();
+  });
+
+  it('ignora el costo de delivery escrito si el pedido no es a domicilio', () => {
+    const { fixture, pos } = mount();
+
+    pos.addProduct(PRODUCTS[0]);
+    pos.setTipRate(0);
+    // El cajero escribió un costo pero el pedido es de salón: no se cobra.
+    pos.form.deliveryFee = 4;
+    fixture.detectChanges();
+
+    expect(pos.deliveryFeeAmount).toBe(0);
+    expect(pos.total).toBe(30);
+    expect(pos.bill.deliveryFee).toBe(0);
+
+    pos.submitSale(true);
+
+    const createRequest = http.expectOne(
+      (request) => request.method === 'POST' && request.url === `${API}/orders`,
+    );
+    expect(createRequest.request.body.deliveryFee).toBeUndefined();
+
+    createRequest.flush(order({ total: 30 }));
+
+    const payRequest = http.expectOne(`${API}/orders/o1/payments`);
+    payRequest.flush(order({ total: 30, paymentStatus: 'PAID' }));
+
+    flushReload();
+  });
+
+  it('conserva el delivery del pedido de la mesa al agregar productos', () => {
+    const { fixture, pos } = mount();
+
+    pos.startAddToOrder(order({ deliveryFee: 5, total: 105 }));
+    fixture.detectChanges();
+
+    // El costo del formulario no aplica sobre una mesa: manda el del pedido.
+    expect(pos.deliveryFeeAmount).toBe(0);
+
+    pos.addProduct(PRODUCTS[0]);
+    fixture.detectChanges();
+
+    // 100 del pedido + 30 nuevos + 5 de delivery guardado en el pedido.
+    expect(pos.bill.deliveryFee).toBe(5);
+    expect(pos.bill.total).toBe(135);
+
+    pos.submitSale(true);
+
+    const addRequest = http.expectOne(
+      (request) => request.method === 'POST' && request.url === `${API}/orders/o1/items`,
+    );
+    addRequest.flush(order({ subtotal: 130, deliveryFee: 5, total: 135 }));
+
+    const payRequest = http.expectOne(`${API}/orders/o1/payments`);
+    expect(payRequest.request.body.amount).toBe(135);
+    payRequest.flush(order({ total: 135, paidAmount: 135, paymentStatus: 'PAID' }));
 
     flushReload();
   });
@@ -380,6 +759,62 @@ describe('PosComponent (vista de cajero)', () => {
     // Quitar la línea usa la clave del menú (no un `productId`).
     pos.removeLine('m:m1');
     expect(pos.lines().length).toBe(0);
+  });
+
+  /**
+   * Un menú con un ingrediente desactivado no se puede vender: el POS lo rotula
+   * como "Inactivo" y explica el motivo, en vez de decir que está agotado.
+   */
+  it('bloquea un menú cuya receta usa un producto inactivo', () => {
+    const { fixture, pos } = mount(MENUS);
+    fixture.detectChanges();
+
+    // La grilla del cajero solo ofrece la carta disponible.
+    expect(pos.filteredMenus.map((menu) => menu.name)).toEqual(['Parrilla']);
+    expect(pos.menuStockLabel(MENUS[2])).toBe('Inactivo');
+    expect(pos.menuTitle(MENUS[2])).toContain('Insumo viejo');
+
+    pos.addMenu(MENUS[2]);
+
+    expect(pos.lines().length).toBe(0);
+    expect(pos.formError()).toContain('ingrediente inactivo');
+  });
+
+  /**
+   * Precio de la unidad suelta cargado a mano en bolívares: el catálogo guarda el
+   * equivalente en USD redondeado a centavos (Bs 350,00 a 970 son $ 0,36) y el
+   * POS mostraba Bs 349,20. La venta sigue cobrando el valor guardado.
+   */
+  it('muestra el precio suelto cargado a mano, no el redondeo en dólares', () => {
+    setDisplayCurrency({
+      code: 'VES',
+      label: 'Bolívares',
+      symbol: 'Bs',
+      decimals: 2,
+      bsPerUnit: 1,
+      bsPerUsd: 970,
+    });
+    const caja: ProductOption = {
+      ...PRODUCTS[1],
+      price: 1,
+      priceEntered: 970,
+      priceCurrency: 'VES',
+      priceRateKey: 'BCV_USD',
+      unitPrice: 0.36,
+      unitPriceEntered: 350,
+      unitPriceCurrency: 'VES',
+      unitPriceRateKey: 'BCV_USD',
+    };
+    const { pos } = mount();
+
+    expect(pos.looseUnitPriceText(caja)).toBe('Bs 350.00');
+    expect(pos.boxPriceText(caja)).toBe('Bs 970.00');
+    // El precio guardado reconvertido es el número que se veía mal.
+    expect(money(unitPriceOf(caja))).toBe('Bs 349.20');
+
+    // Un producto cargado en dólares sigue mostrando su conversión.
+    expect(pos.looseUnitPriceText(PRODUCTS[1])).toBe('Bs 970.00');
+    expect(pos.boxPriceText(PRODUCTS[1])).toBe('Bs 23,280.00');
   });
 });
 

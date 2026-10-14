@@ -35,6 +35,15 @@ export class CreateMenuCategoryDto {
   @Min(0)
   sortOrder?: number;
 
+  @ApiPropertyOptional({
+    description:
+      'Categoria de menu principal a la que pertenece. `null` (o vacio) la deja como principal.',
+    example: 'mcat_123',
+  })
+  @IsOptional()
+  @IsString()
+  parentId?: string | null;
+
   @ApiPropertyOptional({ default: true })
   @IsOptional()
   @IsBoolean()

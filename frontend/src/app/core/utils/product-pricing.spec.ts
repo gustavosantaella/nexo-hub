@@ -53,6 +53,25 @@ describe('product-pricing (venta por caja o suelta)', () => {
     it('trata la presentacion sin unidades declaradas como producto suelto', () => {
       expect(unitPriceOf({ price: 10, unit: 'CAJA', unitsPerBox: 0 })).toBe(10);
     });
+
+    it('cobra el precio unitario cuando el catalogo lo define', () => {
+      // La caja vale $ 24 y la unidad suelta $ 3.50: la caja se sigue cobrando a
+      // su precio y la unidad suelta al suyo.
+      expect(unitPriceOf({ ...box, unitPrice: 3.5 })).toBe(3.5);
+      expect(unitPriceOf({ price: 10, unit: 'CAJA', unitsPerBox: 4, unitPrice: 3 })).toBe(3);
+    });
+
+    it('ignora el precio unitario vacio, cero o invalido', () => {
+      expect(unitPriceOf({ ...box, unitPrice: 0 })).toBe(1);
+      expect(unitPriceOf({ ...box, unitPrice: null })).toBe(1);
+      expect(unitPriceOf({ ...box, unitPrice: -2 })).toBe(1);
+      expect(unitPriceOf({ ...box, unitPrice: Number.NaN })).toBe(1);
+    });
+
+    it('no cambia el precio de un producto suelto que declare precio unitario', () => {
+      // Sin presentacion no hay reparto: manda el precio del producto.
+      expect(unitPriceOf({ price: 1.5, unit: 'UND', unitsPerBox: 1, unitPrice: 2 })).toBe(1.5);
+    });
   });
 
   describe('soldUnitLabel', () => {

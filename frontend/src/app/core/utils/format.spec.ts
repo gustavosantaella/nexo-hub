@@ -7,6 +7,8 @@ import {
   money,
   moneyCompact,
   moneyInCompact,
+  moneyLoaded,
+  moneyLoadedCompact,
   number,
   setDisplayCurrency,
 } from './format';
@@ -134,6 +136,74 @@ describe('format (valores abreviados)', () => {
       });
 
       expect(money(10)).toBe('$ 10.00');
+    });
+  });
+
+  /**
+   * Montos cargados a mano (`*Entered` + `*Currency`): el sistema guarda en USD
+   * redondeado a centavos, asi que Bs 350,00 a 970 Bs por dolar son $ 0,36 y al
+   * volver a bolivares darian 349,20. Con el contexto de moneda la pantalla
+   * recupera el monto escrito.
+   */
+  describe('monto tal como se cargo (moneyLoaded)', () => {
+    /** Moneda de visualizacion en bolivares a 970 Bs por dolar. */
+    const BOLIVARES = {
+      code: 'VES',
+      label: 'Bolívares',
+      symbol: 'Bs',
+      decimals: 2,
+      bsPerUnit: 1,
+      bsPerUsd: 970,
+    };
+
+    afterEach(() => setDisplayCurrency(null));
+
+    it('no aplica mientras el sistema muestra los montos en dolares', () => {
+      expect(moneyLoaded(350, 'VES')).toBeNull();
+      expect(moneyLoadedCompact(350, 'VES')).toBeNull();
+    });
+
+    it('no aplica sin monto cargado, en 0 o en la moneda base', () => {
+      setDisplayCurrency(BOLIVARES);
+
+      expect(moneyLoaded(null, 'VES')).toBeNull();
+      expect(moneyLoaded(undefined, 'VES')).toBeNull();
+      expect(moneyLoaded(0, 'VES')).toBeNull();
+      // Se cargo en dolares: no hay nada que recuperar.
+      expect(moneyLoaded(10, 'USD')).toBeNull();
+      expect(moneyLoaded(10, null)).toBeNull();
+    });
+
+    it('imprime el monto escrito en vez del redondeo a centavos de dolar', () => {
+      setDisplayCurrency(BOLIVARES);
+
+      // 0,36 USD * 970 = 349,20 Bs: el redondeo que veia el operador.
+      expect(money(0.36)).toBe('Bs 349.20');
+      expect(moneyLoaded(350, 'VES')).toBe('Bs 350.00');
+      expect(moneyLoaded(350, 'ves')).toBe('Bs 350.00');
+    });
+
+    it('abrevia el monto cargado con su valor exacto disponible', () => {
+      setDisplayCurrency(BOLIVARES);
+
+      expect(moneyLoadedCompact(3500, 'VES')).toBe('Bs 3.5k');
+      expect(moneyLoaded(3500, 'VES')).toBe('Bs 3,500.00');
+    });
+
+    it('formatea el monto cargado en su moneda cuando hay varias tasas', () => {
+      setDisplayCurrency({
+        code: 'EUR',
+        label: 'Euros',
+        symbol: '€',
+        decimals: 2,
+        bsPerUnit: 982.00454402,
+        bsPerUsd: 876.7976,
+      });
+
+      // Cargado en EUR: se imprime tal cual (no se convierte a dolares).
+      expect(moneyLoaded(120, 'EUR')).toBe('€ 120.00');
+      // Cargado en bolivares mientras se muestra en euros: manda el guardado.
+      expect(moneyLoaded(350, 'VES')).toBeNull();
     });
   });
 });

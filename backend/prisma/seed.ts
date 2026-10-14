@@ -31,6 +31,7 @@ import { buildCode } from '../src/common/utils/code.util';
 import { resolveAccountStatus } from '../src/common/utils/account.util';
 import { convertToBase } from '../src/common/utils/currency.util';
 import { compareMoney, fitToBalance, money, moneyFieldsToCents, round2, toMoney } from '../src/common/utils/money.util';
+import { boxUnitsOf } from '../src/common/utils/packaging.util';
 import { OPENING_LINE_MONEY_FIELDS } from '../src/common/constants/money-columns';
 import { applyMoneyCodec } from '../src/common/utils/money-codec';
 import { computeOrderTotals } from '../src/modules/orders/orders.service';
@@ -334,8 +335,30 @@ const USERS: SeedUser[] = [
   },
 ];
 
-const CATEGORIES = [
+interface SeedCategory {
+  name: string;
+  description: string;
+  /** Nombre de la principal: la convierte en SUBCATEGORIA (un solo nivel). */
+  parent?: string;
+}
+
+/**
+ * Catalogo de categorias. Las subcategorias son opcionales: "Refrescos" y
+ * "Cervezas" cuelgan de "Bebidas" para mostrar la jerarquia, y el resto son
+ * categorias principales normales.
+ */
+const CATEGORIES: SeedCategory[] = [
   { name: 'Bebidas', description: 'Gaseosas, jugos, cervezas y agua' },
+  {
+    name: 'Refrescos',
+    description: 'Gaseosas y jugos',
+    parent: 'Bebidas',
+  },
+  {
+    name: 'Cervezas',
+    description: 'Cervezas nacionales e importadas',
+    parent: 'Bebidas',
+  },
   { name: 'Comidas', description: 'Platos preparados y menus del dia' },
   { name: 'Postres', description: 'Dulces, tortas y helados' },
   { name: 'Panaderia', description: 'Pan frances, panes rellenos y bolleria' },
@@ -441,6 +464,16 @@ interface SeedProduct {
   stock: number;
   minStock: number;
   unit: string;
+  /**
+   * Unidades individuales de la presentacion (caja/paquete). El `price` es el de
+   * la presentacion completa y el stock se lleva en unidades sueltas.
+   */
+  unitsPerBox?: number;
+  /**
+   * `true` cuando el local cargo el precio/costo en bolivares: el seed guarda el
+   * equivalente en USD y recuerda lo que se escribio (moneda, monto y tasa).
+   */
+  pricedInBs?: boolean;
   trackStock: boolean;
   category: string;
 }
@@ -450,11 +483,11 @@ interface SeedProduct {
  * cargan y se consumen en inventario, pero no se venden en los pedidos.
  */
 const PRODUCTS: SeedProduct[] = [
-  { sku: 'BEB-001', name: 'Gaseosa 500ml', price: 4, cost: 2.2, stock: 240, minStock: 48, unit: 'UND', trackStock: true, category: 'Bebidas' },
-  { sku: 'BEB-002', name: 'Agua mineral 625ml', price: 3, cost: 1.4, stock: 300, minStock: 60, unit: 'UND', trackStock: true, category: 'Bebidas' },
+  { sku: 'BEB-001', name: 'Gaseosa 500ml', price: 4, cost: 2.2, stock: 240, minStock: 48, unit: 'UND', trackStock: true, category: 'Refrescos' },
+  { sku: 'BEB-002', name: 'Agua mineral 625ml (caja 24)', price: 72, cost: 33.6, stock: 288, minStock: 48, unit: 'CAJA', unitsPerBox: 24, trackStock: true, category: 'Bebidas' },
   { sku: 'BEB-003', name: 'Malta 355ml', price: 3.5, cost: 2, stock: 180, minStock: 36, unit: 'UND', trackStock: true, category: 'Bebidas' },
-  { sku: 'BEB-004', name: 'Jugo natural 1L', price: 7, cost: 3.5, stock: 90, minStock: 18, unit: 'LT', trackStock: true, category: 'Bebidas' },
-  { sku: 'BEB-005', name: 'Cerveza lata 355ml', price: 5, cost: 3, stock: 200, minStock: 48, unit: 'UND', trackStock: true, category: 'Bebidas' },
+  { sku: 'BEB-004', name: 'Jugo natural 1L', price: 7, cost: 3.5, stock: 90, minStock: 18, unit: 'LT', trackStock: true, category: 'Refrescos' },
+  { sku: 'BEB-005', name: 'Cerveza lata 355ml', price: 5, cost: 3, stock: 200, minStock: 48, unit: 'UND', trackStock: true, category: 'Cervezas' },
   { sku: 'BEB-006', name: 'Cafe expreso 250ml', price: 4.5, cost: 1.8, stock: 120, minStock: 24, unit: 'UND', trackStock: true, category: 'Bebidas' },
   { sku: 'COM-001', name: 'Menu del dia', description: 'Sopa + segundo + refresco', price: 12, cost: 6.5, stock: 140, minStock: 30, unit: 'UND', trackStock: true, category: 'Comidas' },
   { sku: 'COM-002', name: 'Pollo a la brasa 1/4', price: 18, cost: 9, stock: 90, minStock: 20, unit: 'UND', trackStock: true, category: 'Comidas' },
@@ -472,7 +505,7 @@ const PRODUCTS: SeedProduct[] = [
   { sku: 'INS-003', name: 'Aceite vegetal', price: 0, cost: 5.4, stock: 110, minStock: 24, unit: 'LT', trackStock: true, category: 'Insumos' },
   { sku: 'INS-004', name: 'Queso blanco', price: 0, cost: 7.9, stock: 70, minStock: 40, unit: 'KG', trackStock: true, category: 'Insumos' },
   { sku: 'LIM-001', name: 'Detergente 1L', price: 0, cost: 6.1, stock: 60, minStock: 14, unit: 'LT', trackStock: true, category: 'Limpieza' },
-  { sku: 'LIM-002', name: 'Jabon liquido', price: 0, cost: 4.2, stock: 90, minStock: 40, unit: 'UND', trackStock: true, category: 'Limpieza' },
+  { sku: 'LIM-002', name: 'Jabon liquido', price: 0, cost: 4.2, stock: 90, minStock: 40, unit: 'UND', pricedInBs: true, trackStock: true, category: 'Limpieza' },
   { sku: 'SER-001', name: 'Servicio de delivery', description: 'Flete cobrado al cliente', price: 3, cost: 0, stock: 0, minStock: 0, unit: 'UND', trackStock: false, category: 'Servicios' },
 ];
 
@@ -879,10 +912,19 @@ async function seedCatalog(): Promise<{
 }> {
   const categoryIds = new Map<string, string>();
   for (const category of CATEGORIES) {
+    // Las principales van primero en la lista: cuando toca crear una
+    // subcategoria su principal ya existe.
+    const data = {
+      description: category.description,
+      active: true,
+      parentId: category.parent
+        ? (categoryIds.get(category.parent) ?? null)
+        : null,
+    };
     const row = await prisma.category.upsert({
       where: { companyId_name: { companyId: COMPANY_ID, name: category.name } },
-      update: { description: category.description, active: true },
-      create: { ...category, companyId: COMPANY_ID },
+      update: data,
+      create: { name: category.name, ...data, companyId: COMPANY_ID },
     });
     categoryIds.set(row.name, row.id);
   }
@@ -919,14 +961,42 @@ async function seedCatalog(): Promise<{
     customerIds.set(row.name, row.id);
   }
 
+  const today = RATES[RATES.length - 1];
   for (const product of PRODUCTS) {
+    const units = product.unitsPerBox ?? 1;
+    // Contexto de moneda: por defecto el precio se cargo en dolares; los
+    // productos `pricedInBs` se cargaron en bolivares (su equivalente en USD se
+    // guarda igual, con la tasa y el monto que se escribio).
+    const currency = product.pricedInBs ? LOCAL_CURRENCY_CODE : BASE_CURRENCY_CODE;
+    const rate = product.pricedInBs ? 1 : today.bsPerUsd;
+    const entered = (value: number): number =>
+      product.pricedInBs ? round2(value * today.bsPerUsd) : value;
+    // El costo de la unidad suelta se reparte entre las unidades de la caja y el
+    // precio de venta unitario tambien (72 / 24 = 3). El operador puede fijar otro
+    // precio unitario desde el formulario; 0 = sin definir.
+    const unitCost = units > 1 ? money.div(product.cost, units) : product.cost;
+    const unitPrice = units > 1 ? money.div(product.price, units) : 0;
+
     const base = {
       name: product.name,
       description: product.description ?? null,
       price: product.price,
+      priceCurrency: currency,
+      priceRate: rate,
+      priceEntered: entered(product.price),
       cost: product.cost,
+      costCurrency: currency,
+      costRate: rate,
+      costEntered: entered(product.cost),
+      unitCost,
+      unitCostEntered: entered(unitCost),
+      unitPrice,
+      unitPriceCurrency: currency,
+      unitPriceRate: rate,
+      unitPriceEntered: entered(unitPrice),
       minStock: product.minStock,
       unit: product.unit,
+      unitsPerBox: units,
       trackStock: product.trackStock,
       active: true,
       categoryId: categoryIds.get(product.category) ?? null,
@@ -953,9 +1023,16 @@ async function seedCatalog(): Promise<{
 //  Menus demo (recetas con los productos del catalogo)
 // ===========================================================================
 
-/** Categorias comerciales del menu. */
+/** Categorias comerciales del menu (con una subcategoria de ejemplo). */
 const MENU_CATEGORIES = [
   { name: 'Almuerzos', description: 'Platos del dia', color: '#f59e0b', sortOrder: 1 },
+  {
+    name: 'Sopas y cremas',
+    description: 'Entradas calientes del dia',
+    color: '#f97316',
+    sortOrder: 1,
+    parent: 'Almuerzos',
+  },
   { name: 'Combos', description: 'Plato + bebida', color: '#0ea5e9', sortOrder: 2 },
   { name: 'Postres', description: 'Dulces de la casa', color: '#ec4899', sortOrder: 3 },
 ];
@@ -967,6 +1044,8 @@ interface SeedMenu {
   category: string;
   price: number;
   preparationMinutes: number;
+  /** `true` cuando el precio de la carta se cargo en bolivares. */
+  pricedInBs?: boolean;
   /** Receta: SKU del producto y cuanto consume UNA unidad del menu. */
   ingredients: { sku: string; quantity: number; section?: string }[];
 }
@@ -1027,6 +1106,8 @@ const MENU_ITEMS: SeedMenu[] = [
     description: 'Ensalada cesar con dos panes de queso',
     category: 'Almuerzos',
     price: 13,
+    // Precio de la carta cargado en bolivares (2.950 Bs, con la tasa del dia).
+    pricedInBs: true,
     preparationMinutes: 10,
     ingredients: [
       { sku: 'COM-006', quantity: 1 },
@@ -1043,15 +1124,20 @@ const MENU_ITEMS: SeedMenu[] = [
 async function seedMenus(): Promise<void> {
   const menuCategoryIds = new Map<string, string>();
   for (const category of MENU_CATEGORIES) {
+    // Igual que en el catalogo: la principal se crea antes que su subcategoria.
+    const data = {
+      description: category.description,
+      color: category.color,
+      sortOrder: category.sortOrder,
+      active: true,
+      parentId: category.parent
+        ? (menuCategoryIds.get(category.parent) ?? null)
+        : null,
+    };
     const row = await prisma.menuCategory.upsert({
       where: { companyId_name: { companyId: COMPANY_ID, name: category.name } },
-      update: {
-        description: category.description,
-        color: category.color,
-        sortOrder: category.sortOrder,
-        active: true,
-      },
-      create: { ...category, companyId: COMPANY_ID },
+      update: data,
+      create: { name: category.name, ...data, companyId: COMPANY_ID },
     });
     menuCategoryIds.set(row.name, row.id);
   }
@@ -1063,6 +1149,8 @@ async function seedMenus(): Promise<void> {
   const productBySku = new Map(products.map((product) => [product.sku, product]));
 
   let created = 0;
+  // Tasa del ultimo dia del historial: es la que queda vigente al terminar.
+  const todayRates = RATES[RATES.length - 1];
   for (const item of MENU_ITEMS) {
     const recipe = item.ingredients
       .map((ingredient) => ({
@@ -1087,6 +1175,11 @@ async function seedMenus(): Promise<void> {
       name: item.name,
       description: item.description,
       price: item.price,
+      priceCurrency: item.pricedInBs ? LOCAL_CURRENCY_CODE : BASE_CURRENCY_CODE,
+      priceRate: item.pricedInBs ? 1 : todayRates.bsPerUsd,
+      priceEntered: item.pricedInBs
+        ? round2(item.price * todayRates.bsPerUsd)
+        : item.price,
       cost,
       availability: 'ALL',
       preparationMinutes: item.preparationMinutes,
@@ -1283,6 +1376,10 @@ async function applyStockMovement(
   ctx.lastStockAt = at.getTime();
 
   ctx.stock.set(options.productId, after);
+  // Trazabilidad de la unidad: el stock se mueve en la unidad del producto.
+  const info = ctx.products.find((product) => product.id === options.productId);
+  // En las presentaciones (cajas/paquetes) el stock vive en unidades sueltas.
+  const stockUnit = info && boxUnitsOf(info) > 1 ? 'UND' : (info?.unit ?? 'UND');
   await prisma.stockMovement.create({
     data: {
       companyId: COMPANY_ID,
@@ -1291,7 +1388,11 @@ async function applyStockMovement(
       quantity: Math.abs(after - before),
       stockBefore: before,
       stockAfter: after,
+      inputUnit: stockUnit,
+      inputQuantity: Math.abs(after - before),
       unitCost: options.unitCost ?? null,
+      unitCostCurrency: BASE_CURRENCY_CODE,
+      unitCostEntered: options.unitCost ?? null,
       reason: options.reason,
       referenceType: options.referenceType,
       referenceId: options.referenceId,
@@ -1537,12 +1638,15 @@ async function createOrder(
     const product = pick(ctx.sellable);
     if (chosen.has(product.id)) continue;
     chosen.add(product.id);
-    const quantity = product.price <= 2.5 ? randInt(2, 6) : randInt(1, 3);
+    // El precio de la linea es el de UNA unidad: en los productos por caja el
+    // precio del catalogo es el de la presentacion completa.
+    const unitPrice = money.div(product.price, boxUnitsOf(product));
+    const quantity = unitPrice <= 2.5 ? randInt(2, 6) : randInt(1, 3);
     items.push({
       product,
       quantity,
-      unitPrice: toMoney(product.price),
-      total: money.mul(product.price, quantity),
+      unitPrice: toMoney(unitPrice),
+      total: money.mul(unitPrice, quantity),
     });
   }
 
@@ -2334,7 +2438,14 @@ async function seedDemoData(master: MasterData): Promise<void> {
         quantity: product.stock,
         stockBefore: 0,
         stockAfter: product.stock,
-        unitCost: product.cost,
+        inputUnit: boxUnitsOf(product) > 1 ? 'UND' : product.unit,
+        inputQuantity: product.stock,
+        // El stock se lleva en unidades sueltas: la carga se valora al costo
+        // unitario (el de la caja repartido entre sus unidades).
+        unitCost: product.unitCost || product.cost,
+        unitCostCurrency: product.costCurrency,
+        unitCostRate: product.costRate,
+        unitCostEntered: product.unitCostEntered ?? product.costEntered,
         reason: 'Carga inicial de inventario',
         referenceType: StockReferenceType.INITIAL,
         createdById: master.adminId,

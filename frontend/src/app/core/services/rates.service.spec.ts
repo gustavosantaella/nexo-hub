@@ -105,6 +105,36 @@ const SNAPSHOT: RatesSnapshot = {
   },
 };
 
+/**
+ * Snapshot con las TRES tasas del sistema: BCV dolar, BCV euro y la personalizada
+ * del local (con la personalizada el `activeKey` es `CUSTOM_USD`).
+ */
+const THREE_RATES: RatesSnapshot = {
+  ...SNAPSHOT,
+  custom: { usd: 950, updatedAt: '2026-10-13T12:00:00.000Z', updatedBy: null },
+  rates: [
+    ...SNAPSHOT.rates,
+    {
+      key: 'BCV_EUR',
+      currency: 'EUR',
+      source: 'BCV',
+      rate: 982.00454402,
+      date: '2026-10-13',
+      previousRate: 980.61472543,
+      changePercentage: 0.1417,
+    },
+    {
+      key: 'CUSTOM_USD',
+      currency: 'USD',
+      source: 'CUSTOM',
+      rate: 950,
+      date: null,
+      previousRate: null,
+      changePercentage: null,
+    },
+  ],
+};
+
 /** Conversiones entre la moneda base (USD) y las monedas configuradas. */
 describe('RatesService (conversión de monedas)', () => {
   let http: HttpTestingController;
@@ -190,6 +220,40 @@ describe('RatesService (conversión de monedas)', () => {
     expect(rates.convertsBase()).toBe(false);
     // Los montos se formatean en la moneda base guardada.
     expect(money(10)).toBe('$ 10.00');
+  });
+
+  /**
+   * El local decide con CUAL de las tasas del sistema se convierte cada monto del
+   * catalogo (precio, costo, costo unitario): la elegida reemplaza al puente por
+   * defecto (la personalizada del dolar o, si no existe, el BCV dolar).
+   */
+  it('convierte con la tasa elegida para un monto del catalogo', () => {
+    rates.load(true);
+    http.expectOne(`${API}/rates?refresh=true`).flush(THREE_RATES);
+
+    // 9.000 Bs son 10,26 USD al cambio del BCV $, 9,16 al del euro y 9,47 con la
+    // tasa personalizada del local.
+    expect(rates.toBase(9000, 'VES', 'BCV_USD')).toBe(10.26);
+    expect(rates.toBase(9000, 'VES', 'BCV_EUR')).toBe(9.16);
+    expect(rates.toBase(9000, 'VES', 'CUSTOM_USD')).toBe(9.47);
+    expect(rates.bsPerUsdWith('BCV_EUR')).toBe(982.00454402);
+  });
+
+  it('expresa un monto del sistema en otra moneda con la tasa elegida', () => {
+    rates.load(true);
+    http.expectOne(`${API}/rates?refresh=true`).flush(THREE_RATES);
+
+    // 10 USD al cambio del euro son 9.820,05 Bs (con la activa, 8.767,98).
+    expect(rates.fromBase(10, 'VES', 'BCV_EUR')).toBe(9820.05);
+    expect(rates.fromBase(10, 'VES')).toBe(8767.98);
+  });
+
+  it('cae en la tasa activa cuando la elegida ya no esta disponible', () => {
+    // Sin tasa personalizada, `CUSTOM_USD` no aparece en el snapshot: se usa la
+    // activa del sistema (igual que hace el backend).
+    expect(rates.bsPerUsdWith('CUSTOM_USD')).toBe(876.7976);
+    expect(rates.toBase(9000, 'VES', 'CUSTOM_USD')).toBe(10.26);
+    expect(rates.fromBase(10, 'VES', 'CUSTOM_USD')).toBe(8767.98);
   });
 
   it('muestra los montos en la moneda base elegida por el local', () => {

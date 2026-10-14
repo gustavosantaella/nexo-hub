@@ -12,6 +12,15 @@ export class CreateCategoryDto {
   @IsString()
   description?: string;
 
+  @ApiPropertyOptional({
+    description:
+      'Categoria principal a la que pertenece. `null` (o vacio) la deja como principal.',
+    example: 'cat_123',
+  })
+  @IsOptional()
+  @IsString()
+  parentId?: string | null;
+
   @ApiPropertyOptional({ default: true })
   @IsOptional()
   @IsBoolean()

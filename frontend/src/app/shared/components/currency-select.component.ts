@@ -20,6 +20,11 @@ import { IconComponent } from './icon.component';
  * indicando si la tasa viene del BCV (API) o es la personalizada del local.
  *
  * Se usa con doble binding: `<app-currency-select [(value)]="form.currency" />`.
+ *
+ * La moneda elegida se marca en cada opcion con `[selected]` (no con `[value]` en
+ * el `select`): la lista de monedas llega junto con las tasas, asi que al crear el
+ * campo puede estar vacia todavia y el navegador se quedaria con la primera
+ * opcion, mostrando una moneda distinta a la del pago.
  */
 @Component({
   selector: 'app-currency-select',
@@ -33,12 +38,13 @@ import { IconComponent } from './icon.component';
     <select
       class="input"
       [id]="id"
-      [value]="value || baseCode"
       [disabled]="disabled"
       (change)="onChange($event)"
     >
       @for (option of options(); track option.code) {
-        <option [value]="option.code">{{ option.label }} ({{ option.code }})</option>
+        <option [value]="option.code" [selected]="option.code === code()">
+          {{ option.label }} ({{ option.code }})
+        </option>
       }
     </select>
 
@@ -68,8 +74,6 @@ export class CurrencySelectComponent {
   @Input() disabled = false;
 
   @Output() valueChange = new EventEmitter<string>();
-
-  readonly baseCode = BASE_CURRENCY_CODE;
 
   /** Monedas habilitadas en el local (USD siempre presente). */
   get options() {
@@ -119,7 +123,8 @@ export class CurrencySelectComponent {
     }
   }
 
-  private code(): string {
+  /** Moneda del pago, normalizada (vacio = moneda base). */
+  code(): string {
     return String(this.value ?? '').trim().toUpperCase() || BASE_CURRENCY_CODE;
   }
 

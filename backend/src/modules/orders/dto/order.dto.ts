@@ -94,6 +94,33 @@ export class CreateOrderDto {
   @Min(0)
   tip?: number;
 
+  @ApiPropertyOptional({
+    description:
+      'Costo de delivery en `deliveryFeeCurrency` (por defecto USD). Solo aplica a pedidos a domicilio; no paga IGV.',
+    default: 0,
+  })
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  @Min(0)
+  deliveryFee?: number;
+
+  @ApiPropertyOptional({
+    description: 'Moneda en la que se escribio el costo de delivery (USD por defecto)',
+    example: 'VES',
+  })
+  @IsOptional()
+  @IsString()
+  deliveryFeeCurrency?: string;
+
+  @ApiPropertyOptional({
+    description:
+      'Tasa elegida para convertir el costo de delivery (`BCV_USD`, `BCV_EUR` o `CUSTOM_USD`). Sin tasa se usa la personalizada (o la del BCV).',
+  })
+  @IsOptional()
+  @IsString()
+  deliveryFeeRateKey?: string;
+
   @ApiProperty({ type: [OrderItemDto] })
   @IsArray()
   @ArrayMinSize(1, { message: 'El pedido debe tener al menos un item' })
@@ -140,6 +167,32 @@ export class UpdateOrderDto {
   @IsNumber()
   @Min(0)
   tip?: number;
+
+  @ApiPropertyOptional({
+    description:
+      'Costo de delivery en `deliveryFeeCurrency` (por defecto USD). Enviarlo en 0 lo quita del pedido; no paga IGV.',
+  })
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  @Min(0)
+  deliveryFee?: number;
+
+  @ApiPropertyOptional({
+    description: 'Moneda en la que se escribio el costo de delivery (USD por defecto)',
+    example: 'VES',
+  })
+  @IsOptional()
+  @IsString()
+  deliveryFeeCurrency?: string;
+
+  @ApiPropertyOptional({
+    description:
+      'Tasa elegida para convertir el costo de delivery (`BCV_USD`, `BCV_EUR` o `CUSTOM_USD`). Sin tasa se usa la personalizada (o la del BCV).',
+  })
+  @IsOptional()
+  @IsString()
+  deliveryFeeRateKey?: string;
 }
 
 export class AddOrderItemsDto {

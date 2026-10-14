@@ -223,6 +223,52 @@ export function moneyInCompact(
   return `${currencyMeta(code).symbol} ${compact(value, digits)}`;
 }
 
+/**
+ * Monto **tal como lo escribió el operador** (`*Entered`, en `*Currency`)
+ * cuando el sistema está mostrando los montos en ESA misma moneda.
+ *
+ * Los montos se guardan en dólares (moneda base contable) redondeados a
+ * centavos, así que un precio escrito en bolívares se redondea al convertirlo:
+ * Bs 350,00 a 970 Bs por dólar son $ 0,36 y al volver a bolívares daría
+ * **349,20**. Con el contexto de moneda del precio (`priceEntered` +
+ * `priceCurrency`, `unitPriceEntered` + `unitPriceCurrency`, …) la pantalla
+ * recupera lo que se escribió; las conversiones que van debajo siguen mostrando
+ * el equivalente contable de cada moneda y tasa.
+ *
+ * Devuelve `null` cuando no aplica (sin monto escrito, en `0` —que también se
+ * guarda en `0`— o cuando el monto se escribió en otra moneda).
+ *
+ * Ej.: con la moneda de visualización en bolívares,
+ * `moneyLoaded(350, 'VES')` -> `Bs 350.00`.
+ */
+export function moneyLoaded(
+  entered: number | null | undefined,
+  code?: string | null,
+): string | null {
+  if (!isAmountLoaded(entered, code)) return null;
+  return moneyIn(entered, code);
+}
+
+/** `moneyLoaded` abreviado, para espacios estrechos. Ej.: `Bs 1.2k`. */
+export function moneyLoadedCompact(
+  entered: number | null | undefined,
+  code?: string | null,
+  digits = 1,
+): string | null {
+  if (!isAmountLoaded(entered, code)) return null;
+  return moneyInCompact(entered, code, digits);
+}
+
+/** `true` cuando el monto se puede mostrar tal cual se escribió. */
+function isAmountLoaded(
+  entered: number | null | undefined,
+  code?: string | null,
+): boolean {
+  const amount = Number(entered ?? 0);
+  if (entered == null || !Number.isFinite(amount) || amount <= 0) return false;
+  return String(code ?? '').trim().toUpperCase() === displayBaseCode();
+}
+
 /** Redondea a `digits` decimales. */
 function roundTo(value: number, digits: number): number {
   return Number(value.toFixed(digits));

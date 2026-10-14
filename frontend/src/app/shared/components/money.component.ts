@@ -7,7 +7,16 @@ import {
 } from '@angular/core';
 import { RatesService } from '../../core/services/rates.service';
 import type { RateConversion } from '../../core/models/rates.model';
-import { bsCompact, money, moneyCompact, moneyInCompact } from '../../core/utils/format';
+import { LOCAL_CURRENCY_CODE } from '../../core/constants/currency';
+import {
+  bs,
+  bsCompact,
+  money,
+  moneyCompact,
+  moneyInCompact,
+  moneyLoaded,
+  moneyLoadedCompact,
+} from '../../core/utils/format';
 
 /**
  * Monto del sistema (moneda base, USD) con su equivalente "al cambio".
@@ -64,16 +73,33 @@ export class MoneyComponent {
   @Input({ transform: booleanAttribute }) hideBase = false;
   /** Abrevia el monto cuando no cabe (1 250 000 → `$ 1.3m`); el exacto queda en el tooltip. */
   @Input({ transform: booleanAttribute }) compact = false;
+  /**
+   * Monto tal como lo escribió el operador cuando el registro lo guarda
+   * (`priceEntered`, `unitPriceEntered`, …). Con la moneda de visualización en la
+   * MISMA moneda en la que se cargó, se muestra tal cual: Bs 350,00 y no el
+   * redondeo a centavos de dólar del equivalente guardado (349,20).
+   */
+  @Input() entered: number | null | undefined = null;
+  /** Moneda en la que se cargó `entered` (`priceCurrency`, `unitPriceCurrency`, …). */
+  @Input() currency: string | null | undefined = null;
+  /** Tasa elegida al cargar `entered`, para mostrar esa misma conversión "al cambio". */
+  @Input() rateKey: string | null | undefined = null;
 
   readonly showConversions = this.rates.showConversions;
 
   get base(): string {
+    const loaded = this.compact
+      ? moneyLoadedCompact(this.entered, this.currency)
+      : moneyLoaded(this.entered, this.currency);
+    if (loaded) return loaded;
     return this.compact ? moneyCompact(this.amount) : money(this.amount);
   }
 
   /** Monto exacto (tooltip) cuando el visible va abreviado. */
   get baseTitle(): string | null {
-    return this.compact ? money(this.amount) : null;
+    if (!this.compact) return null;
+    // Con el monto cargado visible, el exacto es el que escribió el operador.
+    return moneyLoaded(this.entered, this.currency) ?? money(this.amount);
   }
 
   /**
@@ -86,12 +112,33 @@ export class MoneyComponent {
     const items = byRate
       ? this.rates.conversions(this.amount)
       : this.rates.currencyConversions(this.amount);
-    if (!this.compact) return items;
-    return items.map((item) => ({
+    const exact = this.loadedRate;
+    const resolved = exact
+      ? items.map((item) =>
+          item.key === exact.key
+            ? { ...item, amount: exact.amount, text: bs(exact.amount) }
+            : item,
+        )
+      : items;
+    if (!this.compact) return resolved;
+    return resolved.map((item) => ({
       ...item,
       text: byRate
         ? bsCompact(item.amount)
         : moneyInCompact(item.amount, item.code),
     }));
+  }
+
+  /**
+   * Conversión "al cambio" tal como se cargó: el monto escrito en bolívares con
+   * una tasa del sistema vale exactamente eso en esa tasa, no el resultado de
+   * volver a convertir el valor guardado en USD. `null` cuando no aplica.
+   */
+  private get loadedRate(): { amount: number; key: string } | null {
+    const amount = Number(this.entered ?? 0);
+    const key = String(this.rateKey ?? '').trim();
+    if (!key || !Number.isFinite(amount) || amount <= 0) return null;
+    const code = String(this.currency ?? '').trim().toUpperCase();
+    return code === LOCAL_CURRENCY_CODE ? { amount, key } : null;
   }
 }

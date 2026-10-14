@@ -9,7 +9,35 @@ export interface StockLevel {
   stock: number;
   minStock: number;
   unit: string;
+  /**
+   * Unidades sueltas de la presentacion (1 = producto suelto). El formulario de
+   * movimientos lo usa para convertir cajas <-> unidades.
+   */
+  unitsPerBox?: number;
+  /**
+   * Precio de venta de una unidad suelta (0 = se reparte el de la presentacion).
+   */
+  unitPrice?: number;
+  /**
+   * Contexto de moneda de `price` (que viaja en USD): `priceEntered` /
+   * `priceCurrency` / `priceRateKey` recuerdan el monto que escribio el operador,
+   * para volver a mostrarlo tal cual en la moneda de visualizacion.
+   */
+  priceEntered?: number | null;
+  priceCurrency?: string;
+  priceRateKey?: string | null;
   cost: number;
+  /** Contexto de moneda del costo de la presentacion (mismas claves que `price`). */
+  costEntered?: number | null;
+  costCurrency?: string;
+  costRateKey?: string | null;
+  /**
+   * Contexto de moneda del precio de la unidad suelta (independiente del de la
+   * presentacion): `unitPriceEntered` se expresa en `unitPriceCurrency`.
+   */
+  unitPriceEntered?: number | null;
+  unitPriceCurrency?: string;
+  unitPriceRateKey?: string | null;
   price: number;
   stockValue: number;
   isLowStock: boolean;
@@ -23,12 +51,26 @@ export interface StockMovement {
   quantity: number;
   stockBefore: number;
   stockAfter: number;
+  /** Unidad con la que se escribio el movimiento (CAJA, UND, KG, G, LT, ML). */
+  inputUnit?: string | null;
+  /** Cantidad escrita en `inputUnit` (puede ser distinta a `quantity`). */
+  inputQuantity?: number | null;
   unitCost?: number | null;
+  /** Contexto de moneda del costo unitario (`unitCost` esta en USD). */
+  unitCostCurrency?: string | null;
+  unitCostRate?: number | null;
+  unitCostEntered?: number | null;
   reason?: string | null;
   referenceType?: string | null;
   referenceId?: string | null;
   createdAt: string;
-  product?: { id: string; name: string; sku: string; unit: string } | null;
+  product?: {
+    id: string;
+    name: string;
+    sku: string;
+    unit: string;
+    unitsPerBox?: number;
+  } | null;
   createdBy?: { id: string; name: string } | null;
 }
 
@@ -41,8 +83,22 @@ export interface MovementResult {
 export interface MovementPayload {
   productId: string;
   type: StockMovementType;
-  quantity: number;
+  /** Cantidad en la unidad de stock (se puede omitir si se envia `inputUnit`). */
+  quantity?: number;
+  /** Unidad con la que se escribio la cantidad (cajas, unidades, g, ml). */
+  inputUnit?: string;
+  /** Cantidad escrita en `inputUnit`; el backend la convierte a stock. */
+  inputQuantity?: number;
   unitCost?: number;
+  /** Moneda en la que se escribio el costo unitario (USD por defecto). */
+  unitCostCurrency?: string;
+  /**
+   * Precio de venta de la unidad suelta (entradas). Omitirlo (o enviar 0) deja
+   * el precio del producto tal como estaba.
+   */
+  unitPrice?: number;
+  /** Moneda en la que se escribio el precio unitario (USD por defecto). */
+  unitPriceCurrency?: string;
   reason?: string;
   referenceType?: string;
   referenceId?: string;
@@ -113,6 +169,17 @@ export interface Order {
   tax: number;
   /** Propina del cliente (no paga IGV). */
   tip: number;
+  /** Costo de delivery en USD (moneda base); 0 en pedidos sin delivery. */
+  deliveryFee: number;
+  /**
+   * Contexto de moneda del delivery: `deliveryFeeEntered` en `deliveryFeeCurrency`
+   * con la tasa `deliveryFeeRate` (`deliveryFeeRateKey`), para volver a mostrarlo
+   * tal cual se escribió.
+   */
+  deliveryFeeEntered?: number | null;
+  deliveryFeeCurrency?: string;
+  deliveryFeeRate?: number | null;
+  deliveryFeeRateKey?: string | null;
   total: number;
   paidAmount: number;
   cashSessionId?: string | null;
@@ -143,6 +210,15 @@ export interface OrderPayload {
   taxRate?: number;
   /** Propina en monto absoluto (no se le aplica IGV). */
   tip?: number;
+  /**
+   * Costo de delivery en `deliveryFeeCurrency` (USD por defecto). Sin IGV; en 0
+   * (u omitido) el pedido queda sin costo de delivery.
+   */
+  deliveryFee?: number;
+  /** Moneda en la que se escribió el costo de delivery. */
+  deliveryFeeCurrency?: string;
+  /** Tasa elegida para convertir el costo de delivery (sin tasa = la activa). */
+  deliveryFeeRateKey?: string;
   items: OrderItemPayload[];
 }
 

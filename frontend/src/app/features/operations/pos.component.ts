@@ -56,21 +56,41 @@ import {
 } from '../../core/services/preferences.service';
 import { RatesService } from '../../core/services/rates.service';
 import { ToastService } from '../../core/services/toast.service';
+import { categoryOptionLabel, categoryScopeIds } from '../../core/utils/category-tree';
 import {
   apiErrorMessage,
+  divMoney,
   money,
   moneyIn,
+  moneyLoaded,
   mulMoney,
   sumMoney,
 } from '../../core/utils/format';
 import {
+  menuStockHint,
+  menuStockLabel,
+  menuTitle,
+  menuUnavailableReason,
+} from '../../core/utils/menu-availability';
+import {
+  InputUnit,
+  PackDefinition,
+  inputQuantity,
+  inputUnits,
+  normalizeUnit,
+  stockQuantity,
+  unitFactor,
+} from '../../core/utils/pack-unit';
+import {
   boxUnitsOf,
   isBoxProduct,
+  loadedUnitPrice,
   soldUnitLabel,
   unitPriceOf,
 } from '../../core/utils/product-pricing';
 import { CurrencySelectComponent } from '../../shared/components/currency-select.component';
 import { DialogComponent } from '../../shared/components/dialog.component';
+import { RateConversionsComponent } from '../../shared/components/rate-conversions.component';
 import { EmptyStateComponent, LoaderComponent } from '../../shared/components/feedback.component';
 import { IconComponent } from '../../shared/components/icon.component';
 import { MoneyComponent } from '../../shared/components/money.component';
@@ -93,10 +113,23 @@ interface PosLine {
   /** Menú (plato/combo) vendido (`null` cuando es un producto suelto). */
   menuId: string | null;
   name: string;
-  /** Precio de UNA unidad: en los productos por caja ya viene repartido. */
+  /** Precio de UNA unidad de inventario: el de la unidad suelta del catálogo. */
   unitPrice: number;
-  /** Cantidad en unidades individuales (el stock también está en unidades). */
+  /**
+   * Precio del catálogo de la presentación completa (caja/paquete). Se cobra
+   * cuando la línea se vende por caja: el unitario puede ser mayor (la unidad
+   * suelta casi siempre se vende más cara), así que la caja no se recalcula.
+   * En un producto suelto (o un menú) es el mismo precio de la línea.
+   */
+  boxPrice: number;
+  /** Cantidad en unidades de inventario (el stock también está en unidades). */
   quantity: number;
+  /**
+   * Unidad con la que el cajero escribió la cantidad y con la que se le muestra
+   * el precio: la unidad suelta (`UND`) o la presentación completa (`CAJA`,
+   * `PAQUETE`). La caja de 24 se guarda como sus 24 unidades sueltas.
+   */
+  inputUnit: string;
   /**
    * Unidades disponibles en inventario; en un menú son las porciones que
    * alcanzan con el stock de sus ingredientes (0 = sin tope conocido).
@@ -126,6 +159,8 @@ interface BillTotals {
   discount: number;
   tax: number;
   tip: number;
+  /** Costo de delivery en USD (0 en pedidos sin costo y ventas nuevas sin él). */
+  deliveryFee: number;
   total: number;
   /** Monto ya cobrado del pedido (0 en una venta nueva). */
   paid: number;
@@ -145,6 +180,11 @@ interface BillTotals {
  * Se abre desde Caja con el botón «Vista de cajero» y comparte los servicios de
  * pedidos y de caja, de modo que cada cobro impacta la sesión abierta igual que
  * en la pantalla de pedidos (el backend valida stock, caja y tasas).
+ *
+ * Los productos que se compran por presentación (caja de 24, paquete) obligan a
+ * elegir la unidad de venta al agregarlos: la caja completa se cobra a su precio
+ * del catálogo y la unidad suelta al precio repartido, así ninguna de las dos
+ * sale al precio de la otra.
  */
 @Component({
   selector: 'app-pos',
@@ -155,6 +195,7 @@ interface BillTotals {
     MoneyComponent,
     CurrencySelectComponent,
     DialogComponent,
+    RateConversionsComponent,
     LoaderComponent,
     EmptyStateComponent,
   ],
@@ -218,7 +259,7 @@ interface BillTotals {
           >
             <option value="">Todas las categorías</option>
             @for (category of categories(); track category.id) {
-              <option [value]="category.id">{{ category.name }}</option>
+              <option [value]="category.id">{{ categoryOptionLabel(category) }}</option>
             }
           </select>
 
@@ -308,7 +349,7 @@ interface BillTotals {
                   >
                     <option value="">Todas las categorías</option>
                     @for (category of menuCategories(); track category.id) {
-                      <option [value]="category.id">{{ category.name }}</option>
+                      <option [value]="category.id">{{ categoryOptionLabel(category) }}</option>
                     }
                   </select>
                 }
@@ -377,11 +418,16 @@ interface BillTotals {
                           {{ product.sku }}
                         </span>
                         <span class="mt-1 text-sm font-semibold text-slate-900">
-                          {{ money(unitPriceOf(product)) }}
+                          {{ looseUnitPriceText(product) }}
                           <span class="text-xs font-normal text-slate-400">
                             / {{ soldUnitLabel(product) }}
                           </span>
                         </span>
+                        @if (isBoxProduct(product)) {
+                          <span class="text-[11px] font-medium text-brand-700">
+                            Caja de {{ boxUnitsOf(product) }}: {{ boxPriceText(product) }}
+                          </span>
+                        }
                         @if (orderedUnitsOf(product.id); as ordered) {
                           <span class="mt-0.5 text-[11px] font-semibold text-amber-700">
                             Ya en la mesa: {{ ordered }}
@@ -390,21 +436,9 @@ interface BillTotals {
                       </span>
                     </button>
                     @if (isBoxProduct(product)) {
-                      <button
-                        type="button"
-                        class="btn-secondary btn-sm mx-2.5 mb-2.5"
-                        [disabled]="product.stock < boxUnitsOf(product)"
-                        [title]="
-                          'Agregar una caja completa (' +
-                          boxUnitsOf(product) +
-                          ' unidades) por ' +
-                          money(product.price)
-                        "
-                        (click)="addBox(product)"
-                      >
-                        <app-icon name="plus" size="h-3.5 w-3.5" />
-                        Caja {{ boxUnitsOf(product) }} und
-                      </button>
+                      <p class="mx-2.5 mb-2.5 text-[11px] leading-tight text-slate-400">
+                        Al agregarlo eliges caja o unidad
+                      </p>
                     }
                   </div>
                 }
@@ -428,7 +462,7 @@ interface BillTotals {
                       <button
                         type="button"
                         class="flex flex-1 flex-col text-left"
-                        [title]="menu.available ? menu.name : menu.name + ' (agotado)'"
+                        [title]="menuTitle(menu)"
                         (click)="addMenu(menu)"
                       >
                         <span class="relative flex h-24 w-full items-center justify-center overflow-hidden bg-slate-100">
@@ -440,19 +474,9 @@ interface BillTotals {
                           <span
                             class="absolute right-1.5 top-1.5 badge"
                             [class]="menu.available ? 'bg-emerald-100 text-emerald-700' : 'bg-rose-100 text-rose-700'"
-                            [title]="
-                              menu.maxServings === null
-                                ? 'Sin tope de inventario'
-                                : menu.maxServings + ' porciones disponibles'
-                            "
+                            [title]="menuStockHint(menu)"
                           >
-                            @if (menu.maxServings === null) {
-                              Ilimitado
-                            } @else if (menu.maxServings > 0) {
-                              {{ menu.maxServings }} disp.
-                            } @else {
-                              Agotado
-                            }
+                            {{ menuStockLabel(menu) }}
                           </span>
                         </span>
                         <span class="flex flex-1 flex-col gap-0.5 p-2.5">
@@ -637,14 +661,30 @@ interface BillTotals {
                         {{ line.name }}
                       </span>
                       <span class="block text-xs text-slate-500">
-                        {{ money(line.unitPrice) }} · {{ soldUnitLabel(line) }}
-                        @if (isBoxProduct(line)) {
-                          · caja de {{ boxUnitsOf(line) }}
-                        }
+                        {{ money(salePrice(line)) }} · {{ saleUnitLabel(line) }}
                         @if (line.menuId) {
                           · menú de {{ line.ingredientCount ?? 0 }} ingrediente(s)
                         }
                       </span>
+                      @if (isBoxProduct(line)) {
+                        <span class="mt-1 flex gap-0.5">
+                          @for (option of saleUnits(line); track option.value) {
+                            <button
+                              type="button"
+                              class="rounded px-1.5 py-0.5 text-[11px] font-medium transition"
+                              [class]="
+                                lineUnitOf(line) === option.value
+                                  ? 'bg-brand-50 text-brand-700'
+                                  : 'text-slate-400 hover:text-slate-600'
+                              "
+                              [title]="'Cobrar por ' + option.label"
+                              (click)="setLineUnit(line, option.value)"
+                            >
+                              {{ option.label }}
+                            </button>
+                          }
+                        </span>
+                      }
                       @if (orderedForLine(line); as ordered) {
                         <span class="block text-xs font-semibold text-amber-700">
                           Ya en la mesa: {{ ordered }}
@@ -655,7 +695,7 @@ interface BillTotals {
                       <button
                         type="button"
                         class="btn-ghost btn-sm"
-                        [disabled]="line.quantity <= 1"
+                        [disabled]="saleQuantity(line) <= 1"
                         (click)="decLine(line)"
                       >
                         −
@@ -664,8 +704,9 @@ interface BillTotals {
                         class="input w-14 px-1 py-1 text-center"
                         type="number"
                         min="1"
-                        [(ngModel)]="line.quantity"
-                        (ngModelChange)="onQuantityChange(line)"
+                        [title]="'Cantidad en ' + saleUnitLabel(line)"
+                        [ngModel]="saleQuantity(line)"
+                        (ngModelChange)="onQuantityChange(line, $event)"
                       />
                       <button type="button" class="btn-ghost btn-sm" (click)="incLine(line)">+</button>
                     </span>
@@ -771,6 +812,33 @@ interface BillTotals {
                 </div>
               }
 
+              <!-- Costo de delivery: solo pedidos a domicilio, sin IGV. -->
+              @if (form.type === 'DELIVERY' && !targetOrder()) {
+                <div class="rounded-lg border border-slate-200 bg-white px-3 py-2">
+                  <div class="flex flex-wrap items-center gap-1.5">
+                    <span class="text-xs font-semibold uppercase tracking-wide text-slate-500">
+                      Delivery
+                    </span>
+                    <input
+                      class="input w-24 px-2 py-1 text-right"
+                      type="number"
+                      min="0"
+                      placeholder="0.00"
+                      aria-label="Costo de delivery"
+                      [(ngModel)]="form.deliveryFee"
+                    />
+                    <span class="text-xs text-slate-500">{{ form.deliveryFeeCurrency }}</span>
+                    <span class="ml-auto text-sm font-semibold text-slate-800">
+                      {{ money(deliveryFeeAmount) }}
+                    </span>
+                  </div>
+                  <app-rate-conversions
+                    [amount]="form.deliveryFee"
+                    [currency]="form.deliveryFeeCurrency"
+                  />
+                </div>
+              }
+
               <div class="space-y-1 text-sm">
                 <div class="flex items-center justify-between">
                   <span class="text-slate-500">Subtotal</span>
@@ -794,12 +862,19 @@ interface BillTotals {
                     <app-money [amount]="bill.tip" alignEnd="true" />
                   </div>
                 }
+                @if (bill.deliveryFee > 0) {
+                  <div class="flex items-center justify-between">
+                    <span class="text-slate-500">Delivery</span>
+                    <app-money [amount]="bill.deliveryFee" alignEnd="true" />
+                  </div>
+                }
                 <div
                   class="flex items-center justify-between border-t border-slate-200 pt-2 text-base font-semibold text-slate-900"
                 >
                   <span>Total</span>
                   <app-money [amount]="bill.total" alignEnd="true" strong />
                 </div>
+                <app-rate-conversions [amount]="bill.total" [currency]="baseCurrency.code" />
                 @if (targetOrder() && bill.paid > 0) {
                   <div class="flex items-center justify-between">
                     <span class="text-slate-500">Ya pagado</span>
@@ -880,6 +955,7 @@ interface BillTotals {
                     <span class="font-semibold">{{ amountIn(chargeAmount, charge.currency) }}</span>
                     en {{ charge.currency }}.
                   </p>
+                  <app-rate-conversions [amount]="chargeAmount" [currency]="charge.currency" />
                 }
               </div>
 
@@ -1038,6 +1114,65 @@ interface BillTotals {
       }
     </div>
 
+    <!-- Eleccion de la unidad de venta: caja completa o unidad suelta -->
+    <app-dialog
+      [open]="unitPicker() !== null"
+      [variant]="dialogView()"
+      [title]="'¿Caja o unidad de ' + (unitPicker()?.name ?? '') + '?'"
+      subtitle="El precio depende de lo que entregues: la presentacion completa o la unidad suelta."
+      size="sm"
+      [body]="unitBody"
+      [footer]="unitFooter"
+      (closed)="closeUnitPicker()"
+    />
+
+    <ng-template #unitBody>
+      @if (unitPicker(); as product) {
+        <div class="space-y-2">
+          <button
+            type="button"
+            class="flex w-full items-center justify-between gap-3 rounded-lg border border-slate-200 px-3 py-2 text-left transition hover:border-brand-400 hover:bg-brand-50/40"
+            (click)="pickSaleUnit('UND')"
+          >
+            <span>
+              <span class="block text-sm font-medium text-slate-800">Unidad suelta</span>
+              <span class="block text-xs text-slate-500">
+                Quedan {{ product.stock }} {{ soldUnitLabel(product) }}
+              </span>
+            </span>
+            <span class="text-sm font-semibold text-slate-900">
+              {{ looseUnitPriceText(product) }}
+            </span>
+          </button>
+          <button
+            type="button"
+            class="flex w-full items-center justify-between gap-3 rounded-lg border border-slate-200 px-3 py-2 text-left transition hover:border-brand-400 hover:bg-brand-50/40 disabled:cursor-not-allowed disabled:opacity-50"
+            [disabled]="product.stock < boxUnitsOf(product)"
+            (click)="pickSaleUnit(boxUnitOf(product))"
+          >
+            <span>
+              <span class="block text-sm font-medium text-slate-800">
+                {{ boxUnitOf(product) === 'PAQUETE' ? 'Paquete completo' : 'Caja completa' }}
+              </span>
+              <span class="block text-xs text-slate-500">
+                {{ boxUnitsOf(product) }} unidades sueltas
+                @if (product.stock < boxUnitsOf(product)) {
+                  · no alcanza el stock
+                }
+              </span>
+            </span>
+            <span class="text-sm font-semibold text-slate-900">{{ money(product.price) }}</span>
+          </button>
+        </div>
+      }
+    </ng-template>
+
+    <ng-template #unitFooter>
+      <div class="flex w-full justify-end">
+        <button type="button" class="btn-secondary" (click)="closeUnitPicker()">Cancelar</button>
+      </div>
+    </ng-template>
+
     <!-- Cliente rápido desde el mostrador -->
     <app-dialog
       [open]="customerOpen()"
@@ -1116,6 +1251,10 @@ export class PosComponent implements OnInit, OnDestroy {
   readonly soldUnitLabel = soldUnitLabel;
   readonly boxUnitsOf = boxUnitsOf;
   readonly isBoxProduct = isBoxProduct;
+  /** Disponibilidad de la carta: porciones, agotado o receta con insumo inactivo. */
+  readonly menuStockLabel = menuStockLabel;
+  readonly menuTitle = menuTitle;
+  readonly menuStockHint = menuStockHint;
   readonly typeLabels = ORDER_TYPE_LABELS;
   readonly methodOptions = PAYMENT_METHOD_OPTIONS;
   readonly methodLabels = PAYMENT_METHOD_LABELS;
@@ -1127,6 +1266,8 @@ export class PosComponent implements OnInit, OnDestroy {
   readonly receiptShortcuts = [5, 10, 20, 50, 100];
   /** Propinas de atajo de la venta (0 % = sin propina). */
   readonly tipPresets = TIP_PERCENT_PRESETS;
+  /** Moneda base del sistema (el delivery y el desglose se muestran en USD). */
+  readonly baseCurrency = BASE_CURRENCY;
 
   readonly loading = signal(false);
   readonly loadingTables = signal(false);
@@ -1139,11 +1280,19 @@ export class PosComponent implements OnInit, OnDestroy {
   readonly menus = signal<MenuOption[]>([]);
   readonly menuCategories = signal<MenuCategoryRef[]>([]);
   readonly categories = signal<Category[]>([]);
+  /** Las subcategorias se pintan indentadas bajo su principal. */
+  readonly categoryOptionLabel = categoryOptionLabel;
   readonly customers = signal<Customer[]>([]);
   readonly activeOrders = signal<Order[]>([]);
   readonly tableCount = signal(DEFAULT_TABLE_COUNT);
   readonly targetOrder = signal<Order | null>(null);
   readonly lines = signal<PosLine[]>([]);
+  /**
+   * Producto por presentacion (caja/paquete) esperando que el cajero elija la
+   * unidad de venta: el selector se abre al tocarlo en la grilla y no agrega
+   * nada hasta que se elija caja o unidad suelta.
+   */
+  readonly unitPicker = signal<ProductOption | null>(null);
 
   /** Grilla visible: productos sueltos o menús (platos/combos). */
   readonly gridKind = signal<'products' | 'menus'>('products');
@@ -1165,6 +1314,10 @@ export class PosComponent implements OnInit, OnDestroy {
     taxRate: number;
     /** Propina en porcentaje sobre el neto (opcional). */
     tipRate: number;
+    /** Costo de delivery en `deliveryFeeCurrency` (solo pedidos a domicilio). */
+    deliveryFee: number;
+    /** Moneda del costo de delivery (el POS lo captura en USD). */
+    deliveryFeeCurrency: string;
   } = {
     customerId: '',
     type: 'DINE_IN',
@@ -1173,6 +1326,8 @@ export class PosComponent implements OnInit, OnDestroy {
     discount: 0,
     taxRate: 0,
     tipRate: 0,
+    deliveryFee: 0,
+    deliveryFeeCurrency: BASE_CURRENCY.code,
   };
 
   /** Cobro de la venta en curso. */
@@ -1288,9 +1443,14 @@ export class PosComponent implements OnInit, OnDestroy {
   /** Productos que cumplen la búsqueda, la categoría y el filtro de stock. */
   get filteredProducts(): ProductOption[] {
     const term = this.search.trim().toLowerCase();
+    // Elegir una principal incluye lo agrupado en sus subcategorias.
+    const categoryIds = categoryScopeIds(this.categories(), this.categoryId);
     return this.products()
       .filter((product) => (this.onlyAvailable ? product.stock > 0 : true))
-      .filter((product) => !this.categoryId || product.categoryId === this.categoryId)
+      .filter(
+        (product) =>
+          categoryIds.length === 0 || categoryIds.includes(product.categoryId ?? ''),
+      )
       .filter(
         (product) =>
           !term ||
@@ -1306,9 +1466,13 @@ export class PosComponent implements OnInit, OnDestroy {
    */
   get filteredMenus(): MenuOption[] {
     const term = this.search.trim().toLowerCase();
+    const categoryIds = categoryScopeIds(this.menuCategories(), this.menuCategoryId);
     return this.menus()
       .filter((menu) => (this.onlyAvailable ? menu.available : true))
-      .filter((menu) => !this.menuCategoryId || menu.categoryId === this.menuCategoryId)
+      .filter(
+        (menu) =>
+          categoryIds.length === 0 || categoryIds.includes(menu.categoryId ?? ''),
+      )
       .filter(
         (menu) =>
           !term ||
@@ -1323,79 +1487,218 @@ export class PosComponent implements OnInit, OnDestroy {
     return product.stock > 0 ? 'text-slate-600' : 'text-rose-700';
   }
 
+  /**
+   * Precio de la unidad suelta del producto, en la moneda de visualización.
+   *
+   * Cuando el catálogo lo guardó como un monto escrito a mano (Bs 350,00 a 970)
+   * se imprime ese monto y no su equivalente en USD redondeado a centavos, que
+   * devolvía Bs 349,20. El consumo (carrito y factura) sigue cobrando el valor
+   * guardado; esto solo alinea lo que ve el cajero con lo que cargó el operador.
+   */
+  looseUnitPriceText(product: ProductOption): string {
+    const loaded = loadedUnitPrice(product);
+    return (
+      moneyLoaded(loaded?.amount, loaded?.currency) ?? money(unitPriceOf(product))
+    );
+  }
+
+  /** Precio de la presentación completa (caja/paquete) en la moneda de visualización. */
+  boxPriceText(product: ProductOption): string {
+    return (
+      moneyLoaded(product.priceEntered, product.priceCurrency) ?? money(product.price)
+    );
+  }
+
   // ===========================================================================
   //  CARRITO
   // ===========================================================================
 
   /**
-   * Agrega una unidad suelta del inventario (o incrementa su cantidad).
+   * Agrega al carrito lo que el cajero tocó en la grilla.
    *
-   * En los productos por caja la unidad que se cobra es la individual, con el
-   * precio de la caja repartido entre sus unidades (`price / unitsPerBox`).
+   * Los productos con presentación (caja/paquete) no entran de una: abren el
+   * selector de unidad, porque la caja completa y la unidad suelta se cobran
+   * distinto y el cajero tiene que decir qué entrega.
    */
   addProduct(product: ProductOption): void {
     if (product.stock <= 0) {
       this.formError.set(`"${product.name}" no tiene stock disponible.`);
       return;
     }
-    const existing = this.lines().find((line) => line.productId === product.id);
-    if (existing) {
-      this.incLine(existing);
+    if (this.isBoxProduct(product)) {
+      this.unitPicker.set(product);
       return;
     }
-    this.lines.set([...this.lines(), this.newLine(product, 1)]);
+    this.addLine(product, normalizeUnit(product.unit) || 'UND');
+  }
+
+  /**
+   * Agrega una presentación completa (caja/paquete): tantas unidades sueltas
+   * como trae el empaque (los productos sueltos caen en `addProduct`).
+   */
+  addBox(product: ProductOption): void {
+    if (!this.isBoxProduct(product)) {
+      this.addProduct(product);
+      return;
+    }
+    if (product.stock <= 0) {
+      this.formError.set(`"${product.name}" no tiene stock disponible.`);
+      return;
+    }
+    this.addLine(product, this.boxUnitOf(product));
+  }
+
+  /** Cierra el selector de unidad sin agregar nada. */
+  closeUnitPicker(): void {
+    this.unitPicker.set(null);
+  }
+
+  /**
+   * Agrega el producto del selector con la unidad elegida: `UND` (unidad suelta)
+   * o la unidad de la presentación (`CAJA`/`PAQUETE`).
+   */
+  pickSaleUnit(inputUnit: string): void {
+    const product = this.unitPicker();
+    if (!product) return;
+    this.unitPicker.set(null);
+    this.addLine(product, inputUnit);
+  }
+
+  /**
+   * Suma una línea del producto en la unidad indicada: una caja de 24 entra al
+   * carrito como sus 24 unidades sueltas, que es la unidad del inventario y la
+   * que descuenta el backend.
+   *
+   * Las líneas se separan por producto Y unidad de venta, así la caja y las
+   * unidades sueltas se ven (y se cobran) por separado.
+   */
+  private addLine(product: ProductOption, inputUnit: string, quantity = 1): void {
+    const line = this.newLine(product, inputUnit, quantity);
+    const existing = this.lines().find(
+      (item) => this.lineKey(item) === this.lineKey(line),
+    );
+    const units = (existing?.quantity ?? 0) + line.quantity;
+    if (line.stock > 0 && units > line.stock) {
+      this.formError.set(
+        line.quantity > line.stock
+          ? `No alcanza el stock para una ${this.boxNameOf(line)} completa de "${product.name}" (quedan ${product.stock} unidades).`
+          : `Stock insuficiente para "${product.name}" (disponible ${product.stock} unidades).`,
+      );
+      return;
+    }
+    if (existing) {
+      existing.quantity = units;
+      this.lines.set([...this.lines()]);
+    } else {
+      this.lines.set([...this.lines(), line]);
+    }
+    const priced = this.isBoxSaleUnit(line) ? line.boxPrice : line.unitPrice;
     this.formError.set(
-      product.price > 0
+      priced > 0
         ? null
         : `"${product.name}" no tiene precio de venta: revísalo en el inventario.`,
     );
   }
 
   /**
-   * Agrega una caja completa: tantas unidades individuales como trae la
-   * presentación (los productos sueltos caen en `addProduct`).
+   * Línea del carrito con el precio de la unidad de inventario, la unidad de
+   * venta elegida y la cantidad guardada en unidades de inventario.
    */
-  addBox(product: ProductOption): void {
-    const units = this.boxUnitsOf(product);
-    if (!this.isBoxProduct(product)) {
-      this.addProduct(product);
-      return;
-    }
-    if (product.stock < units) {
-      this.formError.set(
-        `No alcanza el stock para una caja completa de "${product.name}" (quedan ${product.stock} unidades).`,
-      );
-      return;
-    }
-    const existing = this.lines().find((line) => line.productId === product.id);
-    if (existing) {
-      if (existing.stock > 0 && existing.quantity + units > existing.stock) {
-        this.formError.set(
-          `Stock insuficiente para "${product.name}" (disponible ${existing.stock}).`,
-        );
-        return;
-      }
-      existing.quantity += units;
-      this.lines.set([...this.lines()]);
-    } else {
-      this.lines.set([...this.lines(), this.newLine(product, units)]);
-    }
-    this.formError.set(null);
-  }
-
-  /** Línea del carrito con el precio por unidad y el stock en unidades. */
-  private newLine(product: ProductOption, quantity: number): PosLine {
-    return {
+  private newLine(product: ProductOption, inputUnit: string, quantity: number): PosLine {
+    const line: PosLine = {
       productId: product.id,
       menuId: null,
       name: product.name,
       unitPrice: this.unitPriceOf(product),
-      quantity,
+      boxPrice: product.price,
+      inputUnit: normalizeUnit(inputUnit) || 'UND',
+      quantity: 0,
       stock: product.stock,
       unit: product.unit,
       unitsPerBox: this.boxUnitsOf(product),
       imageUrl: product.imageUrl ?? null,
     };
+    line.quantity = stockQuantity(quantity, line.inputUnit, line);
+    return line;
+  }
+
+  /** Unidad de venta de la línea (`UND`, `CAJA`, `PAQUETE`…). */
+  lineUnitOf(line: PosLine): string {
+    return normalizeUnit(line.inputUnit) || 'UND';
+  }
+
+  /** Unidades de venta elegibles en la línea (solo en productos por presentación). */
+  saleUnits(line: PosLine): InputUnit[] {
+    return this.isBoxProduct(line) ? inputUnits(line) : [];
+  }
+
+  /**
+   * Unidades de venta que lleva la línea (cajas o unidades sueltas). Es la
+   * cantidad que el cajero escribe y ve; el carrito guarda unidades de
+   * inventario para que el stock y el pedido no se desvíen.
+   */
+  saleQuantity(line: PosLine): number {
+    return inputQuantity(line.quantity, line.inputUnit, line);
+  }
+
+  /**
+   * `true` cuando la línea se está cobrando por la presentación completa (caja,
+   * paquete): el catálogo manda y se cobra su precio tal cual.
+   */
+  private isBoxSaleUnit(line: PosLine): boolean {
+    return this.isBoxProduct(line) && this.lineUnitOf(line) === this.boxUnitOf(line);
+  }
+
+  /**
+   * Precio de la unidad de venta elegida: la presentación completa vale lo que
+   * dice el catálogo (`boxPrice`) y la unidad suelta su precio unitario. El
+   * carrito cuenta en unidades de inventario, así que la unidad suelta del POS
+   * multiplica su precio por las unidades de la presentación (vender las 24
+   * sueltas de una caja es cobrar 24 veces el precio unitario).
+   */
+  salePrice(line: PosLine): number {
+    if (this.isBoxSaleUnit(line)) return line.boxPrice;
+    return mulMoney(line.unitPrice, unitFactor(line.inputUnit, line));
+  }
+
+  /** Cómo se lee la unidad de venta de la línea ("cajas", "unidades sueltas"). */
+  saleUnitLabel(line: PosLine): string {
+    const unit = this.lineUnitOf(line);
+    const option = inputUnits(line).find((item) => item.value === unit);
+    return option?.label ?? this.soldUnitLabel(line);
+  }
+
+  /** Unidad de la presentación completa del producto (`CAJA` o `PAQUETE`). */
+  boxUnitOf(pack: PackDefinition): string {
+    const units = inputUnits(pack);
+    return units.length > 1 ? units[units.length - 1].value : 'CAJA';
+  }
+
+  /** Nombre de la presentación completa del producto (`caja`, `paquete`). */
+  private boxNameOf(pack: PackDefinition): string {
+    return this.boxUnitOf(pack) === 'PAQUETE' ? 'paquete' : 'caja';
+  }
+
+  /**
+   * Cambia la unidad con la que se escribe la línea (caja ↔ unidad suelta)
+   * conservando las MISMAS unidades de inventario: una caja de 24 pasa a verse
+   * como sus 24 unidades sueltas y el monto no cambia. Si la línea de la otra
+   * unidad ya está en el carrito, se suman sus cantidades.
+   */
+  setLineUnit(line: PosLine, inputUnit: string): void {
+    const unit = normalizeUnit(inputUnit);
+    if (!unit || unit === this.lineUnitOf(line)) return;
+
+    const moved: PosLine = { ...line, inputUnit: unit };
+    const rest = this.lines().filter((item) => item !== line);
+    const existing = rest.find((item) => this.lineKey(item) === this.lineKey(moved));
+    if (existing) {
+      existing.quantity += moved.quantity;
+      this.lines.set([...rest]);
+    } else {
+      this.lines.set([...rest, moved]);
+    }
+    this.formError.set(null);
   }
 
   /**
@@ -1405,7 +1708,14 @@ export class PosComponent implements OnInit, OnDestroy {
    */
   addMenu(menu: MenuOption): void {
     if (!menu.available) {
-      this.formError.set(`"${menu.name}" no tiene stock suficiente para prepararse.`);
+      // Puede ser falta de stock o una receta con un producto desactivado: el
+      // cajero necesita saber cual de las dos para resolverlo.
+      const reason = menuUnavailableReason(menu);
+      this.formError.set(
+        reason === 'Agotado'
+          ? `"${menu.name}" no tiene stock suficiente para prepararse.`
+          : `"${menu.name}": ${reason}.`,
+      );
       return;
     }
     const existing = this.lines().find((line) => line.menuId === menu.id);
@@ -1420,7 +1730,11 @@ export class PosComponent implements OnInit, OnDestroy {
         menuId: menu.id,
         name: menu.name,
         unitPrice: menu.price,
+        // Un menú no tiene presentación: su precio de venta es el mismo.
+        boxPrice: menu.price,
         quantity: 1,
+        // Un menu se vende por porciones: no tiene presentacion que elegir.
+        inputUnit: 'UND',
         // `0` = sin tope de inventario: no se limita la cantidad en el carrito.
         stock: menu.maxServings ?? 0,
         unit: 'UND',
@@ -1436,9 +1750,10 @@ export class PosComponent implements OnInit, OnDestroy {
     );
   }
 
-  /** Clave única de una línea del carrito (producto o menú). */
+  /** Clave única de una línea del carrito (producto + unidad de venta, o menú). */
   lineKey(line: PosLine): string {
-    return line.menuId ? `m:${line.menuId}` : `p:${line.productId}`;
+    if (line.menuId) return `m:${line.menuId}`;
+    return `p:${line.productId}|${this.lineUnitOf(line)}`;
   }
 
   /** Agrega por SKU/código exacto (lector de códigos) o la primera coincidencia. */
@@ -1471,33 +1786,47 @@ export class PosComponent implements OnInit, OnDestroy {
     this.search = '';
   }
 
-  /** Normaliza la cantidad escrita a mano: entero >= 1 y <= stock disponible. */
-  onQuantityChange(line: PosLine): void {
-    let quantity = Math.floor(Number(line.quantity) || 0);
+  /**
+   * Cantidad que el cajero escribió, en la unidad de venta de la línea (cajas o
+   * unidades sueltas). Se guarda convertida a unidades de inventario.
+   */
+  onQuantityChange(line: PosLine, value: number | string | null | undefined): void {
+    this.setSaleQuantity(line, Number(value));
+  }
+
+  /** Suma una unidad de venta (en una caja de 24 suma sus 24 unidades). */
+  incLine(line: PosLine): void {
+    this.setSaleQuantity(line, this.saleQuantity(line) + 1);
+  }
+
+  /** Resta una unidad de venta (nunca baja de una). */
+  decLine(line: PosLine): void {
+    this.setSaleQuantity(line, this.saleQuantity(line) - 1);
+  }
+
+  /**
+   * Ajusta la cantidad de la línea a un entero >= 1 de su unidad de venta, sin
+   * pasarse del stock disponible (una caja cuenta por sus 24 unidades).
+   */
+  private setSaleQuantity(line: PosLine, value: number): void {
+    let quantity = Number.isFinite(value) ? Math.floor(value) : 0;
     if (quantity < 1) quantity = 1;
-    if (line.stock > 0 && quantity > line.stock) {
-      quantity = line.stock;
-      this.formError.set(`Stock insuficiente para "${line.name}" (disponible ${line.stock}).`);
+
+    if (line.stock > 0) {
+      const fits = Math.floor(inputQuantity(line.stock, line.inputUnit, line));
+      if (quantity > fits) {
+        quantity = Math.max(fits, 1);
+        this.formError.set(
+          `Stock insuficiente para "${line.name}" (disponible ${line.stock} unidades).`,
+        );
+      } else {
+        this.formError.set(null);
+      }
     } else {
       this.formError.set(null);
     }
-    line.quantity = quantity;
-    this.lines.set([...this.lines()]);
-  }
 
-  incLine(line: PosLine): void {
-    if (line.stock > 0 && line.quantity + 1 > line.stock) {
-      this.formError.set(`Stock insuficiente para "${line.name}" (disponible ${line.stock}).`);
-      return;
-    }
-    line.quantity += 1;
-    this.lines.set([...this.lines()]);
-    this.formError.set(null);
-  }
-
-  decLine(line: PosLine): void {
-    if (line.quantity <= 1) return;
-    line.quantity -= 1;
+    line.quantity = stockQuantity(quantity, line.inputUnit, line);
     this.lines.set([...this.lines()]);
   }
 
@@ -1510,8 +1839,13 @@ export class PosComponent implements OnInit, OnDestroy {
     this.formError.set(null);
   }
 
+  /**
+   * Monto de la línea: lo que se cobra por lo que el cajero escribió en la unidad
+   * de venta elegida (1 caja al precio de la caja, 24 unidades sueltas a su
+   * precio unitario).
+   */
   lineTotal(line: PosLine): number {
-    return mulMoney(line.unitPrice, line.quantity);
+    return mulMoney(this.salePrice(line), this.saleQuantity(line));
   }
 
   /** Unidades totales del carrito (se muestra en la cabecera). */
@@ -1519,9 +1853,24 @@ export class PosComponent implements OnInit, OnDestroy {
     return this.lines().reduce((acc, line) => acc + line.quantity, 0);
   }
 
-  /** Líneas cuya cantidad supera el stock disponible en inventario. */
+  /**
+   * Líneas que dejan la venta por encima del stock disponible. Un mismo producto
+   * puede estar en dos líneas (una caja completa y unidades sueltas), así que las
+   * unidades se suman por producto antes de compararlas con el inventario.
+   */
   get stockIssues(): PosLine[] {
-    return this.lines().filter((line) => line.stock > 0 && line.quantity > line.stock);
+    const groups = new Map<string, PosLine[]>();
+    for (const line of this.lines()) {
+      if (!line.productId || line.stock <= 0) continue;
+      groups.set(line.productId, [...(groups.get(line.productId) ?? []), line]);
+    }
+
+    const issues: PosLine[] = [];
+    for (const group of groups.values()) {
+      const units = group.reduce((acc, line) => acc + line.quantity, 0);
+      if (units > group[0].stock) issues.push(...group);
+    }
+    return issues;
   }
 
   // ===========================================================================
@@ -1554,7 +1903,28 @@ export class PosComponent implements OnInit, OnDestroy {
   }
 
   get total(): number {
-    return sumMoney([this.subtotal, -this.discountAmount, this.tax, this.tipAmount]);
+    return sumMoney([
+      this.subtotal,
+      -this.discountAmount,
+      this.tax,
+      this.tipAmount,
+      this.deliveryFeeAmount,
+    ]);
+  }
+
+  /**
+   * Costo de delivery de la venta nueva en USD (moneda base). Solo aplica a
+   * pedidos a domicilio y no paga IGV. Al trabajar sobre un pedido ya abierto se
+   * cobra el costo que ese pedido tenga guardado (lo conserva el backend).
+   */
+  get deliveryFeeAmount(): number {
+    if (this.targetOrder()) return 0;
+    if (this.form.type !== 'DELIVERY') return 0;
+    const amount = Number(this.form.deliveryFee) || 0;
+    if (!(amount > 0)) return 0;
+    const currency = this.form.deliveryFeeCurrency || BASE_CURRENCY.code;
+    if (currency === BASE_CURRENCY.code) return amount;
+    return this.rates.toBase(amount, currency) ?? amount;
   }
 
   /**
@@ -1572,6 +1942,7 @@ export class PosComponent implements OnInit, OnDestroy {
         discount: this.discountAmount,
         tax: this.tax,
         tip: this.tipAmount,
+        deliveryFee: this.deliveryFeeAmount,
         total: this.total,
         paid: 0,
         balance: this.total,
@@ -1582,12 +1953,15 @@ export class PosComponent implements OnInit, OnDestroy {
     const taxable = sumMoney([subtotal, -discount]);
     const tax = mulMoney(taxable, this.taxRateOf(order) / 100);
     const tip = order.tip;
-    const total = sumMoney([taxable, tax, tip]);
+    // El pedido ya trae su costo de delivery guardado: se conserva al agregar.
+    const deliveryFee = order.deliveryFee ?? 0;
+    const total = sumMoney([taxable, tax, tip, deliveryFee]);
     return {
       subtotal,
       discount,
       tax,
       tip,
+      deliveryFee,
       total,
       paid: order.paidAmount,
       balance: sumMoney([total, -order.paidAmount]),
@@ -1847,6 +2221,7 @@ export class PosComponent implements OnInit, OnDestroy {
       return;
     }
 
+    const deliveryFee = this.deliveryFeeAmount;
     this.orders
       .create({
         customerId: this.form.customerId || null,
@@ -1856,6 +2231,13 @@ export class PosComponent implements OnInit, OnDestroy {
         discount: Number(this.form.discount) || undefined,
         taxRate: Number(this.form.taxRate) || 0,
         tip: this.tipAmount || undefined,
+        // Solo los pedidos a domicilio llevan costo de delivery (sin IGV).
+        ...(deliveryFee > 0
+          ? {
+              deliveryFee: Number(this.form.deliveryFee) || 0,
+              deliveryFeeCurrency: this.form.deliveryFeeCurrency || BASE_CURRENCY.code,
+            }
+          : {}),
         items: this.lines().map((line) => this.itemsPayloadOf(line)),
       })
       .subscribe({
@@ -1876,12 +2258,29 @@ export class PosComponent implements OnInit, OnDestroy {
 
   private itemsPayloadOf(line: PosLine): OrderItemPayload {
     // La linea vende un producto O un menu: la referencia que no aplica no viaja.
+    // `quantity`/`unitPrice` viajan en unidades de inventario —una caja de 24 va
+    // como 24 unidades sueltas—, que es como el backend descuenta el stock y como
+    // quedan guardadas las lineas del pedido.
     return {
       ...(line.productId ? { productId: line.productId } : {}),
       ...(line.menuId ? { menuId: line.menuId } : {}),
       quantity: line.quantity,
-      unitPrice: line.unitPrice,
+      unitPrice: this.chargeUnitPrice(line),
     };
+  }
+
+  /**
+   * Precio por unidad de inventario que viaja al pedido (el backend recalcula el
+   * monto como `unitPrice × quantity`).
+   *
+   * En una línea de unidad suelta es el precio unitario del catálogo. En una caja
+   * completa se reparte el precio DE LA CAJA entre sus unidades (72 / 24 = 3), así
+   * el pedido cobra exactamente lo que muestra el carrito aunque el precio de la
+   * unidad suelta sea distinto (una suelta más cara que la caja es lo normal).
+   */
+  private chargeUnitPrice(line: PosLine): number {
+    if (!this.isBoxSaleUnit(line) || line.quantity <= 0) return line.unitPrice;
+    return divMoney(this.lineTotal(line), line.quantity);
   }
 
   /** Cobra el saldo pendiente del pedido en la moneda elegida. */
@@ -1950,6 +2349,8 @@ export class PosComponent implements OnInit, OnDestroy {
       taxRate: 0,
       // Cada venta nueva propone la propina configurada (opcional).
       tipRate: this.preferences.tipPercent(),
+      deliveryFee: 0,
+      deliveryFeeCurrency: BASE_CURRENCY.code,
     };
     this.charge = { method: 'CASH', currency: BASE_CURRENCY.code, received: 0 };
     this.search = '';

@@ -39,6 +39,11 @@ import {
   sumMoney,
 } from '../../core/utils/format';
 import {
+  menuStockLabel,
+  menuTitle,
+  menuUnavailableReason,
+} from '../../core/utils/menu-availability';
+import {
   boxUnitsOf,
   isBoxProduct,
   soldUnitLabel,
@@ -50,6 +55,7 @@ import { IconComponent } from '../../shared/components/icon.component';
 import { MoneyComponent } from '../../shared/components/money.component';
 import { PageHeaderComponent } from '../../shared/components/page-header.component';
 import { PaginationComponent } from '../../shared/components/pagination.component';
+import { RateConversionsComponent } from '../../shared/components/rate-conversions.component';
 import { PreferencesService, TIP_PERCENT_PRESETS } from '../../core/services/preferences.service';
 import { ConfirmService } from '../../shared/services/confirm.service';
 import type { CashSession } from '../../core/models/operations.model';
@@ -60,7 +66,10 @@ interface OrderLine {
   /** Menú (plato/combo) vendido (`null` cuando es un producto suelto). */
   menuId: string | null;
   name: string;
-  /** Precio de UNA unidad (en productos por caja ya viene `price / unitsPerBox`). */
+  /**
+   * Precio de UNA unidad de inventario: el unitario del catálogo y, si el
+   * operador no lo definió, el repartido del precio de la presentación.
+   */
   unitPrice: number;
   /** Cantidad en unidades individuales del inventario. */
   quantity: number;
@@ -104,6 +113,7 @@ const NEXT_STATUS: Partial<Record<OrderStatus, OrderStatus>> = {
     DialogComponent,
     MoneyComponent,
     CurrencySelectComponent,
+    RateConversionsComponent,
     EmptyStateComponent,
     LoaderComponent,
   ],
@@ -474,8 +484,12 @@ const NEXT_STATUS: Partial<Record<OrderStatus, OrderStatus>> = {
                       </span>
                       <span class="flex shrink-0 flex-col items-end gap-1">
                         <app-money [amount]="menu.price" />
-                        <span class="badge" [class]="menu.available ? 'bg-emerald-100 text-emerald-700' : 'bg-rose-100 text-rose-700'">
-                          {{ menu.maxServings === null ? 'Ilimitado' : menu.maxServings + ' disp.' }}
+                        <span
+                          class="badge"
+                          [title]="menuUnavailableReason(menu) ?? ''"
+                          [class]="menu.available ? 'bg-emerald-100 text-emerald-700' : 'bg-rose-100 text-rose-700'"
+                        >
+                          {{ menuStockLabel(menu) }}
                         </span>
                       </span>
                     </button>
@@ -518,7 +532,7 @@ const NEXT_STATUS: Partial<Record<OrderStatus, OrderStatus>> = {
                         </span>
                         @if (isBoxProduct(product)) {
                           <span class="block text-[11px] text-slate-400">
-                            Caja de {{ boxUnitsOf(product) }} = {{ money(product.price) }}
+                            Caja de {{ boxUnitsOf(product) }} = {{ money(boxCharge(product)) }}
                           </span>
                         }
                       </span>
@@ -542,7 +556,7 @@ const NEXT_STATUS: Partial<Record<OrderStatus, OrderStatus>> = {
                         type="button"
                         class="btn-secondary btn-sm shrink-0"
                         [disabled]="product.stock < boxUnitsOf(product)"
-                        [title]="'Agregar una caja completa (' + boxUnitsOf(product) + ') por ' + money(product.price)"
+                        [title]="'Agregar una caja completa (' + boxUnitsOf(product) + ') por ' + money(boxCharge(product))"
                         (click)="addBox(product)"
                       >
                         Caja
@@ -716,10 +730,36 @@ const NEXT_STATUS: Partial<Record<OrderStatus, OrderStatus>> = {
               <app-money [amount]="tipAmount" alignEnd="true" />
             </div>
           }
+          @if (isDeliveryOrder) {
+            <div class="rounded-lg border border-slate-200 bg-white p-3">
+              <label class="label">Costo de delivery ({{ form.deliveryFeeCurrency }}) — opcional</label>
+              <input
+                type="number"
+                class="input"
+                min="0"
+                [(ngModel)]="form.deliveryFee"
+                placeholder="0.00"
+              />
+              <app-rate-conversions
+                [amount]="form.deliveryFee"
+                [currency]="form.deliveryFeeCurrency"
+              />
+              <p class="mt-1 text-xs text-slate-400">
+                El delivery no paga IGV: se suma al final del total del pedido.
+              </p>
+            </div>
+          }
+          @if (deliveryFeeAmount > 0) {
+            <div class="flex justify-between text-sm">
+              <span class="text-slate-500">Delivery</span>
+              <app-money [amount]="deliveryFeeAmount" alignEnd="true" />
+            </div>
+          }
           <div class="flex justify-between border-t border-slate-200 pt-2 text-base font-semibold">
             <span>Total</span>
             <app-money [amount]="total" alignEnd="true" strong />
           </div>
+          <app-rate-conversions [amount]="total" [currency]="baseCurrency.code" />
 
           <div class="border-t border-slate-200 pt-3">
             <label class="flex items-center gap-2 text-sm font-medium text-slate-700">
@@ -762,6 +802,7 @@ const NEXT_STATUS: Partial<Record<OrderStatus, OrderStatus>> = {
                   </span>
                   (total del pedido).
                 </p>
+                <app-rate-conversions [amount]="chargeTotal" [currency]="chargeCurrency" />
 
                 @if (chargeMethod === 'CASH') {
                   <div class="grid grid-cols-2 gap-2">
@@ -974,7 +1015,11 @@ const NEXT_STATUS: Partial<Record<OrderStatus, OrderStatus>> = {
             @if (order.tip > 0) {
               <div class="flex justify-between"><span class="text-slate-500">Propina</span><app-money [amount]="order.tip" alignEnd="true" /></div>
             }
+            @if (order.deliveryFee > 0) {
+              <div class="flex justify-between"><span class="text-slate-500">Delivery</span><app-money [amount]="order.deliveryFee" alignEnd="true" /></div>
+            }
             <div class="flex justify-between border-t border-slate-200 pt-1 text-base font-semibold"><span>Total</span><app-money [amount]="order.total" alignEnd="true" strong /></div>
+            <app-rate-conversions [amount]="order.total" [currency]="baseCurrency.code" />
             <div class="flex justify-between"><span class="text-slate-500">Pagado</span><app-money [amount]="order.paidAmount" alignEnd="true" /></div>
             <div class="flex justify-between font-semibold text-brand-700"><span>Saldo</span><app-money [amount]="balance(order)" alignEnd="true" strong /></div>
           </div>
@@ -1080,8 +1125,12 @@ const NEXT_STATUS: Partial<Record<OrderStatus, OrderStatus>> = {
                     </span>
                     <span class="flex shrink-0 flex-col items-end gap-1">
                       <app-money [amount]="menu.price" />
-                      <span class="badge" [class]="menu.available ? 'bg-emerald-100 text-emerald-700' : 'bg-rose-100 text-rose-700'">
-                        {{ menu.maxServings === null ? 'Ilimitado' : menu.maxServings + ' disp.' }}
+                      <span
+                        class="badge"
+                        [title]="menuUnavailableReason(menu) ?? ''"
+                        [class]="menu.available ? 'bg-emerald-100 text-emerald-700' : 'bg-rose-100 text-rose-700'"
+                      >
+                        {{ menuStockLabel(menu) }}
                       </span>
                     </span>
                   </button>
@@ -1122,7 +1171,7 @@ const NEXT_STATUS: Partial<Record<OrderStatus, OrderStatus>> = {
                       </span>
                       @if (isBoxProduct(product)) {
                         <span class="block text-[11px] text-slate-400">
-                          Caja de {{ boxUnitsOf(product) }} = {{ money(product.price) }}
+                          Caja de {{ boxUnitsOf(product) }} = {{ money(boxCharge(product)) }}
                         </span>
                       }
                     </span>
@@ -1146,7 +1195,7 @@ const NEXT_STATUS: Partial<Record<OrderStatus, OrderStatus>> = {
                       type="button"
                       class="btn-secondary btn-sm shrink-0"
                       [disabled]="product.stock < boxUnitsOf(product)"
-                      [title]="'Agregar una caja completa (' + boxUnitsOf(product) + ') por ' + money(product.price)"
+                      [title]="'Agregar una caja completa (' + boxUnitsOf(product) + ') por ' + money(boxCharge(product))"
                       (click)="addBox(product)"
                     >
                       Caja
@@ -1299,6 +1348,12 @@ const NEXT_STATUS: Partial<Record<OrderStatus, OrderStatus>> = {
         <div class="space-y-3">
           <div class="rounded-lg bg-slate-50 px-3 py-2 text-sm">
             <div class="flex justify-between"><span class="text-slate-500">Total</span><app-money [amount]="order.total" alignEnd="true" /></div>
+            @if (order.deliveryFee > 0) {
+              <div class="flex justify-between">
+                <span class="text-slate-500">Delivery (incluido)</span>
+                <app-money [amount]="order.deliveryFee" alignEnd="true" />
+              </div>
+            }
             <div class="flex justify-between"><span class="text-slate-500">Pagado</span><app-money [amount]="order.paidAmount" alignEnd="true" /></div>
             <div class="flex justify-between font-semibold"><span>Saldo pendiente</span><app-money [amount]="balance(order)" alignEnd="true" strong /></div>
           </div>
@@ -1335,6 +1390,10 @@ const NEXT_STATUS: Partial<Record<OrderStatus, OrderStatus>> = {
                 Mitad
               </button>
             </div>
+            <app-rate-conversions
+              [amount]="payForm.amount"
+              [currency]="payForm.currency"
+            />
             <p class="mt-1 text-xs text-slate-400">
               Saldo pendiente:
               <span class="font-medium">{{ amountIn(balance(order), baseCurrency.code) }}</span>
@@ -1425,6 +1484,10 @@ export class OrdersPage implements OnInit {
   readonly boxUnitsOf = boxUnitsOf;
   readonly isBoxProduct = isBoxProduct;
   readonly baseCurrency = BASE_CURRENCY;
+  /** Disponibilidad de la carta: porciones, agotado o receta con insumo inactivo. */
+  readonly menuStockLabel = menuStockLabel;
+  readonly menuTitle = menuTitle;
+  readonly menuUnavailableReason = menuUnavailableReason;
   readonly statusLabels = ORDER_STATUS_LABELS;
   readonly statusClasses = ORDER_STATUS_CLASSES;
   readonly typeLabels = ORDER_TYPE_LABELS;
@@ -1492,6 +1555,10 @@ export class OrdersPage implements OnInit {
     taxRate: 0,
     /** Propina en porcentaje sobre el neto (opcional). */
     tipRate: 0,
+    /** Costo de delivery escrito en `deliveryFeeCurrency` (solo pedidos a domicilio). */
+    deliveryFee: 0,
+    /** Moneda del costo de delivery (los formularios lo capturan en USD). */
+    deliveryFeeCurrency: BASE_CURRENCY.code as string,
   };
 
   readonly detailOpen = signal(false);
@@ -1904,6 +1971,8 @@ export class OrdersPage implements OnInit {
       taxRate: 0,
       // La propina arranca con la sugerencia configurada en Configuración → Cajero.
       tipRate: this.preferences.tipPercent(),
+      deliveryFee: 0,
+      deliveryFeeCurrency: BASE_CURRENCY.code,
     };
     this.lines.set([]);
     this.productSearch = '';
@@ -1956,8 +2025,33 @@ export class OrdersPage implements OnInit {
     );
   }
 
+  /** `true` mientras el pedido en curso es a domicilio (habilita el delivery). */
+  get isDeliveryOrder(): boolean {
+    return this.form.type === 'DELIVERY';
+  }
+
+  /**
+   * Costo de delivery del pedido en USD (moneda base). Solo aplica a pedidos a
+   * domicilio; se convierte con la tasa activa cuando se escribe en otra moneda y
+   * no paga IGV.
+   */
+  get deliveryFeeAmount(): number {
+    if (!this.isDeliveryOrder) return 0;
+    const amount = Number(this.form.deliveryFee) || 0;
+    if (!(amount > 0)) return 0;
+    const currency = this.form.deliveryFeeCurrency || BASE_CURRENCY.code;
+    if (currency === BASE_CURRENCY.code) return amount;
+    return this.rates.toBase(amount, currency) ?? amount;
+  }
+
   get total(): number {
-    return sumMoney([this.subtotal, -this.discountAmount, this.tax, this.tipAmount]);
+    return sumMoney([
+      this.subtotal,
+      -this.discountAmount,
+      this.tax,
+      this.tipAmount,
+      this.deliveryFeeAmount,
+    ]);
   }
 
   lineTotal(line: OrderLine): number {
@@ -2035,6 +2129,16 @@ export class OrdersPage implements OnInit {
     this.form.tipRate = rate;
   }
 
+  /**
+   * Monto de una caja completa en el pedido: sus unidades cobradas al precio
+   * unitario del catálogo. En el pedido la caja entra como unidades sueltas
+   * (el inventario y las líneas se llevan por unidad), así que es lo que suma el
+   * botón «Caja» y lo que muestra la grilla.
+   */
+  boxCharge(product: ProductOption): number {
+    return mulMoney(this.unitPriceOf(product), this.boxUnitsOf(product));
+  }
+
   /** Agrega una unidad suelta del inventario al pedido (o incrementa su cantidad). */
   addProduct(product: ProductOption): void {
     if (product.stock <= 0) {
@@ -2055,8 +2159,9 @@ export class OrdersPage implements OnInit {
   }
 
   /**
-   * Agrega una caja completa: tantas unidades como trae la presentación
-   * (los productos sueltos caen en `addProduct`).
+   * Agrega una caja completa: tantas unidades como trae la presentación, cobradas
+   * al precio unitario del catálogo (los productos sueltos caen en
+   * `addProduct`).
    */
   addBox(product: ProductOption): void {
     const units = this.boxUnitsOf(product);
@@ -2107,7 +2212,14 @@ export class OrdersPage implements OnInit {
    */
   addMenu(menu: MenuOption): void {
     if (!menu.available) {
-      this.formError.set(`"${menu.name}" no tiene stock suficiente para prepararse.`);
+      // Puede ser falta de stock o una receta con un producto desactivado: el
+      // cajero necesita saber cual de las dos para resolverlo.
+      const reason = menuUnavailableReason(menu);
+      this.formError.set(
+        reason === 'Agotado'
+          ? `"${menu.name}" no tiene stock suficiente para prepararse.`
+          : `"${menu.name}": ${reason}.`,
+      );
       return;
     }
     const existing = this.lines().find((line) => line.menuId === menu.id);
@@ -2248,6 +2360,7 @@ export class OrdersPage implements OnInit {
 
     this.saving.set(true);
     this.formError.set(null);
+    const deliveryFee = this.deliveryFeeAmount;
     this.orders
       .create({
         customerId: this.form.customerId || null,
@@ -2257,6 +2370,13 @@ export class OrdersPage implements OnInit {
         discount: Number(this.form.discount) || undefined,
         taxRate: Number(this.form.taxRate) || 0,
         tip: this.tipAmount || undefined,
+        // Solo los pedidos a domicilio llevan costo de delivery (sin IGV).
+        ...(deliveryFee > 0
+          ? {
+              deliveryFee: Number(this.form.deliveryFee) || 0,
+              deliveryFeeCurrency: this.form.deliveryFeeCurrency || BASE_CURRENCY.code,
+            }
+          : {}),
         items: this.lines().map((line) => ({
           ...(line.productId ? { productId: line.productId } : {}),
           ...(line.menuId ? { menuId: line.menuId } : {}),

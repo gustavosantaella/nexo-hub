@@ -5,6 +5,7 @@ import { provideRouter } from '@angular/router';
 import { environment } from '../../../environments/environment';
 import type { PaginationMeta, ProductOption } from '../../core/models/api.model';
 import type { Order, OrderItem } from '../../core/models/operations.model';
+import type { RatesSnapshot } from '../../core/models/rates.model';
 import { PreferencesService } from '../../core/services/preferences.service';
 import { RatesService } from '../../core/services/rates.service';
 import { ConfirmService } from '../../shared/services/confirm.service';
@@ -81,6 +82,7 @@ function order(partial: Partial<Order> = {}): Order {
     discount: 0,
     tax: 0,
     tip: 0,
+    deliveryFee: 0,
     total: 30,
     paidAmount: 0,
     createdAt: '2026-10-13T10:00:00.000Z',
@@ -88,6 +90,86 @@ function order(partial: Partial<Order> = {}): Order {
     ...partial,
   };
 }
+
+/**
+ * Tasas del sistema para el desglose de los dialogos: BCV dolar (900), BCV euro
+ * (1000) y la personalizada del local (950).
+ */
+const RATES_SNAPSHOT: RatesSnapshot = {
+  bcv: {
+    current: { date: '2026-10-13', usd: 900, eur: 1000 },
+    previous: { date: '2026-10-09', usd: 890, eur: 990 },
+    changePercentage: { usd: 1.12, eur: 1.01 },
+    fetchedAt: '2026-10-13T12:00:00.000Z',
+    expiresAt: '2026-10-13T12:15:00.000Z',
+    stale: false,
+    sourceUrl: 'https://rates.dolarvzla.com/bcv/current.json',
+  },
+  custom: { usd: 950, updatedAt: '2026-10-13T12:00:00.000Z', updatedBy: null },
+  rates: [
+    {
+      key: 'BCV_USD',
+      currency: 'USD',
+      source: 'BCV',
+      rate: 900,
+      date: '2026-10-13',
+      previousRate: 890,
+      changePercentage: 1.12,
+    },
+    {
+      key: 'BCV_EUR',
+      currency: 'EUR',
+      source: 'BCV',
+      rate: 1000,
+      date: '2026-10-13',
+      previousRate: 990,
+      changePercentage: 1.01,
+    },
+    {
+      key: 'CUSTOM_USD',
+      currency: 'USD',
+      source: 'CUSTOM',
+      rate: 950,
+      date: null,
+      previousRate: null,
+      changePercentage: null,
+    },
+  ],
+  activeKey: 'CUSTOM_USD',
+  currencies: [
+    {
+      code: 'USD',
+      label: 'Dólares',
+      symbol: '$',
+      enabled: true,
+      bsPerUnit: 950,
+      source: 'CUSTOM',
+      isBase: true,
+      isDisplayBase: true,
+      bsPerUsd: 950,
+    },
+    {
+      code: 'VES',
+      label: 'Bolívares',
+      symbol: 'Bs',
+      enabled: true,
+      bsPerUnit: 1,
+      source: 'BASE',
+      isBase: false,
+      isDisplayBase: false,
+      bsPerUsd: 950,
+    },
+  ],
+  baseCurrency: {
+    code: 'USD',
+    label: 'Dólares',
+    symbol: '$',
+    decimals: 2,
+    bsPerUnit: 950,
+    bsPerUsd: 950,
+  },
+  reference: null,
+};
 
 /** Pruebas del POS del cajero: productos del inventario, stock y cobro inmediato. */
 describe('OrdersPage (formulario del cajero)', () => {
@@ -292,6 +374,30 @@ describe('OrdersPage (formulario del cajero)', () => {
     expect(page.subtotal).toBe(26);
   });
 
+  /**
+   * En el pedido la caja entra como sus unidades sueltas, asi que se cobra al
+   * precio unitario del catalogo: el boton «Caja» de la grilla muestra lo mismo
+   * que suma (`boxCharge`), aunque la unidad suelta sea mas cara que la caja.
+   */
+  it('cobra la unidad suelta y la caja completa al precio unitario del catalogo', () => {
+    const { fixture, page } = mount();
+    openCreate(fixture, page);
+    const malta: ProductOption = { ...PRODUCTS[4], price: 72, unitPrice: 3.5 };
+
+    page.addProduct(malta);
+
+    expect(page.lines()[0].unitPrice).toBe(3.5);
+    expect(page.subtotal).toBe(3.5);
+    // Una caja completa son 24 unidades al unitario: $ 84 (lo que promete el boton).
+    expect(page.boxCharge(malta)).toBe(84);
+
+    page.addBox(malta);
+
+    expect(page.lines().length).toBe(1);
+    expect(page.lines()[0].quantity).toBe(25);
+    expect(page.subtotal).toBe(87.5);
+  });
+
   it('no permite agregar una caja completa cuando no alcanza el stock en unidades', () => {
     const { fixture, page } = mount();
     openCreate(fixture, page);
@@ -371,6 +477,98 @@ describe('OrdersPage (formulario del cajero)', () => {
     payRequest.flush(order({ tip: 3, total: 33, paymentStatus: 'PAID', status: 'COMPLETED' }));
 
     flushReload();
+  });
+
+  it('suma el delivery al total de un pedido a domicilio y lo envía al crear la venta', () => {
+    const { fixture, page } = mount();
+    openCreate(fixture, page);
+    // Tasas cargadas: el desglose muestra el monto en cada tasa del sistema.
+    rates.load();
+    http.expectOne(`${API}/rates`).flush(RATES_SNAPSHOT);
+    fixture.detectChanges();
+
+    page.addProduct(PRODUCTS[0]);
+    page.setTipRate(0);
+
+    // En un pedido de mostrador el costo de delivery no aplica aunque se escriba.
+    page.form.deliveryFee = 5;
+    expect(page.isDeliveryOrder).toBeFalse();
+    expect(page.deliveryFeeAmount).toBe(0);
+    expect(page.total).toBe(30);
+
+    page.form.type = 'DELIVERY';
+    fixture.detectChanges();
+
+    // 30 de la venta + 5 de delivery: el costo no paga IGV ni genera propina.
+    expect(page.isDeliveryOrder).toBeTrue();
+    expect(page.deliveryFeeAmount).toBe(5);
+    expect(page.total).toBe(35);
+
+    const text = (fixture.nativeElement.textContent as string).replace(/\s+/g, ' ');
+    expect(text).toContain('Costo de delivery');
+    for (const label of ['BCV $', 'BCV €', 'Personalizada']) {
+      expect(text).toContain(label);
+    }
+
+    page.submitCreate();
+
+    const createRequest = http.expectOne(
+      (request) => request.method === 'POST' && request.url === `${API}/orders`,
+    );
+    expect(createRequest.request.body.type).toBe('DELIVERY');
+    expect(createRequest.request.body.deliveryFee).toBe(5);
+    expect(createRequest.request.body.deliveryFeeCurrency).toBe('USD');
+
+    createRequest.flush(order({ type: 'DELIVERY', deliveryFee: 5, total: 35 }));
+
+    const payRequest = http.expectOne(`${API}/orders/o1/payments`);
+    expect(payRequest.request.body.amount).toBe(35);
+    payRequest.flush(
+      order({ type: 'DELIVERY', deliveryFee: 5, total: 35, paymentStatus: 'PAID' }),
+    );
+
+    flushReload();
+  });
+
+  it('no adjunta el costo de delivery en pedidos que no son a domicilio', () => {
+    const { fixture, page } = mount();
+    openCreate(fixture, page);
+
+    page.addProduct(PRODUCTS[0]);
+    page.setTipRate(0);
+    // Costo escrito a mano, pero el pedido se sirve en el salón: no viaja.
+    page.form.deliveryFee = 5;
+    page.submitCreate();
+
+    const createRequest = http.expectOne(
+      (request) => request.method === 'POST' && request.url === `${API}/orders`,
+    );
+    expect(createRequest.request.body.deliveryFee).toBeUndefined();
+    expect(createRequest.request.body.deliveryFeeCurrency).toBeUndefined();
+
+    createRequest.flush(order({ total: 30 }));
+
+    const payRequest = http.expectOne(`${API}/orders/o1/payments`);
+    expect(payRequest.request.body.amount).toBe(30);
+    payRequest.flush(order({ total: 30, paymentStatus: 'PAID' }));
+
+    flushReload();
+  });
+
+  it('muestra el desglose de las 3 tasas en el cobro y conserva el delivery del pedido', () => {
+    const { fixture, page } = mount();
+    rates.load();
+    http.expectOne(`${API}/rates`).flush(RATES_SNAPSHOT);
+
+    page.openPay(order({ type: 'DELIVERY', deliveryFee: 5, total: 35 }));
+    fixture.detectChanges();
+
+    const text = (fixture.nativeElement.textContent as string).replace(/\s+/g, ' ');
+    expect(text).toContain('Delivery (incluido)');
+    // El monto a cobrar se muestra en cada tasa del sistema.
+    for (const label of ['BCV $', 'BCV €', 'Personalizada']) {
+      expect(text).toContain(label);
+    }
   });
 
   it('crea el pedido y registra el cobro en una sola acción', () => {

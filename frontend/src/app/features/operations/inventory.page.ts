@@ -12,10 +12,31 @@ import {
   STOCK_MOVEMENT_LABELS,
   STOCK_MOVEMENT_OPTIONS,
 } from '../../core/constants/domain';
+import { BASE_CURRENCY_CODE } from '../../core/constants/currency';
 import { AuthService } from '../../core/services/auth.service';
 import { InventoryService } from '../../core/services/inventory.service';
 import { ToastService } from '../../core/services/toast.service';
-import { apiErrorMessage, dateTime, number, quantity } from '../../core/utils/format';
+import {
+  apiErrorMessage,
+  dateTime,
+  money,
+  moneyLoaded,
+  number,
+  quantity,
+} from '../../core/utils/format';
+import {
+  InputUnit,
+  inputQuantity,
+  inputUnits,
+  isBoxPack,
+  normalizeUnit,
+  packDetail,
+  packText,
+  stockQuantity,
+  stockUnitLabel,
+} from '../../core/utils/pack-unit';
+import { boxUnitsOf, loadedUnitPrice, unitPriceOf } from '../../core/utils/product-pricing';
+import { CurrencyAmountInputComponent } from '../../shared/components/currency-amount-input.component';
 import { EmptyStateComponent, LoaderComponent } from '../../shared/components/feedback.component';
 import { IconComponent } from '../../shared/components/icon.component';
 import { ModalComponent } from '../../shared/components/modal.component';
@@ -33,6 +54,32 @@ const EMPTY_META: PaginationMeta = {
   hasPreviousPage: false,
 };
 
+/** Formulario del movimiento de inventario. */
+interface MovementForm {
+  productId: string;
+  type: StockMovementType;
+  /** Cantidad tal como se escribe, en `inputUnit`. */
+  quantity: number;
+  /** Unidad con la que se piensa el movimiento (cajas, unidades, kg, g...). */
+  inputUnit: string;
+  unitCost: number;
+  /** Moneda en la que se escribio el costo unitario. */
+  unitCostCurrency: string;
+  /** Precio de venta de la unidad suelta (0 = no se cambia). */
+  unitPrice: number;
+  /** Moneda en la que se escribio el precio unitario. */
+  unitPriceCurrency: string;
+  reason: string;
+}
+
+/** Formulario del ajuste de stock (conteo fisico). */
+interface AdjustForm {
+  /** Stock final tal como se conto, en `inputUnit`. */
+  newStock: number;
+  inputUnit: string;
+  reason: string;
+}
+
 /** Pagina de inventario: niveles de stock y movimientos. */
 @Component({
   selector: 'app-inventory',
@@ -44,6 +91,7 @@ const EMPTY_META: PaginationMeta = {
     PaginationComponent,
     ModalComponent,
     MoneyComponent,
+    CurrencyAmountInputComponent,
     StatCardComponent,
     EmptyStateComponent,
     LoaderComponent,
@@ -151,10 +199,32 @@ const EMPTY_META: PaginationMeta = {
                           <span class="badge bg-rose-100 text-rose-700">Bajo mínimo</span>
                         }
                       </div>
+                      @if (isBoxPack(item)) {
+                        <span class="block text-[11px] text-slate-400">{{ stockLabel(item) }}</span>
+                      }
                     </td>
                     <td class="text-right">{{ quantity(item.minStock) }}</td>
-                    <td class="text-right"><app-money [amount]="item.cost" alignEnd="true" /></td>
-                    <td class="text-right"><app-money [amount]="item.price" alignEnd="true" /></td>
+                    <td class="text-right">
+                      <app-money
+                        [amount]="item.cost"
+                        alignEnd="true"
+                        [entered]="item.costEntered"
+                        [currency]="item.costCurrency"
+                        [rateKey]="item.costRateKey"
+                      />
+                    </td>
+                    <td class="text-right">
+                      <app-money
+                        [amount]="item.price"
+                        alignEnd="true"
+                        [entered]="item.priceEntered"
+                        [currency]="item.priceCurrency"
+                        [rateKey]="item.priceRateKey"
+                      />
+                      @if (unitPriceLabel(item); as loose) {
+                        <span class="block text-[11px] text-slate-400">{{ loose }}</span>
+                      }
+                    </td>
                     <td class="text-right font-medium"><app-money [amount]="item.stockValue" alignEnd="true" /></td>
                     <td class="text-right">
                       <div class="flex justify-end gap-1">
@@ -247,7 +317,12 @@ const EMPTY_META: PaginationMeta = {
                         <span class="badge bg-sky-100 text-sky-700">Ajuste</span>
                       }
                     </td>
-                    <td class="text-right">{{ number(movement.quantity) }}</td>
+                    <td class="text-right">
+                      {{ number(movement.quantity) }}
+                      @if (movementInputLabel(movement); as input) {
+                        <span class="block text-[11px] text-slate-400">{{ input }}</span>
+                      }
+                    </td>
                     <td class="text-center text-slate-500">
                       {{ number(movement.stockBefore) }} → {{ number(movement.stockAfter) }}
                     </td>
@@ -278,8 +353,8 @@ const EMPTY_META: PaginationMeta = {
       <div class="space-y-3">
         <div>
           <label class="label">Producto</label>
-          <select class="input" [(ngModel)]="movForm.productId">
-            <option value="">Selecciona un producto…</option>
+          <select class="input" [(ngModel)]="movForm.productId" (ngModelChange)="onProductChange($event)">
+            <option value="">Selecciona un producto</option>
             @for (item of stockItems(); track item.id) {
               <option [value]="item.id">
                 {{ item.name }} · stock {{ quantity(item.stock) }}
@@ -297,13 +372,62 @@ const EMPTY_META: PaginationMeta = {
         </div>
         <div>
           <label class="label">{{ quantityLabel }}</label>
-          <input type="number" class="input" min="0" step="0.001" [(ngModel)]="movForm.quantity" />
+          <div class="flex gap-2">
+            <input
+              type="number"
+              class="input"
+              min="0"
+              step="0.001"
+              [(ngModel)]="movForm.quantity"
+            />
+            @if (movementUnits.length > 1) {
+              <select
+                class="input w-40 shrink-0"
+                [(ngModel)]="movForm.inputUnit"
+                (ngModelChange)="onUnitChange($event)"
+              >
+                @for (option of movementUnits; track option.value) {
+                  <option [value]="option.value">{{ option.label }}</option>
+                }
+              </select>
+            }
+          </div>
+          @if (movementPreview; as preview) {
+            <p class="mt-1 rounded-lg bg-slate-50 px-2 py-1 text-xs text-slate-600">
+              {{ preview.text }}
+            </p>
+          }
+          @for (alert of movementAlerts; track alert) {
+            <p class="mt-1 flex items-center gap-1 text-xs text-rose-600">
+              <app-icon name="alert" size="h-3.5 w-3.5" />
+              {{ alert }}
+            </p>
+          }
         </div>
         @if (showUnitCost) {
-          <div>
-            <label class="label">Costo unitario</label>
-            <input type="number" class="input" min="0" [(ngModel)]="movForm.unitCost" />
-          </div>
+          <app-currency-amount-input
+            id="mov-unit-cost"
+            label="Costo unitario (de la unidad que moviste)"
+            [amount]="movForm.unitCost"
+            [currency]="movForm.unitCostCurrency"
+            hint="Se usa para valorizar el ingreso y actualizar el costo del producto."
+            (amountChange)="movForm.unitCost = $event"
+            (currencyChange)="movForm.unitCostCurrency = $event"
+          />
+        }
+        @if (showUnitPrice) {
+          <app-currency-amount-input
+            id="mov-unit-price"
+            label="Precio de venta unitario (por unidad suelta)"
+            [amount]="movForm.unitPrice"
+            [currency]="movForm.unitPriceCurrency"
+            hint="Ajusta a cómo se vende una unidad suelta al abrir la presentación. Déjalo en 0 para no cambiarlo."
+            (amountChange)="movForm.unitPrice = $event"
+            (currencyChange)="movForm.unitPriceCurrency = $event"
+          />
+          @if (unitPriceReference; as reference) {
+            <p class="mt-1 text-[11px] text-slate-400">{{ reference }}</p>
+          }
         }
         <div>
           <label class="label">Motivo</label>
@@ -334,7 +458,25 @@ const EMPTY_META: PaginationMeta = {
           </div>
           <div>
             <label class="label">Stock final</label>
-            <input type="number" class="input" min="0" step="0.001" [(ngModel)]="adjForm.newStock" />
+            <div class="flex gap-2">
+              <input type="number" class="input" min="0" step="0.001" [(ngModel)]="adjForm.newStock" />
+              @if (adjustUnits.length > 1) {
+                <select
+                  class="input w-40 shrink-0"
+                  [(ngModel)]="adjForm.inputUnit"
+                  (ngModelChange)="onAdjustUnitChange($event)"
+                >
+                  @for (option of adjustUnits; track option.value) {
+                    <option [value]="option.value">{{ option.label }}</option>
+                  }
+                </select>
+              }
+            </div>
+            @if (adjustPreview; as preview) {
+              <p class="mt-1 rounded-lg bg-slate-50 px-2 py-1 text-xs text-slate-600">
+                {{ preview.text }}
+              </p>
+            }
           </div>
           <div>
             <label class="label">Motivo</label>
@@ -364,6 +506,8 @@ export class InventoryPage implements OnInit {
   readonly movementOptions = STOCK_MOVEMENT_OPTIONS;
   readonly movementLabels = STOCK_MOVEMENT_LABELS;
   readonly unitLabels = PRODUCT_UNIT_LABELS;
+  /** `true` cuando el producto se maneja por presentacion (cajas/paquetes). */
+  readonly isBoxPack = isBoxPack;
 
   readonly tab = signal<'stock' | 'movements'>('stock');
   readonly activeTabClass = 'border-b-2 border-brand-600 text-brand-700';
@@ -385,18 +529,22 @@ export class InventoryPage implements OnInit {
 
   readonly movOpen = signal(false);
   readonly movSaving = signal(false);
-  movForm = {
+  movForm: MovementForm = {
     productId: '',
     type: 'IN' as StockMovementType,
     quantity: 1,
+    inputUnit: '',
     unitCost: 0,
+    unitCostCurrency: BASE_CURRENCY_CODE,
+    unitPrice: 0,
+    unitPriceCurrency: BASE_CURRENCY_CODE,
     reason: '',
   };
 
   readonly adjOpen = signal(false);
   readonly adjSaving = signal(false);
   readonly adjProduct = signal<StockLevel | null>(null);
-  adjForm = { newStock: 0, reason: '' };
+  adjForm: AdjustForm = { newStock: 0, inputUnit: '', reason: '' };
 
   readonly movItems = signal<StockMovement[]>([]);
   readonly movMeta = signal<PaginationMeta>(EMPTY_META);
@@ -431,6 +579,159 @@ export class InventoryPage implements OnInit {
     this.loadStock();
   }
 
+  // ======================== Unidades del movimiento ========================
+  /** Producto elegido en el formulario de movimiento. */
+  get selectedProduct(): StockLevel | undefined {
+    return this.stockItems().find((item) => item.id === this.movForm.productId);
+  }
+
+  /** Unidades con las que se puede escribir el movimiento (cajas, g, ml...). */
+  get movementUnits(): InputUnit[] {
+    const product = this.selectedProduct;
+    return product ? inputUnits(product) : [];
+  }
+
+  /** Unidades con las que se puede contar el stock final del ajuste. */
+  get adjustUnits(): InputUnit[] {
+    const product = this.adjProduct();
+    return product ? inputUnits(product) : [];
+  }
+
+  /** Cantidad del movimiento convertida a la unidad de stock. */
+  private movementStockQuantity(product: StockLevel): number {
+    return stockQuantity(this.movForm.quantity, this.movForm.inputUnit, product);
+  }
+
+  /** Como queda el stock tras el movimiento, en el idioma del negocio. */
+  get movementPreview(): { text: string } | null {
+    const product = this.selectedProduct;
+    if (!product) return null;
+    const quantity = this.movementStockQuantity(product);
+    if (!quantity) return null;
+    const after =
+      this.movForm.type === 'IN'
+        ? product.stock + quantity
+        : this.movForm.type === 'OUT'
+          ? product.stock - quantity
+          : quantity;
+    const detail = packDetail(after, product);
+    return {
+      text: `Quedará ${packText(after, product)}${detail ? ` · ${detail}` : ''}`,
+    };
+  }
+
+  /** Avisos del movimiento: stock insuficiente y aviso de reposición. */
+  get movementAlerts(): string[] {
+    const product = this.selectedProduct;
+    if (!product) return [];
+    const quantity = this.movementStockQuantity(product);
+    const alerts: string[] = [];
+
+    if (this.movForm.type === 'OUT' && quantity > product.stock) {
+      alerts.push(
+        `Stock insuficiente: solo hay ${packText(product.stock, product)}.`,
+      );
+    }
+
+    const after =
+      this.movForm.type === 'IN'
+        ? product.stock + quantity
+        : this.movForm.type === 'OUT'
+          ? product.stock - quantity
+          : quantity;
+    if (quantity > 0 && after > 0 && after <= product.minStock) {
+      alerts.push(
+        `Quedará bajo el mínimo (${packText(product.minStock, product)}).`,
+      );
+    }
+    return alerts;
+  }
+
+  /** Resumen del stock final del ajuste. */
+  get adjustPreview(): { text: string } | null {
+    const product = this.adjProduct();
+    if (!product) return null;
+    const target = stockQuantity(
+      this.adjForm.newStock,
+      this.adjForm.inputUnit,
+      product,
+    );
+    const detail = packDetail(target, product);
+    return {
+      text: `Quedará ${packText(target, product)}${detail ? ` · ${detail}` : ''}`,
+    };
+  }
+
+  /** Existencias descritas en el idioma del negocio ("3 cajas + 5 unidades"). */
+  stockLabel(item: StockLevel): string {
+    return packText(item.stock, item);
+  }
+
+  /**
+   * A cuanto se cobra la unidad suelta de una presentacion ("Bs 350,00 por
+   * unidad suelta"). `null` en los productos que se venden enteros (precio
+   * unico).
+   *
+   * Se imprime el monto que se cargo a mano cuando la moneda de visualizacion es
+   * la misma en la que se escribio; asi no aparece el equivalente en USD
+   * redondeado a centavos (Bs 349,20 en lugar de los Bs 350,00 cargados).
+   */
+  unitPriceLabel(item: StockLevel): string | null {
+    if (boxUnitsOf(item) <= 1) return null;
+    const loaded = loadedUnitPrice(item);
+    const text =
+      moneyLoaded(loaded?.amount, loaded?.currency) ??
+      money(unitPriceOf(item));
+    return `${text} por unidad suelta`;
+  }
+
+  /**
+   * Como se escribio el movimiento cuando no fue en la unidad de stock
+   * (ej. "= 2 cajas", "= 750 gramos (g)").
+   */
+  movementInputLabel(movement: StockMovement): string | null {
+    const pack = {
+      unit: movement.product?.unit ?? 'UND',
+      unitsPerBox: movement.product?.unitsPerBox,
+    };
+    if (!movement.inputUnit || movement.inputUnit === stockUnitLabel(pack)) {
+      return null;
+    }
+    const option = inputUnits(pack).find(
+      (item) => item.value === movement.inputUnit,
+    );
+    if (!option || movement.inputQuantity == null) return null;
+    return `= ${quantity(movement.inputQuantity)} ${option.label}`;
+  }
+
+  /** Unidad por defecto del producto (su presentacion: cajas, kg o unidades). */
+  private defaultUnit(product: StockLevel): string {
+    const options = inputUnits(product);
+    const declared = normalizeUnit(product.unit);
+    return options.some((option) => option.value === declared)
+      ? declared
+      : (options[0]?.value ?? '');
+  }
+
+  onProductChange(productId: string): void {
+    this.movForm.productId = productId;
+    this.movForm.quantity = 1;
+    const product = this.selectedProduct;
+    this.movForm.inputUnit = product ? this.defaultUnit(product) : '';
+    // El precio unitario se fija por producto: no se arrastra al cambiar de uno
+    // a otro (0 = "no lo cambies").
+    this.movForm.unitPrice = 0;
+    this.movForm.unitPriceCurrency = BASE_CURRENCY_CODE;
+  }
+
+  onUnitChange(unit: string): void {
+    this.movForm.inputUnit = unit;
+  }
+
+  onAdjustUnitChange(unit: string): void {
+    this.adjForm.inputUnit = unit;
+  }
+
   get quantityLabel(): string {
     return this.movForm.type === 'ADJUSTMENT' ? 'Stock final' : 'Cantidad';
   }
@@ -439,12 +740,48 @@ export class InventoryPage implements OnInit {
     return this.movForm.type === 'IN';
   }
 
+  /** `true` cuando la entrada puede ajustar el precio de la unidad suelta. */
+  get showUnitPrice(): boolean {
+    return this.movForm.type === 'IN' && this.movPresentation != null;
+  }
+
+  /**
+   * Producto de presentacion (caja/paquete con varias unidades) del movimiento en
+   * curso: es el unico caso en el que la unidad suelta tiene precio propio.
+   */
+  private get movPresentation(): StockLevel | null {
+    const product = this.selectedProduct;
+    if (!product || boxUnitsOf(product) <= 1) return null;
+    return product;
+  }
+
+  /** Como se cobra hoy la unidad suelta del producto del movimiento. */
+  get unitPriceReference(): string | null {
+    const product = this.movPresentation;
+    if (!product) return null;
+    const units = boxUnitsOf(product);
+    const loose = loadedUnitPrice(product);
+    const looseText =
+      moneyLoaded(loose?.amount, loose?.currency) ?? money(unitPriceOf(product));
+    const packPrice =
+      moneyLoaded(product.priceEntered, product.priceCurrency) ??
+      money(product.price);
+    return (
+      `Actual: ${looseText} por unidad suelta` +
+      ` · la presentación (${units} ${units === 1 ? 'unidad' : 'unidades'}) se cobra en el catálogo a ${packPrice}`
+    );
+  }
+
   openMovement(product?: StockLevel): void {
     this.movForm = {
       productId: product?.id ?? '',
       type: 'IN',
       quantity: 1,
+      inputUnit: product ? this.defaultUnit(product) : '',
       unitCost: 0,
+      unitCostCurrency: BASE_CURRENCY_CODE,
+      unitPrice: 0,
+      unitPriceCurrency: BASE_CURRENCY_CODE,
       reason: '',
     };
     this.movOpen.set(true);
@@ -456,19 +793,31 @@ export class InventoryPage implements OnInit {
 
   submitMovement(): void {
     if (this.movSaving()) return;
-    if (!this.movForm.productId) {
+    const product = this.selectedProduct;
+    if (!product) {
       this.toast.error('Selecciona un producto');
       return;
     }
+    const inputQuantity = Number(this.movForm.quantity) || 0;
     this.movSaving.set(true);
+    // La cantidad viaja tal como se escribio, con su unidad (`inputUnit`): el
+    // backend la convierte a la unidad de stock del producto.
     const payload: MovementPayload = {
       productId: this.movForm.productId,
       type: this.movForm.type,
-      quantity: Number(this.movForm.quantity) || 0,
+      inputUnit: this.movForm.inputUnit || undefined,
+      inputQuantity,
       reason: this.movForm.reason || undefined,
     };
     if (this.movForm.type === 'IN') {
       payload.unitCost = Number(this.movForm.unitCost) || undefined;
+      payload.unitCostCurrency = this.movForm.unitCostCurrency || undefined;
+      // El precio unitario viaja solo si el operador lo fijo: 0 = no se toca.
+      const unitPrice = Number(this.movForm.unitPrice) || 0;
+      if (this.showUnitPrice && unitPrice > 0) {
+        payload.unitPrice = unitPrice;
+        payload.unitPriceCurrency = this.movForm.unitPriceCurrency || undefined;
+      }
     }
     this.inventory.createMovement(payload).subscribe({
       next: (result) => {
@@ -488,7 +837,13 @@ export class InventoryPage implements OnInit {
   // ======================== Ajuste ========================
   openAdjust(product: StockLevel): void {
     this.adjProduct.set(product);
-    this.adjForm = { newStock: product.stock, reason: '' };
+    // Se abre en la unidad del producto y con el stock actual en esa unidad.
+    const unit = this.defaultUnit(product);
+    this.adjForm = {
+      newStock: inputQuantity(product.stock, unit, product),
+      inputUnit: unit,
+      reason: '',
+    };
     this.adjOpen.set(true);
   }
 
@@ -506,8 +861,14 @@ export class InventoryPage implements OnInit {
       return;
     }
     this.adjSaving.set(true);
+    // El conteo viaja en la unidad en la que se conto: el backend lo convierte.
     this.inventory
-      .adjust(product.id, { newStock, reason: this.adjForm.reason || undefined })
+      .adjust(product.id, {
+        newStock,
+        inputUnit: this.adjForm.inputUnit || undefined,
+        inputQuantity: newStock,
+        reason: this.adjForm.reason || undefined,
+      })
       .subscribe({
         next: (result) => {
           this.adjSaving.set(false);

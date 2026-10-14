@@ -64,9 +64,15 @@ recrea y la vuelve a sembrar (los datos de demo se regeneran siempre).
 El seed deja la base lista para probar **todo** el sistema:
 
 - **Maestros** (se actualizan con `upsert`, nunca se duplican): 4 usuarios, 7
-  categorías, 5 proveedores, 8 clientes, 24 productos, **3 categorías de menú y 5
-  menús con su receta** (recetas sobre los productos del catálogo, con un
-  ingrediente fraccionario: medio litro de jugo), la configuración de
+  categorías de productos (**con subcategorías**: *Refrescos* y *Cervezas* dentro
+  de *Bebidas*, con productos agrupados en ellas), 5 proveedores, 8 clientes, 24
+  productos (**uno por caja de 24**, con
+  su costo unitario y el precio de venta suelto repartido del de la caja, y otro
+  con el precio/costo cargados **en bolívares**),
+  **4 categorías de menú (una de ellas subcategoría de *Almuerzos*) y 5 menús con su
+  receta** (recetas sobre los productos del
+  catálogo, con un ingrediente fraccionario: medio litro de jugo, y un menú con el
+  precio de la carta en Bs), la configuración de
   monedas (`USD`, `VES`, `EUR`, `COP` activas y `PEN` desactivada) y la **tasa
   personalizada** del dólar.
 - **Dos empresas** (`Nexo Hub Demo, C.A.` y `Bodegon La Esquina, C.A.`): la
@@ -95,6 +101,27 @@ Para partir de cero: `npm run db:reset` (borra la base, la recrea y siembra).
 
 ### Reglas de negocio destacadas
 
+- **Categorías y subcategorías (opcionales)**: las categorías de **productos**
+  (`/panel/categorias`) y las de **menú** (pestaña *Categorías* de `/panel/menus`)
+  admiten **un nivel de subcategorías** (`parentId`). Una categoría es *principal*
+  cuando no tiene padre y *subcategoría* cuando lo tiene; **ni la categoría ni el
+  producto/menú están obligados a usar subcategorías** (agrupar en la principal es
+  igual de válido). Reglas de la jerarquía: el padre debe existir en la empresa y
+  ser principal, una categoría no puede ser su propia principal y una categoría
+  con subcategorías **no puede convertirse en subcategoría** de otra (primero hay
+  que mover o eliminar las suyas). El nombre sigue siendo único por empresa, así
+  que no hay dos categorías con el mismo nombre. Al eliminar una principal sus
+  subcategorías **no se borran**: pasan a ser principales (`SetNull`, igual que
+  los productos o menús asociados, que quedan sin categoría).
+  `GET /categories` y `GET /menu-categories` aceptan `parentId` para listar las
+  subcategorías de una principal, y sus listados devuelven `parent` (la principal)
+  y `_count.subcategories`; `GET .../options` devuelve las opciones ya ordenadas
+  (cada principal con sus subcategorías justo debajo). En las pantallas, la tabla
+  muestra la columna *Principal* y, si una categoría tiene hijas, su conteo es un
+  botón para ver solo sus subcategorías (acción rápida **+** para crear una
+  nueva); los selectores de categoría de productos, menús y POS pintan las
+  subcategorías indentadas (`— Refrescos`) y **filtrar por una principal incluye
+  sus subcategorías**.
 - **Caja**: una sola sesión `OPEN` a la vez; movimientos *append-only*;
   `esperado = fondo + efectivo IN − efectivo OUT`; cierre con arqueo
   (`countedAmount` vs `expectedAmount` → `difference`) y guardado contra dobles cierres.
@@ -114,6 +141,11 @@ Para partir de cero: `npm run db:reset` (borra la base, la recrea y siembra).
   (`DELETE /orders/:id/items/:itemId`): en ambos casos el stock se ajusta por la diferencia
   (o se devuelve completo) y los totales se recalculan; el pedido debe conservar al menos
   una línea y el nuevo total no puede quedar por debajo de lo ya pagado.
+  Los pedidos **a domicilio** admiten un **costo de delivery** opcional: se escribe en
+  dólares (con el desglose del monto en cada tasa del sistema) y, igual que la propina,
+  **no paga IGV**: se suma al final del total. El pedido guarda además el contexto del
+  monto (`deliveryFeeEntered`, `deliveryFeeCurrency`, `deliveryFeeRate`, `deliveryFeeRateKey`)
+  y el costo se conserva al agregar productos, corregir cantidades o cobrar saldos.
   Todo cobro (incluso con tarjeta) requiere una caja abierta.
 - **Menús (platos y combos)**: además de los productos sueltos, el local vende
   **menús**: un plato o combo (`nombre`, `precio`, categoría propia de menús,
@@ -125,24 +157,41 @@ Para partir de cero: `npm run db:reset` (borra la base, la recrea y siembra).
   *Acompañamiento*). El sistema **costea la receta solo** (`Σ costo × cantidad`),
   muestra el **margen** y calcula la **disponibilidad**: `maxServings =`
   mínimo de `stock / cantidad` entre los ingredientes con control de inventario
-  (`Ilimitado` si ninguno lo lleva, `Agotado` si el stock no alcanza).
+  (`Ilimitado` si ninguno lo lleva, `Agotado` si el stock no alcanza). Un menú con
+  un ingrediente **desactivado** (producto retirado del catálogo *después* de
+  armarle la receta) queda `available: false` aunque el stock alcance: el listado
+  lo marca con la etiqueta *Ingrediente inactivo*, el POS/Pedidos lo rotulan
+  (*Inactivo*) explicando el motivo (`inactiveIngredients`) y el backend rechaza
+  la venta hasta corregir la receta.
   `POST /menus` valida que todos los productos existan y estén activos en la
   empresa, que no se repitan y que la cantidad sea mayor a 0; el código (`MEN-…`)
   se genera solo si no se envía y es único por empresa; el borrado es **baja
   lógica** (los pedidos referencian los menús vendidos).
-  Se administra en `/panel/menus` (pestañas **Menús** y **Categorías**) y se
+  Se administra en `/panel/menus` (pestañas **Menús** y **Categorías**, estas
+  últimas con subcategorías opcionales) y se
   ofrece en el **POS** (pestaña *Menús* de la grilla, que es la vista del cajero
   en `/panel/caja`) y en **Pedidos** (buscador y carrito con pestañas
   *Productos* | *Menús*). En la línea del pedido el menú viaja como `menuId`
   (una línea vende un producto **o** un menú, nunca ambos) y al guardar el
   backend **expande la receta** y descuenta el inventario de cada ingrediente
-  (una salida por producto, agregando las cantidades repetidas); al corregir la
-  cantidad, quitar la línea o cancelar el pedido, el stock se devuelve en la
-  misma proporción. Los productos sin control de inventario no generan
-  movimiento; los menús sin receta no se pueden vender y se cobran a su precio.
+  (una salida por producto, agregando las cantidades repetidas). La receta de cada
+  línea queda **congelada** al vender (`OrderItem.consumption`, un JSON con
+  `[{ productId, quantity }]` por unidad): al corregir la cantidad, quitar la
+  línea o cancelar el pedido se devuelve **exactamente** lo descontado, aunque el
+  menú se haya editado después (si el menú ya estaba en el pedido y se agrega más
+  cantidad, el consumo se pondera por unidades: `(2 × 0.1 + 3 × 0.2) / 5 = 0.16`,
+  `common/utils/consumption.util.ts`); las líneas viejas sin snapshot siguen
+  resolviéndose con la receta vigente. Los productos sin control de inventario no
+  generan movimiento; los menús sin receta no se pueden vender y se cobran a su
+  precio.
   En los reportes, la venta de un menú se atribuye **al menú** (no reparte el
   importe entre sus ingredientes): el menú aparece en *más vendidos* con su costo
   de receta y en *ventas por categoría* con su categoría de menú.
+- **Baja lógica de productos**: `DELETE /products/:id` **desactiva** (no borra: los
+  pedidos y las recetas lo referencian) y responde además `affectedMenus` con los
+  menús **activos** que lo usan como ingrediente; `/panel/productos` avisa con el
+  toast *Revisa las recetas*. El producto no se quita de las recetas existentes:
+  esos menús quedan bloqueados (ver *Menús*) hasta reemplazarlo en la receta.
 - **Cuentas por cobrar/pagar**: el estado se deriva de `amount`/`paidAmount`;
   el saldo nunca es negativo; sobregiros rechazados; `CANCELLED` es un estado explícito.
 - **Inventario**: motor único de stock con trazabilidad (`stockBefore`/`stockAfter`),
@@ -151,6 +200,18 @@ Para partir de cero: `npm run db:reset` (borra la base, la recrea y siembra).
   100 g de un producto medido en kilos): las recetas de los menús consumen
   fracciones, así que el motor de inventario es el único que normaliza el
   redondeo (`common/utils/quantity.util.ts`).
+- **Unidades del inventario (cajas, kilos y botellas)**: el stock vive en la unidad
+  base del producto (unidad suelta, kg, L), pero el movimiento se escribe **como lo
+  piensa el negocio**: en los productos por presentación se elige *cajas* o
+  *unidades sueltas* (`2 cajas` de 24 = 48 unidades), en los medidos en kg/L se
+  elige *kg* o *gramos* (*L* o *ml*). El formulario manda `inputUnit` +
+  `inputQuantity` y el **backend hace la conversión** (misma que el POS al vender
+  suelto) antes de tocar el stock, guardando ambas columnas como trazabilidad
+  (`PATCH`/`ADJUSTMENT` incluidos). Mientras se escribe, la pantalla avisa *cuánto
+  queda* en el idioma del negocio (*"Quedará 2 cajas + 1 unidad · 49 UND"*),
+  advierte si la salida supera el stock y si el resultado queda **bajo el mínimo**.
+  Las utilidades (`common/utils/packaging.util.ts`) también alimentan los avisos de
+  stock crítico y la carga inicial del seed.
 - **Tasas de cambio**: las tasas oficiales se leen del BCV (publicadas por
   [dolarvzla](https://rates.dolarvzla.com/bcv/current.json)) y se cachean en el
   backend; el local puede además fijar una **tasa personalizada** (Bs por USD)
@@ -183,6 +244,59 @@ Para partir de cero: `npm run db:reset` (borra la base, la recrea y siembra).
 - **API de monedas**: `GET /api/currencies` (lista), `PUT /api/currencies`
   (reemplaza la configuración), `PUT|DELETE /api/currencies/:code` y
   `GET /api/stats/currencies` (cobros agrupados por moneda).
+- **Moneda de los precios del catálogo**: en los formularios de **productos**
+  (precio, costo y precio unitario de las presentaciones), de **menús** (precio de la carta) y de
+  **inventario** (costo unitario y precio unitario de la unidad suelta al registrar la entrada) se elige la **moneda en la que se
+  escribe el monto**; debajo, la pantalla muestra las **conversiones a las tasas
+  del sistema** (BCV dólar, BCV euro y la personalizada cuando existe): si se
+  escribe en USD se ve el equivalente en bolívares con cada tasa y si se escribe en
+  Bs se ve el equivalente en USD con cada una. `price`, `cost`, `unitPrice` y
+  `unitCost` se
+  siguen guardando **en USD** (moneda base contable, de donde salen el POS, los
+  totales y los reportes), y cada registro guarda además **con qué moneda se cargó**
+  (`*Currency`), **cuánto se escribió** (`*Entered`), **la tasa aplicada**
+  (`*Rate`) y **cuál de las tasas del sistema se eligió** (`*RateKey`:
+  `BCV_USD`, `BCV_EUR` o `CUSTOM_USD`), igual que los pagos: reabrir el formulario
+  recupera lo que se escribió y la lista muestra *"Cargado en Bs 3.944,07"* cuando
+  el precio no fue en dólares.
+  Cada monto tiene **su propio selector de moneda** y **su propio selector de
+  tasa** (`priceRateKey`, `costRateKey`, `unitPriceRateKey` y `unitCostRateKey` son
+  independientes
+  entre sí): elegir una moneda o una tasa en un campo **no cambia** la del otro, y
+  tampoco reinterpreta los montos ya escritos. Al escribir el monto en una moneda
+  distinta del dólar aparece el selector **Tasa** (BCV dólar, BCV euro y la
+  personalizada) con la conversión elegida resaltada debajo, y los
+  formularios de menús, caja e inventario —que no piden tasa— siguen convirtiendo
+  con la **tasa activa** del local; sin tasa elegida, o cuando la elegida ya no
+  existe (por ejemplo, se eliminó la personalizada), el sistema también cae en la
+  activa (`CUSTOM_USD` si existe, si no `BCV_USD`).
+- **Precio unitario de las presentaciones**: un producto por caja/paquete guarda el
+  precio de la presentación completa (`price`), el precio de venta de **una unidad
+  suelta** (`unitPrice`), el costo de la presentación (`cost`) y el de una unidad
+  suelta (`unitCost`, que el API reparte del costo de la presentación cuando no
+  llega). El formulario pide **cada monto por separado y nunca pisa lo que el
+  operador escribió**: escribir en uno no recalcula los otros ni les cambia la
+  moneda (la pantalla muestra la referencia del reparto —precio de la presentación
+  ÷ unidades— solo como ayuda de lectura). Con `unitPrice = 0` (sin definir) el POS
+  y los pedidos reparten `price / unitsPerBox`, así los productos anteriores a esta
+  columna se siguen vendiendo igual. El POS cobra la **caja completa** al precio del
+  catálogo y la **unidad suelta** al precio unitario; en los pedidos la caja entra
+  como sus unidades sueltas, de modo que el botón *Caja* de la grilla muestra el
+  monto que realmente suma (y con `unitCost` el ingreso de mercadería revaloriza el
+  producto con `unitario × unidades`). El **registro de movimientos** también ajusta
+  el precio unitario en las **entradas**: `POST /api/inventory/movements` acepta
+  `unitPrice` + `unitPriceCurrency` (misma conversión y mismo guardado por moneda y
+  tasa que el resto de los montos) y actualiza el producto con el valor en USD; va en
+  **0** u omitido para no cambiarlo, y las salidas y los ajustes lo ignoran (el precio
+  de la presentación se administra solo en el catálogo). El diálogo pide ese precio
+  únicamente en las entradas de productos con presentación y el listado de stock
+  (`GET /api/inventory/stock`) entrega `unitsPerBox` y `unitPrice` para que la vista
+  previa del movimiento cuente las cajas en unidades sueltas. El campo *Unidades por caja/paquete* solo aparece
+  cuando la unidad elegida es **Caja** o **Paquete** (un producto suelto, en kg o
+  en litros no tiene presentación): al cambiar a otra unidad el formulario
+  descarta las unidades por caja (`unitsPerBox = 1`) y deja de pedir el precio
+  unitario (vuelve a 0), así el producto vuelve a venderse suelto sin datos de caja
+  colgando.
 
 ## Multi-empresa (multi-tenant)
 
@@ -259,9 +373,9 @@ La URL base de la API se configura en `src/environments/environment.ts`.
 | `/panel` | Panel con KPIs, caja, cobros del día y stock crítico |
 | `/panel/pedidos` | Tablero operativo + historial, creación de pedidos (productos y menús), cobros, y agregar/corregir/quitar productos a un pedido en curso |
 | `/panel/caja` | Apertura/cierre con arqueo, movimientos e historial de sesiones; incluye el **POS** del cajero, con la grilla de productos y la carta de **menús** |
-| `/panel/inventario` | Niveles de stock, movimientos y ajustes |
-| `/panel/menus` | Menús (platos/combos) con su receta de ingredientes, costo, margen y disponibilidad, y sus categorías |
-| `/panel/productos`, `/panel/categorias`, `/panel/proveedores`, `/panel/clientes` | Catálogo |
+| `/panel/inventario` | Niveles de stock (con el desglose *"3 cajas + 5 unidades"*), movimientos en la unidad del negocio (cajas/unidades, kg/g, L/ml) y ajustes |
+| `/panel/menus` | Menús (platos/combos) con su receta de ingredientes, costo, margen y disponibilidad, y sus categorías (con subcategorías opcionales) |
+| `/panel/productos`, `/panel/categorias`, `/panel/proveedores`, `/panel/clientes` | Catálogo (los precios y costos se cargan en la moneda que se elija, con su conversión a las tasas del sistema); en `/panel/categorias` cada categoría puede tener subcategorías |
 | `/panel/gastos`, `/panel/cuentas-por-pagar`, `/panel/cuentas-por-cobrar` | Finanzas |
 | `/panel/reportes` | Series de ventas/gastos/utilidad, top productos, métodos de pago y cobros por moneda |
 | `/panel/configuracion` | Por pestañas: **Tasas** (tasas del BCV dólar/euro solo lectura, tasa USDT de referencia solo informativa, tasa personalizada, monedas aceptadas y vista previa), **Apariencia** (modo claro/oscuro y cómo se abren los formularios de caja y pedidos), **Empresa** (datos de la empresa activa y crear otras) y **Mis datos** (perfil y contraseña) |

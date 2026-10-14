@@ -19,10 +19,28 @@
  * `Prisma.dmmf` y los hooks de las extensiones).
  */
 export const MONEY_COLUMNS = {
-  Product: ['price', 'cost'],
-  StockMovement: ['unitCost'],
-  Menu: ['price', 'cost'],
-  Order: ['subtotal', 'discount', 'tax', 'tip', 'total', 'paidAmount'],
+  Product: [
+    'price',
+    'cost',
+    'priceEntered',
+    'costEntered',
+    'unitCost',
+    'unitCostEntered',
+    'unitPrice',
+    'unitPriceEntered',
+  ],
+  StockMovement: ['unitCost', 'unitCostEntered'],
+  Menu: ['price', 'cost', 'priceEntered'],
+  Order: [
+    'subtotal',
+    'discount',
+    'tax',
+    'tip',
+    'deliveryFee',
+    'deliveryFeeEntered',
+    'total',
+    'paidAmount',
+  ],
   OrderItem: ['unitPrice', 'total'],
   OrderPayment: ['amount', 'baseAmount'],
   Expense: ['amount', 'baseAmount'],
@@ -39,6 +57,10 @@ export const MONEY_COLUMNS = {
  * moneda). Una tasa no se redondea a centavos porque no es un monto.
  */
 export const RATE_COLUMNS = {
+  Product: ['priceRate', 'costRate', 'unitCostRate', 'unitPriceRate'],
+  StockMovement: ['unitCostRate'],
+  Menu: ['priceRate'],
+  Order: ['deliveryFeeRate'],
   OrderPayment: ['exchangeRate'],
   Expense: ['exchangeRate'],
   AccountPayable: ['exchangeRate'],
@@ -66,7 +88,7 @@ export const NON_MONEY_INT_COLUMNS = {
  */
 export const QUANTITY_COLUMNS = {
   Product: ['stock', 'minStock'],
-  StockMovement: ['quantity', 'stockBefore', 'stockAfter'],
+  StockMovement: ['quantity', 'stockBefore', 'stockAfter', 'inputQuantity'],
   MenuIngredient: ['quantity'],
 } as const;
 

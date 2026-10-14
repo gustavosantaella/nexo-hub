@@ -127,11 +127,21 @@ const WITH_CUSTOM: RatesSnapshot = {
 @Component({
   standalone: true,
   imports: [MoneyComponent],
-  template: `<app-money [amount]="amount()" [compact]="compact()" />`,
+  template: `<app-money
+    [amount]="amount()"
+    [compact]="compact()"
+    [entered]="entered()"
+    [currency]="currency()"
+    [rateKey]="rateKey()"
+  />`,
 })
 class HostComponent {
   readonly amount = signal<number>(10);
   readonly compact = signal<boolean>(false);
+  /** Monto tal como lo escribio el operador (contexto de moneda del monto). */
+  readonly entered = signal<number | null>(null);
+  readonly currency = signal<string | null>(null);
+  readonly rateKey = signal<string | null>(null);
 }
 
 /** Snapshot con la moneda base en bolívares (los montos se muestran primero en Bs). */
@@ -280,5 +290,113 @@ describe('MoneyComponent (montos al cambio)', () => {
     expect(base?.textContent?.trim()).toBe('Bs 1.1b');
     expect(base?.getAttribute('title')).toBe('Bs 1,095,997,000.00');
     expect(text).toContain('USD $ 1.3m');
+  });
+});
+
+/**
+ * Precio unitario cargado a mano: el sistema guarda los montos en dólares
+ * redondeados a centavos, así que Bs 350,00 a 876,7976 Bs por dólar son $ 0,36 y
+ * al volver a bolívares daría **349,20**. Con el contexto de moneda
+ * (`entered` + `currency`) el monto se muestra tal como se escribió.
+ */
+describe('MoneyComponent (monto tal como se cargó)', () => {
+  let http: HttpTestingController;
+  let rates: RatesService;
+  let fixture: ComponentFixture<HostComponent>;
+
+  beforeEach(async () => {
+    await TestBed.configureTestingModule({
+      imports: [HostComponent],
+      providers: [provideHttpClient(), provideHttpClientTesting()],
+    }).compileComponents();
+
+    http = TestBed.inject(HttpTestingController);
+    rates = TestBed.inject(RatesService);
+    rates.setConversions(true);
+    fixture = TestBed.createComponent(HostComponent);
+  });
+
+  afterEach(() => {
+    localStorage.removeItem(STORAGE_KEY);
+    setDisplayCurrency(null);
+    http.verify();
+  });
+
+  function load(snapshot: RatesSnapshot): void {
+    rates.load();
+    http.expectOne(`${API}/rates`).flush(snapshot);
+    fixture.detectChanges();
+  }
+
+  /** Con el monto base en dólares y el operador cargando bolívares. */
+  function loadBolivares(): void {
+    load(BCV_ONLY);
+    fixture.componentInstance.amount.set(0.36);
+    fixture.componentInstance.entered.set(350);
+    fixture.componentInstance.currency.set('VES');
+    fixture.componentInstance.rateKey.set('BCV_USD');
+    fixture.detectChanges();
+  }
+
+  it('respeta la tasa con la que se cargó el monto "al cambio"', () => {
+    loadBolivares();
+
+    const root = fixture.nativeElement as HTMLElement;
+    const base = root.querySelector('app-money span');
+    const text = root.textContent as string;
+
+    // El monto base sigue siendo el guardado (Bs 350 = $ 0,36 al cambio actual).
+    expect(base?.textContent?.trim()).toBe('$ 0.36');
+    // La línea del BCV $ recupera los 350,00 que escribió el operador, no el
+    // resultado de reconvertir los $ 0,36 (315,65 con la tasa de 876,7976).
+    expect(text).toContain('Bs 350.00');
+    expect(text).not.toContain('Bs 315.65');
+    // Las demás tasas siguen mostrando la conversión contable del monto.
+    expect(text).toContain('Bs 353.52');
+  });
+
+  it('muestra el monto cargado en bolívares sin el redondeo a centavos', () => {
+    load(withBase('VES'));
+    fixture.componentInstance.amount.set(0.36);
+    fixture.componentInstance.entered.set(350);
+    fixture.componentInstance.currency.set('VES');
+    fixture.detectChanges();
+
+    const root = fixture.nativeElement as HTMLElement;
+    const base = root.querySelector('app-money span');
+    const text = root.textContent as string;
+
+    expect(base?.textContent?.trim()).toBe('Bs 350.00');
+    expect(text).not.toContain('Bs 349.20');
+    // Debajo queda el equivalente contable que se guardó (0,36 USD).
+    expect(text).toContain('USD $ 0.36');
+  });
+
+  it('abrevia el monto cargado y deja el exacto en el tooltip', () => {
+    load(withBase('VES'));
+    fixture.componentInstance.entered.set(3500);
+    fixture.componentInstance.currency.set('VES');
+    fixture.componentInstance.compact.set(true);
+    fixture.detectChanges();
+
+    const base = (fixture.nativeElement as HTMLElement).querySelector('app-money span');
+
+    expect(base?.textContent?.trim()).toBe('Bs 3.5k');
+    expect(base?.getAttribute('title')).toBe('Bs 3,500.00');
+  });
+
+  it('vuelve al monto guardado cuando se cargó en otra moneda', () => {
+    load(withBase('VES'));
+    fixture.componentInstance.amount.set(10);
+    fixture.componentInstance.entered.set(10);
+    fixture.componentInstance.currency.set('USD');
+    fixture.detectChanges();
+
+    const base = (fixture.nativeElement as HTMLElement).querySelector('app-money span');
+    const text = fixture.nativeElement.textContent as string;
+
+    // Se cargó en dólares: no hay nada que recuperar, manda la conversión.
+    expect(base?.textContent?.trim()).toBe('Bs 8,767.98');
+    expect(text).toContain('USD $ 10.00');
   });
 });

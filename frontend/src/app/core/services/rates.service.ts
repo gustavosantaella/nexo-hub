@@ -288,19 +288,35 @@ export class RatesService {
   }
 
   /**
+   * Bolívares por 1 USD con la tasa **elegida** para un monto (`key`).
+   *
+   * El local decide con cuál de las tasas del sistema se convierte cada monto del
+   * catálogo (precio, costo, costo unitario): la elegida reemplaza al puente por
+   * defecto (la personalizada del dólar o, si no existe, el BCV dólar). Cuando esa
+   * tasa ya no está disponible —por ejemplo, se eliminó la personalizada— se cae
+   * en la activa, igual que el backend.
+   */
+  bsPerUsdWith(key?: RateKey | null): number | null {
+    if (!key) return this.bsPerUsd();
+    return this.rateOf(key) ?? this.bsPerUsd();
+  }
+
+  /**
    * Convierte un monto expresado en `code` a la moneda base (USD).
+   * Con `key` la conversión usa esa tasa; sin ella, la activa del sistema.
    * Devuelve `null` cuando falta la tasa necesaria.
    */
   toBase(
     amount: number | null | undefined,
     code?: string | null,
+    key?: RateKey | null,
   ): number | null {
     const value = Number(amount ?? 0);
     const normalized =
       String(code ?? '').trim().toUpperCase() || BASE_CURRENCY_CODE;
     if (normalized === BASE_CURRENCY_CODE) return round2(value);
 
-    const bsPerUsd = this.bsPerUsd();
+    const bsPerUsd = this.bsPerUsdWith(key);
     if (!bsPerUsd) return null;
     const bsPerUnit = this.bsPerUnit(normalized);
     if (!bsPerUnit) return null;
@@ -308,17 +324,18 @@ export class RatesService {
     return round2((value * bsPerUnit) / bsPerUsd);
   }
 
-  /** Convierte un monto de la moneda base (USD) a `code`. */
+  /** Convierte un monto de la moneda base (USD) a `code` con la tasa elegida. */
   fromBase(
     amount: number | null | undefined,
     code?: string | null,
+    key?: RateKey | null,
   ): number | null {
     const value = Number(amount ?? 0);
     const normalized =
       String(code ?? '').trim().toUpperCase() || BASE_CURRENCY_CODE;
     if (normalized === BASE_CURRENCY_CODE) return round2(value);
 
-    const bsPerUsd = this.bsPerUsd();
+    const bsPerUsd = this.bsPerUsdWith(key);
     const bsPerUnit = this.bsPerUnit(normalized);
     if (!bsPerUsd || !bsPerUnit) return null;
 
@@ -330,10 +347,14 @@ export class RatesService {
    * (ej. `= $ 12.34`). Devuelve `null` si no hay conversión que mostrar
    * (misma moneda o falta de tasa).
    */
-  baseHint(amount: number | null | undefined, code?: string | null): string | null {
+  baseHint(
+    amount: number | null | undefined,
+    code?: string | null,
+    key?: RateKey | null,
+  ): string | null {
     const normalized = String(code ?? '').trim().toUpperCase();
     if (!normalized || normalized === BASE_CURRENCY_CODE) return null;
-    const converted = this.toBase(amount, normalized);
+    const converted = this.toBase(amount, normalized, key);
     if (converted === null) return null;
     return `= ${money(converted)}`;
   }

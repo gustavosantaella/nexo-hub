@@ -7,6 +7,7 @@ import type {
   Customer,
   CustomerPayload,
   Product,
+  ProductDeactivation,
   ProductOption,
   ProductPayload,
   Supplier,
@@ -27,6 +28,16 @@ export class ProductsService extends CrudService<Product, ProductPayload> {
   /** Productos activos para selects y POS. */
   options() {
     return this.http.get<ProductOption[]>(`${this.baseUrl}/options`);
+  }
+
+  /**
+   * Baja logica del producto (mismo endpoint que un borrado, que en realidad
+   * desactiva). Ademas del conteo, el API responde los menus ACTIVOS que lo usan
+   * como ingrediente (`affectedMenus`): quedan sin poder venderse hasta que se
+   * corrija su receta.
+   */
+  deactivate(id: string) {
+    return this.http.delete<ProductDeactivation>(`${this.baseUrl}/${id}`);
   }
 }
 

@@ -19,6 +19,8 @@ describe('money-codec', () => {
         tax: 1.7,
         total: 10.2,
         paidAmount: 6.6,
+        deliveryFee: 3,
+        deliveryFeeEntered: 270,
         items: {
           create: [
             { productId: 'p1', name: 'Cafe', quantity: 2, unitPrice: 5, total: 10 },
@@ -38,6 +40,9 @@ describe('money-codec', () => {
         tax: 170,
         total: 1020,
         paidAmount: 660,
+        // El costo de delivery va en centavos, como el resto del dinero.
+        deliveryFee: 300,
+        deliveryFeeEntered: 27000,
         items: {
           create: [
             { productId: 'p1', name: 'Cafe', quantity: 2, unitPrice: 500, total: 1000 },
