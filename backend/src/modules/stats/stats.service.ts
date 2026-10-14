@@ -213,47 +213,106 @@ export class StatsService {
   }
 
   /** Productos mas vendidos del rango (con utilidad estimada por costo actual). */
+  /**
+   * Ranking de lo mas vendido en el rango. Incluye los MENUS ademas de los
+   * productos sueltos: la venta de un menu se atribuye al menu (no a cada
+   * ingrediente), que es lo que el cliente pidio y pago. `type` distingue ambos.
+   */
   async topProducts(companyId: string, query: StatsQueryDto) {
     const range = this.resolveRange(query);
-
-    const grouped = await this.prisma.orderItem.groupBy({
-      by: ['productId'],
-      where: {
-        ...tenantWhere(companyId),
-        order: {
-          status: { in: SALE_STATUSES },
-          createdAt: { gte: range.from, lte: range.to },
-        },
+    const rangeWhere = {
+      ...tenantWhere(companyId),
+      order: {
+        status: { in: SALE_STATUSES },
+        createdAt: { gte: range.from, lte: range.to },
       },
-      orderBy: { _sum: { total: 'desc' } },
-      _sum: { quantity: true, total: true },
-      take: query.limit,
-    });
+    };
 
-    const products = await this.prisma.product.findMany({
-      where: {
-        id: { in: grouped.map((row) => row.productId) },
-        ...tenantWhere(companyId),
-      },
-      select: { id: true, name: true, sku: true, cost: true },
-    });
-    const byId = new Map(products.map((product) => [product.id, product]));
+    const [productRows, menuRows] = await Promise.all([
+      this.prisma.orderItem.groupBy({
+        by: ['productId'],
+        where: { ...rangeWhere, productId: { not: null } },
+        orderBy: { _sum: { total: 'desc' } },
+        _sum: { quantity: true, total: true },
+        take: query.limit,
+      }),
+      this.prisma.orderItem.groupBy({
+        by: ['menuId'],
+        where: { ...rangeWhere, menuId: { not: null } },
+        orderBy: { _sum: { total: 'desc' } },
+        _sum: { quantity: true, total: true },
+        take: query.limit,
+      }),
+    ]);
 
-    return grouped.map((row) => {
-      const product = byId.get(row.productId);
-      const quantity = row._sum.quantity ?? 0;
-      const revenue = toMoney(row._sum.total ?? 0);
-      const cost = money.mul(product?.cost ?? 0, quantity);
-      return {
-        productId: row.productId,
-        name: product?.name ?? 'Producto eliminado',
-        sku: product?.sku ?? null,
-        quantity,
-        revenue,
-        cost,
-        profit: money.sub(revenue, cost),
-      };
-    });
+    const productIds = productRows
+      .map((row) => row.productId)
+      .filter((id): id is string => !!id);
+    const menuIds = menuRows
+      .map((row) => row.menuId)
+      .filter((id): id is string => !!id);
+
+    const [products, menus] = await Promise.all([
+      productIds.length
+        ? this.prisma.product.findMany({
+            where: { id: { in: productIds }, ...tenantWhere(companyId) },
+            select: { id: true, name: true, sku: true, cost: true },
+          })
+        : Promise.resolve(
+            [] as { id: string; name: string; sku: string; cost: number }[],
+          ),
+      menuIds.length
+        ? this.prisma.menu.findMany({
+            where: { id: { in: menuIds }, ...tenantWhere(companyId) },
+            select: { id: true, name: true, code: true, cost: true },
+          })
+        : Promise.resolve(
+            [] as { id: string; name: string; code: string; cost: number }[],
+          ),
+    ]);
+
+    const productById = new Map(products.map((product) => [product.id, product]));
+    const menuById = new Map(menus.map((menu) => [menu.id, menu]));
+
+    const rows = [
+      ...productRows.map((row) => {
+        const product = productById.get(row.productId!);
+        const quantity = row._sum.quantity ?? 0;
+        const revenue = toMoney(row._sum.total ?? 0);
+        const cost = money.mul(product?.cost ?? 0, quantity);
+        return {
+          type: 'PRODUCT' as const,
+          productId: row.productId,
+          menuId: null,
+          name: product?.name ?? 'Producto eliminado',
+          sku: product?.sku ?? null,
+          quantity,
+          revenue,
+          cost,
+          profit: money.sub(revenue, cost),
+        };
+      }),
+      ...menuRows.map((row) => {
+        const menu = menuById.get(row.menuId!);
+        const quantity = row._sum.quantity ?? 0;
+        const revenue = toMoney(row._sum.total ?? 0);
+        // El costo del menu ya es el de su receta (una unidad preparada).
+        const cost = money.mul(menu?.cost ?? 0, quantity);
+        return {
+          type: 'MENU' as const,
+          productId: null,
+          menuId: row.menuId,
+          name: menu?.name ?? 'Menu eliminado',
+          sku: menu?.code ?? null,
+          quantity,
+          revenue,
+          cost,
+          profit: money.sub(revenue, cost),
+        };
+      }),
+    ];
+
+    return rows.sort((a, b) => b.revenue - a.revenue).slice(0, query.limit);
   }
 
   /** Totales cobrados por metodo de pago. */
@@ -328,42 +387,95 @@ export class StatsService {
   }
 
   /** Ventas agrupadas por categoria de producto. */
+  /**
+   * Ventas agrupadas por categoria. Los menus se agrupan por su propia categoria
+   * de menu; los productos sueltos, por la del producto. Un menu NO se reparte
+   * entre las categorias de sus ingredientes: se vendio como un plato.
+   */
   async salesByCategory(companyId: string, query: StatsQueryDto) {
     const range = this.resolveRange(query);
-
-    const grouped = await this.prisma.orderItem.groupBy({
-      by: ['productId'],
-      where: {
-        ...tenantWhere(companyId),
-        order: {
-          status: { in: SALE_STATUSES },
-          createdAt: { gte: range.from, lte: range.to },
-        },
+    const rangeWhere = {
+      ...tenantWhere(companyId),
+      order: {
+        status: { in: SALE_STATUSES },
+        createdAt: { gte: range.from, lte: range.to },
       },
-      _sum: { quantity: true, total: true },
-    });
+    };
 
-    const products = await this.prisma.product.findMany({
-      where: {
-        id: { in: grouped.map((row) => row.productId) },
-        ...tenantWhere(companyId),
-      },
-      select: { id: true, category: { select: { id: true, name: true } } },
-    });
+    const [productRows, menuRows] = await Promise.all([
+      this.prisma.orderItem.groupBy({
+        by: ['productId'],
+        where: { ...rangeWhere, productId: { not: null } },
+        _sum: { quantity: true, total: true },
+      }),
+      this.prisma.orderItem.groupBy({
+        by: ['menuId'],
+        where: { ...rangeWhere, menuId: { not: null } },
+        _sum: { quantity: true, total: true },
+      }),
+    ]);
+
+    const productIds = productRows
+      .map((row) => row.productId)
+      .filter((id): id is string => !!id);
+    const menuIds = menuRows
+      .map((row) => row.menuId)
+      .filter((id): id is string => !!id);
+
+    const [products, menus] = await Promise.all([
+      productIds.length
+        ? this.prisma.product.findMany({
+            where: { id: { in: productIds }, ...tenantWhere(companyId) },
+            select: { id: true, category: { select: { id: true, name: true } } },
+          })
+        : Promise.resolve(
+            [] as { id: string; category: { id: string; name: string } | null }[],
+          ),
+      menuIds.length
+        ? this.prisma.menu.findMany({
+            where: { id: { in: menuIds }, ...tenantWhere(companyId) },
+            select: { id: true, category: { select: { id: true, name: true } } },
+          })
+        : Promise.resolve(
+            [] as { id: string; category: { id: string; name: string } | null }[],
+          ),
+    ]);
+
     const categoryByProduct = new Map(
       products.map((product) => [
         product.id,
         product.category?.name ?? 'Sin categoria',
       ]),
     );
+    const categoryByMenu = new Map(
+      menus.map((menu) => [menu.id, menu.category?.name ?? 'Sin categoria']),
+    );
 
     const byCategory = new Map<string, { name: string; quantity: number; revenue: number }>();
-    for (const row of grouped) {
-      const name = categoryByProduct.get(row.productId) ?? 'Sin categoria';
+    const accumulate = (
+      name: string,
+      quantity: number,
+      revenue: number,
+    ): void => {
       const current = byCategory.get(name) ?? { name, quantity: 0, revenue: 0 };
-      current.quantity += row._sum.quantity ?? 0;
-      current.revenue = money.add(current.revenue, row._sum.total ?? 0);
+      current.quantity += quantity;
+      current.revenue = money.add(current.revenue, revenue);
       byCategory.set(name, current);
+    };
+
+    for (const row of productRows) {
+      accumulate(
+        categoryByProduct.get(row.productId!) ?? 'Sin categoria',
+        row._sum.quantity ?? 0,
+        toMoney(row._sum.total ?? 0),
+      );
+    }
+    for (const row of menuRows) {
+      accumulate(
+        categoryByMenu.get(row.menuId!) ?? 'Sin categoria',
+        row._sum.quantity ?? 0,
+        toMoney(row._sum.total ?? 0),
+      );
     }
 
     const items = [...byCategory.values()].sort(
@@ -559,7 +671,11 @@ export class StatsService {
     const expensesByCurrency = toCurrencyAmounts(expensesTodayByCurrency);
 
     const breakdown = openSession
-      ? this.cash.buildBreakdown(openSession.openingAmount, openSession.movements)
+      ? this.cash.buildBreakdown(
+          openSession.openingAmount,
+          // El reparto de propinas necesita leer los pedidos cobrados.
+          await this.cash.withTips(companyId, openSession.movements),
+        )
       : null;
 
     return {
@@ -596,7 +712,10 @@ export class StatsService {
             expectedCash: breakdown?.expectedCash ?? 0,
             cashIn: breakdown?.cashIn ?? 0,
             cashOut: breakdown?.cashOut ?? 0,
+            /** Ventas del turno sin propinas. */
             salesTotal: breakdown?.salesTotal ?? 0,
+            /** Propinas cobradas en el turno (van dentro de los cobros). */
+            tipsTotal: breakdown?.tipsTotal ?? 0,
             movementCount: breakdown?.movementCount ?? 0,
             /** Desglose del efectivo por moneda (montos originales + USD). */
             byCurrency: breakdown?.byCurrency ?? [],

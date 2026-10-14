@@ -144,6 +144,7 @@ describe('OrdersPage (formulario del cajero)', () => {
   function openCreate(fixture: ComponentFixture<OrdersPage>, page: OrdersPage): void {
     page.openCreate();
     http.expectOne(`${API}/products/options`).flush(PRODUCTS);
+    http.expectOne(`${API}/menus/options`).flush([]);
     http.expectOne(`${API}/customers/options`).flush([]);
     fixture.detectChanges();
   }
@@ -235,6 +236,7 @@ describe('OrdersPage (formulario del cajero)', () => {
     expect(page.lines().length).toBe(2);
     expect(page.lines()[0]).toEqual({
       productId: 'p1',
+      menuId: null,
       name: 'Pizza Familiar',
       unitPrice: 30,
       quantity: 2,
@@ -254,6 +256,7 @@ describe('OrdersPage (formulario del cajero)', () => {
     expect(page.lines()).toEqual([
       {
         productId: 'p5',
+        menuId: null,
         name: 'Malta (caja 24)',
         unitPrice: 1,
         quantity: 1,
@@ -419,6 +422,7 @@ describe('OrdersPage (formulario del cajero)', () => {
 
     page.openAdd(order());
     http.expectOne(`${API}/products/options`).flush(PRODUCTS);
+    http.expectOne(`${API}/menus/options`).flush([]);
     fixture.detectChanges();
 
     expect(page.addOpen()).toBeTrue();
@@ -534,6 +538,7 @@ describe('OrdersPage (formulario del cajero)', () => {
 
     page.openAdd(order());
     http.expectOne(`${API}/products/options`).flush(PRODUCTS);
+    http.expectOne(`${API}/menus/options`).flush([]);
     fixture.detectChanges();
 
     page.submitAdd();
@@ -707,7 +712,7 @@ describe('OrdersPage (formulario del cajero)', () => {
     expect(modal).not.toBeNull();
     expect(root.querySelector('app-sidebar')).toBeNull();
     // El mismo formulario (cuerpo y pie) se dibuja dentro de la ventana.
-    expect(modal!.textContent).toContain('Productos del inventario');
+    expect(modal!.textContent).toContain('Productos');
     expect(modal!.querySelector('.dialog-footer button')!.textContent).toContain('Cancelar');
   });
 
@@ -722,7 +727,7 @@ describe('OrdersPage (formulario del cajero)', () => {
     expect(aside).not.toBeNull();
     expect(root.querySelector('app-modal')).toBeNull();
     expect(aside!.textContent).toContain('Nuevo pedido');
-    expect(aside!.textContent).toContain('Productos del inventario');
+    expect(aside!.textContent).toContain('Productos');
 
     // El pie vive en la barra inferior del panel y sigue respondiendo al host.
     const cancel: HTMLButtonElement = aside!.querySelector('.dialog-footer button')!;

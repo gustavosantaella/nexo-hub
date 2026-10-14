@@ -1,7 +1,7 @@
 import { ChangeDetectionStrategy, Component, OnInit, inject, signal } from '@angular/core';
 import { FormsModule } from '@angular/forms';
 import { RouterLink } from '@angular/router';
-import type { Customer, PaginationMeta, ProductOption } from '../../core/models/api.model';
+import type { Customer, MenuOption, PaginationMeta, ProductOption } from '../../core/models/api.model';
 import type {
   Order,
   OrderItem,
@@ -25,6 +25,7 @@ import { BASE_CURRENCY } from '../../core/constants/currency';
 import { AuthService } from '../../core/services/auth.service';
 import { CashService } from '../../core/services/cash.service';
 import { CustomersService, ProductsService } from '../../core/services/catalog.service';
+import { MenusService } from '../../core/services/menu.service';
 import { OrdersService } from '../../core/services/orders.service';
 import { RatesService } from '../../core/services/rates.service';
 import { ToastService } from '../../core/services/toast.service';
@@ -54,12 +55,19 @@ import { ConfirmService } from '../../shared/services/confirm.service';
 import type { CashSession } from '../../core/models/operations.model';
 
 interface OrderLine {
-  productId: string;
+  /** Producto del inventario vendido (`null` cuando la línea es un menú). */
+  productId: string | null;
+  /** Menú (plato/combo) vendido (`null` cuando es un producto suelto). */
+  menuId: string | null;
   name: string;
   /** Precio de UNA unidad (en productos por caja ya viene `price / unitsPerBox`). */
   unitPrice: number;
   /** Cantidad en unidades individuales del inventario. */
   quantity: number;
+  /**
+   * Unidades disponibles en inventario; en un menú, las porciones que alcanzan
+   * con el stock de sus ingredientes (0 = sin tope conocido).
+   */
   stock: number;
   /** Unidad que se cobra (`UND` en productos por caja). */
   unit: string;
@@ -396,7 +404,27 @@ const NEXT_STATUS: Partial<Record<OrderStatus, OrderStatus>> = {
 
           <div class="space-y-2">
             <div class="flex flex-wrap items-center justify-between gap-2">
-              <label class="label mb-0">Productos del inventario</label>
+              <div class="flex rounded-lg border border-slate-200 p-0.5">
+                <button
+                  type="button"
+                  class="rounded-md px-3 py-1 text-sm font-medium transition"
+                  [class]="lineKind() === 'products' ? 'bg-brand-600 text-white' : 'text-slate-600 hover:bg-slate-100'"
+                  (click)="lineKind.set('products')"
+                >
+                  Productos
+                </button>
+                <button
+                  type="button"
+                  class="rounded-md px-3 py-1 text-sm font-medium transition"
+                  [class]="lineKind() === 'menus' ? 'bg-brand-600 text-white' : 'text-slate-600 hover:bg-slate-100'"
+                  (click)="lineKind.set('menus')"
+                >
+                  Menús
+                  @if (menus().length > 0) {
+                    <span class="badge bg-white/20 text-current">{{ menus().length }}</span>
+                  }
+                </button>
+              </div>
               <label class="flex items-center gap-2 text-xs font-medium text-slate-500">
                 <input
                   type="checkbox"
@@ -423,6 +451,38 @@ const NEXT_STATUS: Partial<Record<OrderStatus, OrderStatus>> = {
                 Agregar
               </button>
             </div>
+
+            @if (lineKind() === 'menus') {
+              @if (filteredMenus.length === 0) {
+                <p class="rounded-lg bg-slate-50 px-3 py-2 text-xs text-slate-500">
+                  No hay menús que coincidan con la búsqueda. Créalos en Catálogo → Menús.
+                </p>
+              } @else {
+                <div class="grid max-h-56 gap-2 overflow-y-auto pr-1 sm:grid-cols-2 xl:grid-cols-3">
+                  @for (menu of filteredMenus; track menu.id) {
+                    <button
+                      type="button"
+                      class="flex min-w-0 items-center justify-between gap-2 rounded-lg border border-slate-200 bg-white px-3 py-2 text-left transition hover:border-brand-300 hover:bg-brand-50 disabled:cursor-not-allowed disabled:opacity-50"
+                      [disabled]="!menu.available"
+                      (click)="addMenu(menu)"
+                    >
+                      <span class="min-w-0">
+                        <span class="block truncate text-sm font-medium text-slate-800">{{ menu.name }}</span>
+                        <span class="block text-xs text-slate-400">
+                          {{ menu.code }} · {{ menu.ingredients.length }} ingrediente(s)
+                        </span>
+                      </span>
+                      <span class="flex shrink-0 flex-col items-end gap-1">
+                        <app-money [amount]="menu.price" />
+                        <span class="badge" [class]="menu.available ? 'bg-emerald-100 text-emerald-700' : 'bg-rose-100 text-rose-700'">
+                          {{ menu.maxServings === null ? 'Ilimitado' : menu.maxServings + ' disp.' }}
+                        </span>
+                      </span>
+                    </button>
+                  }
+                </div>
+              }
+            } @else {
 
             @if (filteredProducts.length === 0) {
               <p class="rounded-lg bg-slate-50 px-3 py-2 text-xs text-slate-500">
@@ -492,6 +552,7 @@ const NEXT_STATUS: Partial<Record<OrderStatus, OrderStatus>> = {
                 }
               </div>
             }
+            }
           </div>
 
           <div class="space-y-2">
@@ -521,10 +582,13 @@ const NEXT_STATUS: Partial<Record<OrderStatus, OrderStatus>> = {
                 </tr>
               </thead>
               <tbody>
-                @for (line of lines(); track line.productId) {
+                @for (line of lines(); track lineKey(line)) {
                   <tr>
                     <td>
                       {{ line.name }}
+                      @if (line.menuId) {
+                        <span class="badge ml-1 bg-sky-100 text-sky-700">Menú</span>
+                      }
                       @if (isBoxProduct(line)) {
                         <span class="block text-[11px] text-slate-400">
                           Precio por unidad (caja de {{ boxUnitsOf(line) }})
@@ -573,7 +637,7 @@ const NEXT_STATUS: Partial<Record<OrderStatus, OrderStatus>> = {
                       <button
                         type="button"
                         class="btn-ghost btn-sm text-rose-600"
-                        (click)="removeLine(line.productId)"
+                        (click)="removeLine(lineKey(line))"
                       >
                         <app-icon name="trash" size="h-4 w-4" />
                       </button>
@@ -891,7 +955,7 @@ const NEXT_STATUS: Partial<Record<OrderStatus, OrderStatus>> = {
                       </span>
                       @if (payment.currency && payment.currency !== baseCurrency.code) {
                         <span class="block text-[10px] text-slate-400">
-                          = {{ amountIn(payment.baseAmount, baseCurrency.code) }}
+                          = {{ money(payment.baseAmount) }}
                           @if (payment.exchangeRate) {
                             · × {{ payment.exchangeRate }}
                           }
@@ -951,7 +1015,24 @@ const NEXT_STATUS: Partial<Record<OrderStatus, OrderStatus>> = {
 
         <div class="space-y-2">
           <div class="flex flex-wrap items-center justify-between gap-2">
-            <label class="label mb-0">Productos del inventario</label>
+            <div class="flex rounded-lg border border-slate-200 p-0.5">
+              <button
+                type="button"
+                class="rounded-md px-3 py-1 text-sm font-medium transition"
+                [class]="lineKind() === 'products' ? 'bg-brand-600 text-white' : 'text-slate-600 hover:bg-slate-100'"
+                (click)="lineKind.set('products')"
+              >
+                Productos
+              </button>
+              <button
+                type="button"
+                class="rounded-md px-3 py-1 text-sm font-medium transition"
+                [class]="lineKind() === 'menus' ? 'bg-brand-600 text-white' : 'text-slate-600 hover:bg-slate-100'"
+                (click)="lineKind.set('menus')"
+              >
+                Menús
+              </button>
+            </div>
             <label class="flex items-center gap-2 text-xs font-medium text-slate-500">
               <input
                 type="checkbox"
@@ -978,6 +1059,36 @@ const NEXT_STATUS: Partial<Record<OrderStatus, OrderStatus>> = {
               Agregar
             </button>
           </div>
+
+          @if (lineKind() === 'menus') {
+            @if (filteredMenus.length === 0) {
+              <p class="rounded-lg bg-slate-50 px-3 py-2 text-xs text-slate-500">
+                No hay menús que coincidan con la búsqueda.
+              </p>
+            } @else {
+              <div class="grid max-h-56 gap-2 overflow-y-auto pr-1 sm:grid-cols-2 xl:grid-cols-3">
+                @for (menu of filteredMenus; track menu.id) {
+                  <button
+                    type="button"
+                    class="flex min-w-0 items-center justify-between gap-2 rounded-lg border border-slate-200 bg-white px-3 py-2 text-left transition hover:border-brand-300 hover:bg-brand-50 disabled:cursor-not-allowed disabled:opacity-50"
+                    [disabled]="!menu.available"
+                    (click)="addMenu(menu)"
+                  >
+                    <span class="min-w-0">
+                      <span class="block truncate text-sm font-medium text-slate-800">{{ menu.name }}</span>
+                      <span class="block text-xs text-slate-400">{{ menu.code }}</span>
+                    </span>
+                    <span class="flex shrink-0 flex-col items-end gap-1">
+                      <app-money [amount]="menu.price" />
+                      <span class="badge" [class]="menu.available ? 'bg-emerald-100 text-emerald-700' : 'bg-rose-100 text-rose-700'">
+                        {{ menu.maxServings === null ? 'Ilimitado' : menu.maxServings + ' disp.' }}
+                      </span>
+                    </span>
+                  </button>
+                }
+              </div>
+            }
+          } @else {
 
           @if (filteredProducts.length === 0) {
             <p class="rounded-lg bg-slate-50 px-3 py-2 text-xs text-slate-500">
@@ -1045,6 +1156,7 @@ const NEXT_STATUS: Partial<Record<OrderStatus, OrderStatus>> = {
               }
             </div>
           }
+          }
         </div>
 
         <div class="space-y-2">
@@ -1074,10 +1186,13 @@ const NEXT_STATUS: Partial<Record<OrderStatus, OrderStatus>> = {
                 </tr>
               </thead>
               <tbody>
-                @for (line of lines(); track line.productId) {
+                @for (line of lines(); track lineKey(line)) {
                   <tr>
                     <td>
                       {{ line.name }}
+                      @if (line.menuId) {
+                        <span class="badge ml-1 bg-sky-100 text-sky-700">Menú</span>
+                      }
                       @if (isBoxProduct(line)) {
                         <span class="block text-[11px] text-slate-400">
                           Precio por unidad (caja de {{ boxUnitsOf(line) }})
@@ -1126,7 +1241,7 @@ const NEXT_STATUS: Partial<Record<OrderStatus, OrderStatus>> = {
                       <button
                         type="button"
                         class="btn-ghost btn-sm text-rose-600"
-                        (click)="removeLine(line.productId)"
+                        (click)="removeLine(lineKey(line))"
                       >
                         <app-icon name="trash" size="h-4 w-4" />
                       </button>
@@ -1289,6 +1404,7 @@ export class OrdersPage implements OnInit {
   private readonly cash = inject(CashService);
   private readonly rates = inject(RatesService);
   private readonly productsService = inject(ProductsService);
+  private readonly menusService = inject(MenusService);
   private readonly customersService = inject(CustomersService);
   private readonly toast = inject(ToastService);
   private readonly confirm = inject(ConfirmService);
@@ -1348,10 +1464,13 @@ export class OrdersPage implements OnInit {
   readonly saving = signal(false);
   readonly customers = signal<Customer[]>([]);
   readonly products = signal<ProductOption[]>([]);
+  readonly menus = signal<MenuOption[]>([]);
   readonly lines = signal<OrderLine[]>([]);
   readonly formError = signal<string | null>(null);
-  /** Buscador del POS (nombre o SKU). Enter agrega la primera coincidencia. */
+  /** Buscador del POS (nombre o SKU/código). Enter agrega la primera coincidencia. */
   productSearch = '';
+  /** Catálogo que muestra el buscador: productos sueltos o menús. */
+  readonly lineKind = signal<'products' | 'menus'>('products');
   /** Oculta de la grilla rapida los productos agotados. */
   onlyAvailable = true;
   /** Cobro inmediato al crear el pedido (venta de mostrador). */
@@ -1556,6 +1675,12 @@ export class OrdersPage implements OnInit {
         next: (list) => this.products.set(list),
       });
     }
+    if (this.menus().length === 0) {
+      this.menusService.options().subscribe({
+        next: (list) => this.menus.set(list),
+        error: () => this.menus.set([]),
+      });
+    }
     this.addOpen.set(true);
   }
 
@@ -1589,7 +1714,8 @@ export class OrdersPage implements OnInit {
       .addItems(
         order.id,
         this.lines().map((line) => ({
-          productId: line.productId,
+          ...(line.productId ? { productId: line.productId } : {}),
+          ...(line.menuId ? { menuId: line.menuId } : {}),
           quantity: line.quantity,
           unitPrice: line.unitPrice,
         })),
@@ -1792,6 +1918,12 @@ export class OrdersPage implements OnInit {
         next: (list) => this.products.set(list),
       });
     }
+    if (this.menus().length === 0) {
+      this.menusService.options().subscribe({
+        next: (list) => this.menus.set(list),
+        error: () => this.menus.set([]),
+      });
+    }
     if (this.customers().length === 0) {
       this.customersService.options().subscribe({
         next: (list) => this.customers.set(list),
@@ -1842,6 +1974,20 @@ export class OrdersPage implements OnInit {
           !term ||
           product.name.toLowerCase().includes(term) ||
           product.sku.toLowerCase().includes(term),
+      )
+      .sort((a, b) => a.name.localeCompare(b.name));
+  }
+
+  /** Menús de la carta que coinciden con la búsqueda y el filtro de stock. */
+  get filteredMenus(): MenuOption[] {
+    const term = this.productSearch.trim().toLowerCase();
+    return this.menus()
+      .filter((menu) => (this.onlyAvailable ? menu.available : true))
+      .filter(
+        (menu) =>
+          !term ||
+          menu.name.toLowerCase().includes(term) ||
+          menu.code.toLowerCase().includes(term),
       )
       .sort((a, b) => a.name.localeCompare(b.name));
   }
@@ -1944,6 +2090,7 @@ export class OrdersPage implements OnInit {
   private newLine(product: ProductOption, quantity: number): OrderLine {
     return {
       productId: product.id,
+      menuId: null,
       name: product.name,
       unitPrice: this.unitPriceOf(product),
       quantity,
@@ -1953,10 +2100,65 @@ export class OrdersPage implements OnInit {
     };
   }
 
-  /** Agrega por SKU exacto (lector de codigos) o por la primera coincidencia. */
+  /**
+   * Agrega un menú (plato/combo) al pedido. Al guardarlo, el backend descuenta
+   * los ingredientes de su receta; `stock` de la línea son las porciones que
+   * alcanzan con el inventario actual.
+   */
+  addMenu(menu: MenuOption): void {
+    if (!menu.available) {
+      this.formError.set(`"${menu.name}" no tiene stock suficiente para prepararse.`);
+      return;
+    }
+    const existing = this.lines().find((line) => line.menuId === menu.id);
+    if (existing) {
+      this.incLine(existing);
+      return;
+    }
+    this.lines.set([
+      ...this.lines(),
+      {
+        productId: null,
+        menuId: menu.id,
+        name: menu.name,
+        unitPrice: menu.price,
+        quantity: 1,
+        // `0` = sin tope de inventario: no se limita la cantidad.
+        stock: menu.maxServings ?? 0,
+        unit: 'UND',
+        unitsPerBox: 1,
+      },
+    ]);
+    this.formError.set(
+      menu.price > 0
+        ? null
+        : `"${menu.name}" no tiene precio de venta: edita el precio de la línea.`,
+    );
+  }
+
+  /** Clave única de una línea del detalle (producto o menú). */
+  lineKey(line: OrderLine): string {
+    return line.menuId ? `m:${line.menuId}` : `p:${line.productId}`;
+  }
+
+  /** Agrega por SKU/código exacto (lector de codigos) o por la primera coincidencia. */
   addBySearch(): void {
     const term = this.productSearch.trim().toLowerCase();
     if (!term) return;
+
+    if (this.lineKind() === 'menus') {
+      const menu =
+        this.menus().find((option) => option.code.toLowerCase() === term) ??
+        this.filteredMenus[0];
+      if (!menu) {
+        this.formError.set(`No se encontró ningún menú para "${this.productSearch}".`);
+        return;
+      }
+      this.addMenu(menu);
+      this.productSearch = '';
+      return;
+    }
+
     const list = this.products();
     const match =
       list.find((product) => product.sku.toLowerCase() === term) ?? this.filteredProducts[0];
@@ -2003,8 +2205,8 @@ export class OrdersPage implements OnInit {
     this.lines.set([...this.lines()]);
   }
 
-  removeLine(productId: string): void {
-    this.lines.set(this.lines().filter((line) => line.productId !== productId));
+  removeLine(key: string): void {
+    this.lines.set(this.lines().filter((line) => this.lineKey(line) !== key));
   }
 
   submitCreate(): void {
@@ -2056,7 +2258,8 @@ export class OrdersPage implements OnInit {
         taxRate: Number(this.form.taxRate) || 0,
         tip: this.tipAmount || undefined,
         items: this.lines().map((line) => ({
-          productId: line.productId,
+          ...(line.productId ? { productId: line.productId } : {}),
+          ...(line.menuId ? { menuId: line.menuId } : {}),
           quantity: line.quantity,
           unitPrice: line.unitPrice,
         })),

@@ -1,3 +1,5 @@
+import { readFileSync } from 'fs';
+import { resolve } from 'path';
 import {
   convertArgs,
   convertData,
@@ -5,6 +7,7 @@ import {
   convertWhere,
   decodeAggregates,
 } from './money-codec';
+import { MONEY_COLUMNS, clientKeyOf } from '../constants/money-columns';
 
 describe('money-codec', () => {
   describe('convertData (entrada: decimales -> centavos)', () => {
@@ -273,4 +276,63 @@ describe('money-codec', () => {
       });
     });
   });
+
+  /**
+   * Cobertura de la SALIDA del codec: cada columna declarada como dinero debe
+   * tener su `compute` dentro del bloque `result` de la extension. Sin esto, un
+   * campo declarado en `MONEY_COLUMNS` se guarda en centavos pero se lee 100
+   * veces mas grande (le paso a `Order.tip`, que se agrego al inventario sin su
+   * contraparte aca). Se lee el propio archivo para no depender del objeto que
+   * devuelve `Prisma.defineExtension`.
+   */
+  describe('moneyCodec.result (cobertura del inventario de dinero)', () => {
+    const source = readFileSync(resolve(__dirname, './money-codec.ts'), 'utf8');
+    const blocks = resultBlocks(source);
+
+    it('el bloque result se lee correctamente', () => {
+      expect(blocks.get('order')).toContain('needs: { tip: true }');
+      expect(blocks.get('menu')).toContain('needs: { price: true }');
+    });
+
+    it.each(Object.entries(MONEY_COLUMNS))(
+      'decodifica todos los campos de dinero de %s al leer',
+      (model, fields) => {
+        const block = blocks.get(clientKeyOf(model));
+        expect(block).toBeDefined();
+        for (const field of fields) {
+          expect(block).toContain(`needs: { ${field}: true }`);
+        }
+      },
+    );
+  });
 });
+
+/**
+ * Extrae del codigo fuente del codec el texto de cada bloque de modelo dentro de
+ * la extension `result` (`product: { ... }`, `order: { ... }`).
+ */
+function resultBlocks(source: string): Map<string, string> {
+  const lines = source.split(/\r?\n/);
+  const start = lines.findIndex((line) => line.trim() === 'result: {');
+  if (start < 0) throw new Error('No se encontro el bloque `result` del codec');
+
+  const blocks = new Map<string, string>();
+  let current: string | null = null;
+  let buffer: string[] = [];
+
+  for (let index = start + 1; index < lines.length; index += 1) {
+    const line = lines[index];
+    const header = /^ {4}(\w+): \{$/.exec(line);
+    if (header) {
+      if (current) blocks.set(current, buffer.join('\n'));
+      current = header[1];
+      buffer = [];
+      continue;
+    }
+    // Fin del bloque `result` (cierre con la indentacion de la extension).
+    if (/^ {2}\},?$/.test(line)) break;
+    if (current) buffer.push(line);
+  }
+  if (current) blocks.set(current, buffer.join('\n'));
+  return blocks;
+}

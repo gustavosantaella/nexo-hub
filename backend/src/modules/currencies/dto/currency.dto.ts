@@ -52,4 +52,13 @@ export class UpdateCurrenciesDto {
   @ValidateNested({ each: true })
   @Type(() => CurrencySettingDto)
   currencies!: CurrencySettingDto[];
+
+  @ApiPropertyOptional({
+    description:
+      'Moneda base del sistema (en la que se muestran primero los montos). Los montos se siguen guardando en USD.',
+    example: 'VES',
+  })
+  @IsOptional()
+  @IsString()
+  base?: string;
 }

@@ -12,6 +12,7 @@ import {
   MinLength,
 } from 'class-validator';
 import { PRODUCT_UNITS, type ProductUnit } from '../../../common/constants/enums';
+import { QTY_DECIMALS } from '../../../common/utils/quantity.util';
 
 export class CreateProductDto {
   @ApiPropertyOptional({ description: 'Se genera automaticamente si no se envia' })
@@ -51,17 +52,29 @@ export class CreateProductDto {
   @Min(0)
   cost?: number;
 
-  @ApiPropertyOptional({ description: 'Stock inicial (genera movimiento IN)' })
+  @ApiPropertyOptional({
+    description:
+      'Stock inicial (genera movimiento IN). Admite hasta 3 decimales: 0.1 = 100 g de un producto medido en kilos.',
+  })
   @IsOptional()
   @Type(() => Number)
-  @IsInt()
+  @IsNumber(
+    { maxDecimalPlaces: QTY_DECIMALS },
+    { message: 'El stock admite hasta 3 decimales' },
+  )
   @Min(0)
   stock?: number;
 
-  @ApiPropertyOptional({ default: 0 })
+  @ApiPropertyOptional({
+    default: 0,
+    description: 'Stock minimo para la alerta de reposicion (hasta 3 decimales)',
+  })
   @IsOptional()
   @Type(() => Number)
-  @IsInt()
+  @IsNumber(
+    { maxDecimalPlaces: QTY_DECIMALS },
+    { message: 'El stock minimo admite hasta 3 decimales' },
+  )
   @Min(0)
   minStock?: number;
 

@@ -8,6 +8,7 @@ import {
 import type { PrismaService } from '../../prisma/prisma.service';
 import type { CashService } from '../cash/cash.service';
 import type { InventoryService } from '../inventory/inventory.service';
+import type { MenusService } from '../menus/menus.service';
 import type { RatesService } from '../rates/rates.service';
 import { OrdersService, computeOrderTotals } from './orders.service';
 
@@ -31,7 +32,8 @@ const PRODUCTS: Record<
 
 interface OrderItemFixture {
   id: string;
-  productId: string;
+  productId: string | null;
+  menuId: string | null;
   name: string;
   quantity: number;
   unitPrice: number;
@@ -56,6 +58,7 @@ function item(overrides: Partial<OrderItemFixture> = {}): OrderItemFixture {
   return {
     id: 'i1',
     productId: 'p1',
+    menuId: null,
     name: 'Cafe',
     quantity: 2,
     unitPrice: 50,
@@ -86,7 +89,47 @@ interface UpdateArgs {
   data: Record<string, unknown>;
 }
 
+/** Menus simulados: receta (producto + cantidad por unidad vendida). */
+interface MenuFixture {
+  id: string;
+  code: string;
+  name: string;
+  price: number;
+  active: boolean;
+  ingredients: { productId: string; quantity: number }[];
+}
+
+const MENUS: Record<string, MenuFixture> = {
+  // Parrilla: medio cafe (controlado) y un postre (sin control de inventario).
+  m1: {
+    id: 'm1',
+    code: 'MEN-1',
+    name: 'Parrilla',
+    price: 120,
+    active: true,
+    ingredients: [
+      { productId: 'p1', quantity: 0.5 },
+      { productId: 'p2', quantity: 1 },
+    ],
+  },
+  m2: {
+    id: 'm2',
+    code: 'MEN-2',
+    name: 'Menu retirado',
+    price: 20,
+    active: false,
+    ingredients: [{ productId: 'p1', quantity: 1 }],
+  },
+};
+
 function createService(current: OrderFixture | null) {
+  const trackedProducts = jest.fn(
+    async (args: { where: { id: { in: string[] } } }) =>
+      args.where.id.in
+        .filter((id) => PRODUCTS[id])
+        .map((id) => PRODUCTS[id]),
+  );
+
   const tx = {
     order: {
       update: jest.fn(async (args: UpdateArgs) => ({
@@ -94,20 +137,37 @@ function createService(current: OrderFixture | null) {
         ...args.data,
       })),
     },
+    product: { findMany: trackedProducts },
   };
 
   const prisma = {
     order: { findFirst: jest.fn(async () => current) },
-    product: {
-      findMany: jest.fn(async (args: { where: { id: { in: string[] } } }) =>
-        args.where.id.in
-          .filter((id) => PRODUCTS[id])
-          .map((id) => PRODUCTS[id]),
-      ),
-    },
+    product: { findMany: trackedProducts },
     $transaction: jest.fn(
       async (cb: (client: typeof tx) => Promise<unknown>) => cb(tx),
     ),
+  };
+
+  /** `loadRecipes` solo resuelve los menus activos del catalogo simulado. */
+  const menus = {
+    loadRecipes: jest.fn(async (_companyId: string, menuIds: string[]) => {
+      const found = menuIds
+        .filter((id) => MENUS[id])
+        .map((id) => MENUS[id]);
+      return new Map(
+        found.map((menu) => [
+          menu.id,
+          {
+            id: menu.id,
+            code: menu.code,
+            name: menu.name,
+            price: menu.price,
+            active: menu.active,
+            ingredients: menu.ingredients,
+          },
+        ]),
+      );
+    }),
   };
 
   const inventory = {
@@ -123,9 +183,10 @@ function createService(current: OrderFixture | null) {
     inventory as unknown as InventoryService,
     {} as unknown as CashService,
     {} as unknown as RatesService,
+    menus as unknown as MenusService,
   );
 
-  return { service, prisma, tx, inventory };
+  return { service, prisma, tx, inventory, menus };
 }
 
 /** Datos enviados a `tx.order.update` en la primera llamada. */
@@ -137,7 +198,8 @@ function updateData(tx: {
 
 interface ItemsWrite {
   create?: {
-    productId: string;
+    productId: string | null;
+    menuId?: string | null;
     name: string;
     quantity: number;
     unitPrice: number;
@@ -363,7 +425,15 @@ describe('OrdersService.addItems (agregar productos a un pedido)', () => {
 
     expect(itemsWrite(tx).update).toBeUndefined();
     expect(itemsWrite(tx).create).toEqual([
-      { companyId: COMPANY_ID, productId: 'p2', name: 'Postre', quantity: 1, unitPrice: 30, total: 30 },
+      {
+        companyId: COMPANY_ID,
+        productId: 'p2',
+        menuId: null,
+        name: 'Postre',
+        quantity: 1,
+        unitPrice: 30,
+        total: 30,
+      },
     ]);
     expect(updateData(tx).subtotal).toBe(130);
   });
@@ -386,7 +456,15 @@ describe('OrdersService.addItems (agregar productos a un pedido)', () => {
     );
 
     expect(itemsWrite(tx).create).toEqual([
-      { companyId: COMPANY_ID, productId: 'p1', name: 'Cafe', quantity: 3, unitPrice: 50, total: 150 },
+      {
+        companyId: COMPANY_ID,
+        productId: 'p1',
+        menuId: null,
+        name: 'Cafe',
+        quantity: 3,
+        unitPrice: 50,
+        total: 150,
+      },
     ]);
     expect(updateData(tx).subtotal).toBe(150);
     // Una sola salida de stock con la cantidad total agregada.
@@ -433,7 +511,15 @@ describe('OrdersService.addItems (agregar productos a un pedido)', () => {
     );
 
     expect(itemsWrite(tx).create).toEqual([
-      { companyId: COMPANY_ID, productId: 'p1', name: 'Cafe', quantity: 1, unitPrice: 40, total: 40 },
+      {
+        companyId: COMPANY_ID,
+        productId: 'p1',
+        menuId: null,
+        name: 'Cafe',
+        quantity: 1,
+        unitPrice: 40,
+        total: 40,
+      },
     ]);
     expect(itemsWrite(tx).update).toBeUndefined();
     expect(updateData(tx).subtotal).toBe(140);
@@ -616,6 +702,124 @@ describe('OrdersService.updateItem / removeItem (corregir o quitar productos)', 
       service.updateItem(COMPANY_ID, 'o1', 'i1', { quantity: 1 }, 'u1'),
     ).rejects.toBeInstanceOf(BadRequestException);
     expect(tx.order.update).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * Menu (plato con receta): vender un menu descuenta del inventario cada
+ * ingrediente segun su cantidad; los productos sin control de inventario y los
+ * menus inactivos no generan movimientos.
+ */
+describe('OrdersService (menus con receta)', () => {
+  it('al vender un menu descuenta cada ingrediente de su receta', async () => {
+    const { service, tx, inventory, menus } = createService(order());
+
+    await service.addItems(
+      COMPANY_ID,
+      'o1',
+      { items: [{ menuId: 'm1', quantity: 2 }] },
+      'u1',
+    );
+
+    // La receta se resuelve por empresa antes de descontar.
+    expect(menus.loadRecipes).toHaveBeenCalledWith(COMPANY_ID, ['m1']);
+
+    // La linea guarda la referencia al menu (no a un producto) y su precio.
+    expect(itemsWrite(tx).create).toEqual([
+      {
+        companyId: COMPANY_ID,
+        productId: null,
+        menuId: 'm1',
+        name: 'Parrilla',
+        quantity: 2,
+        unitPrice: 120,
+        total: 240,
+      },
+    ]);
+
+    // 2 parrillas x 0.5 de cafe = 1 unidad; el postre (sin control) no se mueve.
+    expect(inventory.applyMovement).toHaveBeenCalledTimes(1);
+    expect(inventory.applyMovement.mock.calls[0][1]).toMatchObject({
+      productId: 'p1',
+      type: StockMovementType.OUT,
+      quantity: 1,
+      referenceType: StockReferenceType.ORDER,
+      referenceId: 'o1',
+    });
+  });
+
+  it('respeta el precio que se envia para el menu', async () => {
+    const { service, tx } = createService(order());
+
+    await service.addItems(
+      COMPANY_ID,
+      'o1',
+      { items: [{ menuId: 'm1', quantity: 1, unitPrice: 99.5 }] },
+      'u1',
+    );
+
+    expect(itemsWrite(tx).create?.[0]).toMatchObject({
+      menuId: 'm1',
+      unitPrice: 99.5,
+      total: 99.5,
+    });
+  });
+
+  it('rechaza un menu inexistente', async () => {
+    const { service } = createService(order());
+
+    await expect(
+      service.addItems(COMPANY_ID, 'o1', { items: [{ menuId: 'nope', quantity: 1 }] }, 'u1'),
+    ).rejects.toBeInstanceOf(BadRequestException);
+  });
+
+  it('rechaza un menu inactivo', async () => {
+    const { service } = createService(order());
+
+    await expect(
+      service.addItems(COMPANY_ID, 'o1', { items: [{ menuId: 'm2', quantity: 1 }] }, 'u1'),
+    ).rejects.toBeInstanceOf(BadRequestException);
+  });
+
+  it('rechaza una linea sin producto ni menu', async () => {
+    const { service } = createService(order());
+
+    await expect(
+      service.addItems(COMPANY_ID, 'o1', { items: [{ quantity: 1 }] }, 'u1'),
+    ).rejects.toBeInstanceOf(BadRequestException);
+  });
+
+  it('quitar un menu del pedido devuelve sus ingredientes al inventario', async () => {
+    const { service, tx, inventory } = createService(
+      order({
+        items: [
+          item({
+            id: 'i9',
+            productId: null,
+            menuId: 'm1',
+            name: 'Parrilla',
+            quantity: 2,
+            unitPrice: 120,
+            total: 240,
+          }),
+          item(),
+        ],
+      }),
+    );
+
+    await service.removeItem(COMPANY_ID, 'o1', 'i9', 'u1');
+
+    // Se devuelven las unidades consumidas por las 2 parrillas: 2 x 0.5 = 1.
+    expect(inventory.applyMovement).toHaveBeenCalledTimes(1);
+    expect(inventory.applyMovement).toHaveBeenCalledWith(
+      COMPANY_ID,
+      expect.objectContaining({
+        productId: 'p1',
+        type: StockMovementType.IN,
+        quantity: 1,
+      }),
+      tx,
+    );
   });
 });
 

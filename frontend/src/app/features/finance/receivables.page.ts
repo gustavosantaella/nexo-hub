@@ -18,6 +18,7 @@ import { ReceivablesService } from '../../core/services/finance.service';
 import { ToastService } from '../../core/services/toast.service';
 import {
   apiErrorMessage,
+  displayBaseCode,
   moneyIn,
   number,
   shortDate,
@@ -155,7 +156,7 @@ const EMPTY_META: PaginationMeta = {
                 <th>Referencia</th>
                 <th>Moneda</th>
                 <th class="text-right">Monto</th>
-                <th class="text-right">Equivalente ({{ baseCurrency.code }})</th>
+                <th class="text-right">Equivalente ({{ moneyBaseCode() }})</th>
                 <th class="text-right">Cobrado</th>
                 <th class="text-right">Saldo</th>
                 <th>Vencimiento</th>
@@ -348,7 +349,7 @@ const EMPTY_META: PaginationMeta = {
               <p class="text-sm font-semibold text-slate-800">{{ amountIn(acc.amount, acc.currency) }}</p>
             </div>
             <div class="rounded-lg bg-slate-50 p-3">
-              <p class="text-xs text-slate-500">Equivalente ({{ baseCurrency.code }})</p>
+              <p class="text-xs text-slate-500">Equivalente ({{ moneyBaseCode() }})</p>
               <p class="text-sm font-semibold text-slate-800"><app-money [amount]="acc.baseAmount" /></p>
             </div>
             <div class="rounded-lg bg-slate-50 p-3">
@@ -403,7 +404,7 @@ const EMPTY_META: PaginationMeta = {
                       <th>Método</th>
                       <th>Moneda</th>
                       <th class="text-right">Monto</th>
-                      <th class="text-right">Equivalente ({{ baseCurrency.code }})</th>
+                      <th class="text-right">Equivalente ({{ moneyBaseCode() }})</th>
                       <th>Registrado por</th>
                       <th>Nota</th>
                     </tr>
@@ -459,6 +460,8 @@ export class ReceivablesPage implements OnInit {
   readonly number = number;
   readonly shortDate = shortDate;
   readonly baseCurrency = BASE_CURRENCY;
+  /** Código de la moneda base con la que se muestran los montos (USD por defecto). */
+  readonly moneyBaseCode = displayBaseCode;
 
   /** Formatea un monto en la moneda en la que se registro el cobro. */
   amountIn(value: number | null | undefined, currency?: string | null): string {

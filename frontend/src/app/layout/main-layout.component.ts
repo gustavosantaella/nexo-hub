@@ -279,6 +279,7 @@ export class MainLayoutComponent {
     {
       title: 'Catálogo',
       items: [
+        { label: 'Menús', route: '/panel/menus', icon: 'menu' },
         { label: 'Productos', route: '/panel/productos', icon: 'tag' },
         { label: 'Categorías', route: '/panel/categorias', icon: 'folder' },
         { label: 'Proveedores', route: '/panel/proveedores', icon: 'truck' },

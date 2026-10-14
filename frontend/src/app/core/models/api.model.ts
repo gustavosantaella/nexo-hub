@@ -179,6 +179,11 @@ export interface ProductOption {
   sku: string;
   name: string;
   price: number;
+  /**
+   * Costo de referencia. El API siempre lo envia (lo usa el formulario de menús
+   * para costear la receta); opcional porque las pruebas arman opciones minimas.
+   */
+  cost?: number;
   stock: number;
   unit: ProductUnit;
   /** Unidades individuales de la presentacion (1 = se vende suelto). */
@@ -222,6 +227,141 @@ export interface CategoryPayload {
   name: string;
   description?: string;
   active?: boolean;
+}
+
+// ================================ Menus ====================================
+// El MENU es lo que se vende (plato, combo, "parrilla"): una receta de
+// ingredientes tomados del inventario. Vender un menu descuenta del stock cada
+// ingrediente segun su cantidad (100 g de carne que se controla en kilos = 0.1).
+
+/** Como se ofrece el menu en la carta. */
+export type MenuAvailability = 'ALL' | 'DINE_IN' | 'TAKEAWAY' | 'DELIVERY';
+
+/** Seccion del ingrediente dentro del combo (Bebida, Postre, ...). */
+export type MenuSection =
+  | 'Principal'
+  | 'Bebida'
+  | 'Postre'
+  | 'Acompanamiento'
+  | 'Otro';
+
+export interface MenuCategoryRef {
+  id: string;
+  name: string;
+  color?: string | null;
+}
+
+/** Categoria comercial del menu (Desayunos, Almuerzos, Combos...). */
+export interface MenuCategory extends MenuCategoryRef {
+  description?: string | null;
+  sortOrder: number;
+  active: boolean;
+  createdAt: string;
+  updatedAt: string;
+  _count?: { menus: number };
+}
+
+export interface MenuCategoryPayload {
+  name: string;
+  description?: string;
+  color?: string;
+  sortOrder?: number;
+  active?: boolean;
+}
+
+/** Linea de la receta: cuanto consume una unidad del menu. */
+export interface MenuIngredient {
+  id: string;
+  productId: string;
+  /** En la unidad del stock del producto (0.1 = 100 g de algo medido en kg). */
+  quantity: number;
+  section?: string | null;
+  note?: string | null;
+  sortOrder: number;
+  product?: {
+    id: string;
+    name: string;
+    sku: string;
+    unit: ProductUnit;
+    price: number;
+    cost: number;
+    stock: number;
+    trackStock: boolean;
+  } | null;
+}
+
+export interface MenuIngredientPayload {
+  productId: string;
+  quantity: number;
+  section?: MenuSection;
+  note?: string;
+  sortOrder?: number;
+}
+
+export interface Menu {
+  id: string;
+  code: string;
+  name: string;
+  description?: string | null;
+  imageUrl?: string | null;
+  price: number;
+  /** Costo de la receta (calculado al guardar). */
+  cost: number;
+  availability: MenuAvailability;
+  preparationMinutes?: number | null;
+  categoryId?: string | null;
+  active: boolean;
+  createdAt: string;
+  updatedAt: string;
+  category?: MenuCategoryRef | null;
+  ingredients: MenuIngredient[];
+  /** Precio - costo. */
+  margin: number;
+  /** Porciones preparables con el stock actual (`null` = sin tope). */
+  maxServings: number | null;
+  available: boolean;
+}
+
+/** Menu tal como lo consume el POS / el buscador de pedidos. */
+export interface MenuOption {
+  id: string;
+  code: string;
+  name: string;
+  description?: string | null;
+  imageUrl?: string | null;
+  price: number;
+  cost: number;
+  availability: MenuAvailability;
+  preparationMinutes?: number | null;
+  categoryId?: string | null;
+  category?: MenuCategoryRef | null;
+  ingredients: {
+    quantity: number;
+    section?: string | null;
+    product?: {
+      id: string;
+      name: string;
+      unit: ProductUnit;
+      stock: number;
+      trackStock: boolean;
+    } | null;
+  }[];
+  margin: number;
+  maxServings: number | null;
+  available: boolean;
+}
+
+export interface MenuPayload {
+  code?: string;
+  name: string;
+  description?: string;
+  imageUrl?: string;
+  price: number;
+  availability?: MenuAvailability;
+  preparationMinutes?: number;
+  categoryId?: string | null;
+  active?: boolean;
+  ingredients: MenuIngredientPayload[];
 }
 
 export interface Supplier {

@@ -8,6 +8,7 @@ import {
   moneyCompact,
   moneyInCompact,
   number,
+  setDisplayCurrency,
 } from './format';
 
 /** Numeros abreviados: escala (k, m, b), redondeo y tooltips exactos. */
@@ -82,6 +83,57 @@ describe('format (valores abreviados)', () => {
       expect(divMoney(10, 4)).toBe(2.5);
       expect(divMoney(10, 3)).toBe(3.33);
       expect(divMoney(10, 0)).toBe(0);
+    });
+  });
+
+  describe('moneda base de visualizacion', () => {
+    afterEach(() => setDisplayCurrency(null));
+
+    it('formatea en dolares mientras el sistema no elija otra moneda', () => {
+      expect(money(1234.5)).toBe('$ 1,234.50');
+      expect(moneyCompact(1_250_000)).toBe('$ 1.3m');
+    });
+
+    it('expresa el monto en la moneda base elegida', () => {
+      setDisplayCurrency({
+        code: 'VES',
+        label: 'Bolívares',
+        symbol: 'Bs',
+        decimals: 2,
+        bsPerUnit: 1,
+        bsPerUsd: 876.7976,
+      });
+
+      // 10 USD * 876.7976 = 8 767,976 Bs.
+      expect(money(10)).toBe('Bs 8,767.98');
+      expect(moneyCompact(1_250_000)).toBe('Bs 1.1b');
+    });
+
+    it('convierte con la tasa de la moneda elegida (no solo cambia el simbolo)', () => {
+      setDisplayCurrency({
+        code: 'EUR',
+        label: 'Euros',
+        symbol: '€',
+        decimals: 2,
+        bsPerUnit: 982.00454402,
+        bsPerUsd: 876.7976,
+      });
+
+      // 10 USD = 8 767,976 Bs / 982,00454402 = 8,928...
+      expect(money(10)).toBe('€ 8.93');
+    });
+
+    it('vuelve al dolar cuando la moneda elegida todavia no tiene tasa', () => {
+      setDisplayCurrency({
+        code: 'COP',
+        label: 'Pesos colombianos',
+        symbol: 'COL$',
+        decimals: 2,
+        bsPerUnit: null,
+        bsPerUsd: 876.7976,
+      });
+
+      expect(money(10)).toBe('$ 10.00');
     });
   });
 });

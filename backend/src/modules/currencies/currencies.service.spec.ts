@@ -1,6 +1,10 @@
 import { BadRequestException } from '@nestjs/common';
 import type { PrismaService } from '../../prisma/prisma.service';
-import { CURRENCIES_KEY, CurrenciesService } from './currencies.service';
+import {
+  BASE_CURRENCY_KEY,
+  CURRENCIES_KEY,
+  CurrenciesService,
+} from './currencies.service';
 
 /** Empresa de prueba usada en todas las llamadas (multi-tenant). */
 const COMPANY_ID = 'company-1';
@@ -12,19 +16,39 @@ interface PrismaStub {
   };
 }
 
-/** Prisma simulado: `findUnique` devuelve la fila de `Setting` indicada. */
-function buildService(stored?: string | null): {
+/** Configuracion guardada en `Setting`, por clave. */
+interface StoredConfig {
+  /** JSON de `currencies.config` (`null`/`undefined` = sin configurar). */
+  currencies?: string | null;
+  /** Valor de `currencies.base` (`null`/`undefined` = moneda base sin elegir). */
+  base?: string | null;
+}
+
+/**
+ * Prisma simulado: `findUnique` devuelve la fila de `Setting` de la clave
+ * consultada (monedas o moneda base).
+ */
+function buildService(stored?: string | null | StoredConfig): {
   service: CurrenciesService;
   prisma: PrismaStub;
 } {
+  const config: StoredConfig =
+    typeof stored === 'string' || stored === null || stored === undefined
+      ? { currencies: stored }
+      : stored;
+
   const prisma: PrismaStub = {
     setting: {
-      findUnique: jest.fn().mockResolvedValue(
-        stored === undefined
-          ? null
-          : stored === null
-            ? null
-            : { key: CURRENCIES_KEY, value: stored, updatedAt: new Date() },
+      findUnique: jest.fn(
+        (args: { where: { companyId_key: { key: string } } }) => {
+          const key = args.where.companyId_key.key;
+          const value = key === BASE_CURRENCY_KEY ? config.base : config.currencies;
+          return Promise.resolve(
+            value === null || value === undefined
+              ? null
+              : { key, value, updatedAt: new Date() },
+          );
+        },
       ),
       upsert: jest.fn().mockResolvedValue({}),
     },
@@ -266,5 +290,133 @@ describe('CurrenciesService', () => {
     const enabled = await service.enabled(COMPANY_ID);
 
     expect(enabled.map((item) => item.code)).toEqual(['USD', 'VES']);
+  });
+
+  describe('moneda base (en la que se muestran los montos)', () => {
+    it('usa el dolar mientras el local no elija otra', async () => {
+      const { service, prisma } = buildService();
+
+      await expect(service.baseCurrencyCode(COMPANY_ID)).resolves.toBe('USD');
+      expect(prisma.setting.findUnique).toHaveBeenCalledWith({
+        where: {
+          companyId_key: { companyId: COMPANY_ID, key: BASE_CURRENCY_KEY },
+        },
+      });
+    });
+
+    it('normaliza el codigo guardado', async () => {
+      const { service } = buildService({ base: ' ves ' });
+
+      await expect(service.baseCurrencyCode(COMPANY_ID)).resolves.toBe('VES');
+    });
+
+    it('guarda la moneda base elegida en su propio Setting', async () => {
+      const { service, prisma } = buildService();
+
+      await service.save(
+        COMPANY_ID,
+        [{ code: 'USD' }, { code: 'VES' }, { code: 'EUR' }],
+        undefined,
+        'ves',
+      );
+
+      expect(prisma.setting.upsert).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: {
+            companyId_key: { companyId: COMPANY_ID, key: BASE_CURRENCY_KEY },
+          },
+          create: expect.objectContaining({
+            companyId: COMPANY_ID,
+            key: BASE_CURRENCY_KEY,
+            value: 'VES',
+          }),
+        }),
+      );
+    });
+
+    it('no toca la moneda base guardada cuando no se envia', async () => {
+      const { service, prisma } = buildService();
+
+      await service.save(COMPANY_ID, [
+        { code: 'USD' },
+        { code: 'VES' },
+        { code: 'EUR' },
+      ]);
+
+      expect(prisma.setting.upsert).toHaveBeenCalledTimes(1);
+      expect(prisma.setting.upsert).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: {
+            companyId_key: { companyId: COMPANY_ID, key: CURRENCIES_KEY },
+          },
+        }),
+      );
+    });
+
+    it('exige que la moneda base este configurada y se pueda convertir', async () => {
+      const { service } = buildService();
+      const currencies = [
+        { code: 'USD' },
+        { code: 'VES' },
+        { code: 'EUR' },
+      ];
+
+      await expect(
+        service.save(COMPANY_ID, currencies, undefined, 'COP'),
+      ).rejects.toBeInstanceOf(BadRequestException);
+
+      await expect(
+        service.save(COMPANY_ID, currencies, undefined, '   '),
+      ).rejects.toBeInstanceOf(BadRequestException);
+
+      // VES se convierte a 1 Bs por unidad y EUR sale del BCV.
+      await expect(
+        service.save(COMPANY_ID, currencies, undefined, 'VES'),
+      ).resolves.toBeDefined();
+      await expect(
+        service.save(COMPANY_ID, currencies, undefined, 'EUR'),
+      ).resolves.toBeDefined();
+
+      // Una moneda sin tasa solo sirve como base si se le configura una.
+      await expect(
+        service.save(
+          COMPANY_ID,
+          [...currencies, { code: 'COP', enabled: true }],
+          undefined,
+          'COP',
+        ),
+      ).rejects.toBeInstanceOf(BadRequestException);
+      await expect(
+        service.save(
+          COMPANY_ID,
+          [...currencies, { code: 'COP', enabled: true, rate: 0.22 }],
+          undefined,
+          'COP',
+        ),
+      ).resolves.toBeDefined();
+    });
+
+    it('vuelve al dolar cuando se quita la moneda que era la base', async () => {
+      const { service, prisma } = buildService({
+        currencies: JSON.stringify([
+          { code: 'USD', enabled: true },
+          { code: 'VES', enabled: true },
+          { code: 'EUR', enabled: true },
+          { code: 'COP', enabled: true, rate: 0.22 },
+        ]),
+        base: 'COP',
+      });
+
+      await service.remove(COMPANY_ID, 'COP');
+
+      expect(prisma.setting.upsert).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: {
+            companyId_key: { companyId: COMPANY_ID, key: BASE_CURRENCY_KEY },
+          },
+          create: expect.objectContaining({ value: 'USD' }),
+        }),
+      );
+    });
   });
 });

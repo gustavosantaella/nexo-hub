@@ -63,7 +63,10 @@ export interface DashboardStats {
     expectedCash: number;
     cashIn: number;
     cashOut: number;
+    /** Ventas del turno (sin propinas). */
     salesTotal: number;
+    /** Propinas cobradas en el turno (dentro de los cobros). */
+    tipsTotal: number;
     movementCount?: number;
     /** Desglose del efectivo por moneda (montos originales + USD). */
     byCurrency: CurrencyBreakdown[];

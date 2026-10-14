@@ -28,6 +28,8 @@ import { ConfirmService } from '../../shared/services/confirm.service';
 import {
   apiErrorMessage,
   dateTime,
+  displayBaseCode,
+  money,
   moneyIn,
   rate,
   sumMoney,
@@ -215,7 +217,7 @@ const EMPTY_META: PaginationMeta = {
         </div>
       }
 
-      <div class="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6">
+      <div class="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-7">
         <app-stat-card
           label="Fondo inicial"
           [value]="session()?.openingAmount ?? 0"
@@ -226,7 +228,22 @@ const EMPTY_META: PaginationMeta = {
         <app-stat-card label="Ingresos" [value]="summary()?.cashIn ?? 0" icon="trend-up" tone="emerald" [isCurrency]="true" />
         <app-stat-card label="Egresos" [value]="summary()?.cashOut ?? 0" icon="trend-down" tone="rose" [isCurrency]="true" />
         <app-stat-card label="Efectivo esperado" [value]="expectedCash" icon="money" tone="brand" [isCurrency]="true" />
-        <app-stat-card label="Ventas" [value]="summary()?.salesTotal ?? 0" icon="receipt" tone="sky" [isCurrency]="true" />
+        <app-stat-card
+          label="Ventas"
+          [value]="salesTotal"
+          icon="receipt"
+          tone="sky"
+          [isCurrency]="true"
+          hint="sin propinas"
+        />
+        <app-stat-card
+          label="Propinas"
+          [value]="tipsTotal"
+          icon="money"
+          tone="amber"
+          [isCurrency]="true"
+          hint="no son ventas"
+        />
         <app-stat-card label="Movimientos" [value]="summary()?.movementCount ?? 0" icon="chart" tone="slate" />
       </div>
 
@@ -281,7 +298,7 @@ const EMPTY_META: PaginationMeta = {
                   <th class="text-right">Ingresos</th>
                   <th class="text-right">Egresos</th>
                   <th class="text-right">Neto</th>
-                  <th class="text-right">Neto ({{ baseCurrency.code }})</th>
+                  <th class="text-right">Neto ({{ moneyBaseCode() }})</th>
                 </tr>
               </thead>
               <tbody>
@@ -365,7 +382,7 @@ const EMPTY_META: PaginationMeta = {
                 <th>Método</th>
                 <th>Moneda</th>
                 <th class="text-right">Monto</th>
-                <th class="text-right">Equivalente ({{ baseCurrency.code }})</th>
+                <th class="text-right">Equivalente ({{ moneyBaseCode() }})</th>
                 <th>Descripción</th>
                 <th>Usuario</th>
               </tr>
@@ -599,6 +616,26 @@ const EMPTY_META: PaginationMeta = {
 
     <ng-template #closeBody>
       <div class="space-y-4">
+        <div class="space-y-2 rounded-xl border border-slate-200 p-4">
+          <p class="label">Ventas del turno</p>
+          <div class="flex items-center justify-between gap-3 text-sm">
+            <span class="text-slate-500">Ventas (sin propinas)</span>
+            <app-money [amount]="salesTotal" alignEnd="true" />
+          </div>
+          <div class="flex items-center justify-between gap-3 text-sm">
+            <span class="text-slate-500">Propinas</span>
+            <app-money [amount]="tipsTotal" alignEnd="true" />
+          </div>
+          <div class="flex items-center justify-between gap-3 border-t border-slate-100 pt-2 text-sm">
+            <span class="font-medium text-slate-600">Total cobrado por ventas</span>
+            <app-money [amount]="salesGrossTotal" [strong]="true" alignEnd="true" />
+          </div>
+          <p class="text-xs text-slate-400">
+            Las propinas no son ventas: se cobran dentro del pedido y quedan
+            separadas del consumo.
+          </p>
+        </div>
+
         <div class="space-y-2 rounded-xl border border-slate-200 bg-slate-50/60 p-4">
           <div class="flex items-center justify-between gap-3 text-sm">
             <span class="text-slate-500">Efectivo esperado en el cajón</span>
@@ -606,6 +643,7 @@ const EMPTY_META: PaginationMeta = {
           </div>
           <p class="text-xs text-slate-500">
             Fondo inicial + entradas − salidas, en {{ baseCurrency.label }}.
+            Incluye las propinas del turno.
           </p>
         </div>
 
@@ -623,7 +661,7 @@ const EMPTY_META: PaginationMeta = {
                       {{ amountIn(line.amount, line.currency) }}
                     </span>
                     <span class="block text-[10px] text-slate-400">
-                      {{ amountIn(line.baseAmount, baseCurrency.code) }} equivalente
+                      {{ money(line.baseAmount) }} equivalente
                     </span>
                   </span>
                 </li>
@@ -646,7 +684,7 @@ const EMPTY_META: PaginationMeta = {
                       {{ amountIn(row.net, row.currency) }}
                     </span>
                     <span class="block text-[10px] text-slate-400">
-                      {{ amountIn(row.baseNet, baseCurrency.code) }} equivalente
+                      {{ money(row.baseNet) }} equivalente
                     </span>
                   </span>
                 </li>
@@ -739,7 +777,7 @@ const EMPTY_META: PaginationMeta = {
                     <li>
                       {{ amountIn(line.amount, line.currency) }}
                       <span class="text-slate-400">
-                        ({{ amountIn(line.baseAmount, baseCurrency.code) }})
+                        ({{ money(line.baseAmount) }})
                       </span>
                     </li>
                   }
@@ -775,6 +813,11 @@ const EMPTY_META: PaginationMeta = {
             <div class="rounded-lg bg-slate-50 px-3 py-2">
               <p class="text-slate-500">Ventas</p>
               <app-money [amount]="detail.summary?.salesTotal ?? 0" />
+              <p class="text-[11px] text-slate-400">sin propinas</p>
+            </div>
+            <div class="rounded-lg bg-slate-50 px-3 py-2">
+              <p class="text-slate-500">Propinas</p>
+              <app-money [amount]="detail.summary?.tipsTotal ?? 0" />
             </div>
             <div class="rounded-lg bg-slate-50 px-3 py-2">
               <p class="text-slate-500">Movimientos</p>
@@ -800,7 +843,7 @@ const EMPTY_META: PaginationMeta = {
                     <th>Tipo</th>
                     <th>Moneda</th>
                     <th class="text-right">Monto</th>
-                    <th class="text-right">Equivalente ({{ baseCurrency.code }})</th>
+                    <th class="text-right">Equivalente ({{ moneyBaseCode() }})</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -853,6 +896,10 @@ export class CashPage implements OnInit {
 
   readonly dateTime = dateTime;
   readonly moneyIn = moneyIn;
+  /** Monto (guardado en USD) en la moneda base con la que se muestran los montos. */
+  readonly money = money;
+  /** Código de la moneda base con la que se muestran los montos (USD por defecto). */
+  readonly moneyBaseCode = displayBaseCode;
   readonly rate = rate;
   readonly baseCurrency = BASE_CURRENCY;
   /**
@@ -976,6 +1023,24 @@ export class CashPage implements OnInit {
     const summary = this.summary();
     if (summary) return summary.expectedCash;
     return this.session()?.openingAmount ?? 0;
+  }
+
+  /** Ventas del turno sin propinas (moneda base). */
+  get salesTotal(): number {
+    return this.summary()?.salesTotal ?? 0;
+  }
+
+  /**
+   * Propinas cobradas en el turno (moneda base). No son ventas: entran dentro
+   * del cobro del pedido y el backend las separa del consumo en el arqueo.
+   */
+  get tipsTotal(): number {
+    return this.summary()?.tipsTotal ?? 0;
+  }
+
+  /** Ventas + propinas: lo que entró por ventas en el turno. */
+  get salesGrossTotal(): number {
+    return sumMoney([this.salesTotal, this.tipsTotal]);
   }
 
   get byMethod(): { method: string; in: number; out: number; net: number }[] {

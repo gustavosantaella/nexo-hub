@@ -72,7 +72,10 @@ export type PaymentMethod =
 export interface OrderItem {
   id: string;
   orderId: string;
-  productId: string;
+  /** Producto vendido (`null` cuando la linea es un menu). */
+  productId?: string | null;
+  /** Menu vendido (`null` cuando la linea es un producto suelto). */
+  menuId?: string | null;
   name: string;
   quantity: number;
   unitPrice: number;
@@ -123,7 +126,10 @@ export interface Order {
 }
 
 export interface OrderItemPayload {
-  productId: string;
+  /** Producto suelto del inventario (excluyente con `menuId`). */
+  productId?: string;
+  /** Menu con receta: descuenta sus ingredientes (excluyente con `productId`). */
+  menuId?: string;
   quantity: number;
   unitPrice?: number;
 }
@@ -195,7 +201,10 @@ export interface CashSummary {
   totalIn: number;
   totalOut: number;
   net: number;
+  /** Ventas del turno (categoría SALE), sin propinas. */
   salesTotal: number;
+  /** Propinas cobradas en el turno (vienen dentro de los cobros por venta). */
+  tipsTotal: number;
   movementCount: number;
   byMethod: { method: string; in: number; out: number; net: number }[];
   byCategory: { category: string; in: number; out: number; net: number }[];

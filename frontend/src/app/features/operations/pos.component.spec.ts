@@ -3,7 +3,8 @@ import { HttpTestingController, provideHttpClientTesting } from '@angular/common
 import { ComponentFixture, TestBed } from '@angular/core/testing';
 import { environment } from '../../../environments/environment';
 import type { ProductOption } from '../../core/models/api.model';
-import type { Order } from '../../core/models/operations.model';
+import type { MenuOption } from '../../core/models/api.model';
+import type { Order, OrderItem } from '../../core/models/operations.model';
 import { PosComponent } from './pos.component';
 
 const API = environment.apiUrl;
@@ -27,6 +28,39 @@ const PRODUCTS: ProductOption[] = [
     stock: 48,
     unit: 'CAJA',
     unitsPerBox: 24,
+  },
+];
+
+/** Carta de menús: una parrilla disponible y un plato agotado. */
+const MENUS: MenuOption[] = [
+  {
+    id: 'm1',
+    code: 'MEN-0001',
+    name: 'Parrilla',
+    price: 18,
+    cost: 7,
+    availability: 'ALL',
+    margin: 11,
+    maxServings: 5,
+    available: true,
+    ingredients: [
+      {
+        quantity: 0.1,
+        product: { id: 'p1', name: 'Carne', unit: 'KG', stock: 0.5, trackStock: true },
+      },
+    ],
+  },
+  {
+    id: 'm2',
+    code: 'MEN-0002',
+    name: 'Plato agotado',
+    price: 10,
+    cost: 5,
+    availability: 'ALL',
+    margin: 5,
+    maxServings: 0,
+    available: false,
+    ingredients: [],
   },
 ];
 
@@ -72,12 +106,17 @@ describe('PosComponent (vista de cajero)', () => {
     localStorage.clear();
   });
 
-  function mount(): { fixture: ComponentFixture<PosComponent>; pos: PosComponent } {
+  function mount(menus: MenuOption[] = []): {
+    fixture: ComponentFixture<PosComponent>;
+    pos: PosComponent;
+  } {
     const fixture = TestBed.createComponent(PosComponent);
     const pos = fixture.componentInstance;
     fixture.detectChanges();
 
     http.expectOne(`${API}/products/options`).flush(PRODUCTS);
+    http.expectOne(`${API}/menus/options`).flush(menus);
+    http.expectOne(`${API}/menu-categories/options`).flush([]);
     http.expectOne(`${API}/categories/options`).flush([]);
     http.expectOne(`${API}/customers/options`).flush([]);
     http.expectOne(`${API}/cash/current`).flush({
@@ -103,6 +142,10 @@ describe('PosComponent (vista de cajero)', () => {
       .forEach((request) => request.flush({ session: null, summary: null }));
     http.match(`${API}/orders/active`).forEach((request) => request.flush([]));
     http.match(`${API}/products/options`).forEach((request) => request.flush(PRODUCTS));
+    http.match(`${API}/menus/options`).forEach((request) => request.flush([]));
+    http
+      .match(`${API}/menu-categories/options`)
+      .forEach((request) => request.flush([]));
     http.match(`${API}/categories/options`).forEach((request) => request.flush([]));
     http.match(`${API}/customers/options`).forEach((request) => request.flush([]));
   }
@@ -201,4 +244,147 @@ describe('PosComponent (vista de cajero)', () => {
 
     flushReload();
   });
+
+  it('lista los productos de la mesa con su subtotal, total y propina al agregar o cobrar', () => {
+    const { fixture, pos } = mount();
+
+    const items: OrderItem[] = [
+      {
+        id: 'i1',
+        orderId: 'o9',
+        productId: 'p1',
+        name: 'Cafe pasado',
+        quantity: 2,
+        unitPrice: 30,
+        total: 60,
+      },
+      {
+        id: 'i2',
+        orderId: 'o9',
+        productId: 'p2',
+        name: 'Malta (caja 24)',
+        quantity: 24,
+        unitPrice: 1,
+        total: 24,
+      },
+    ];
+    const tableOrder = order({
+      id: 'o9',
+      code: 'PED-0009',
+      tableNumber: '4',
+      items,
+      subtotal: 84,
+      tax: 0,
+      tip: 6,
+      total: 90,
+      paidAmount: 40,
+      paymentStatus: 'PARTIAL',
+    });
+
+    pos.startAddToOrder(tableOrder);
+    fixture.detectChanges();
+
+    // Los productos de la mesa salen en el listado, no solo en un aviso.
+    expect(pos.targetOrder()?.code).toBe('PED-0009');
+    let text = fixture.nativeElement.textContent as string;
+    expect(text).toContain('Ya en la mesa');
+    expect(text).toContain('Cafe pasado');
+    expect(text).toContain('Malta (caja 24)');
+
+    // Cada línea de la mesa dice cuántas unidades se pidieron, no solo el monto.
+    expect(countOf(text, 'Cantidad: 2')).toBe(1);
+    expect(countOf(text, 'Cantidad: 24')).toBe(1);
+
+    // Se ve cuántas unidades de cada producto se pidieron ya en la mesa (grilla).
+    expect(pos.orderedUnitsOf('p1')).toBe(2);
+    expect(pos.orderedUnitsOf('p2')).toBe(24);
+    expect(pos.orderedUnitsOf('p3')).toBe(0);
+    expect(text).toContain('Ya en la mesa: 2');
+    expect(text).toContain('Ya en la mesa: 24');
+    expect(countOf(text, 'Ya en la mesa: 2')).toBe(1);
+
+    // Subtotal, total, propina y saldo del pedido entran en la cuenta del carrito.
+    expect(pos.bill.subtotal).toBe(84);
+    expect(pos.bill.tip).toBe(6);
+    expect(pos.bill.total).toBe(90);
+    expect(pos.bill.paid).toBe(40);
+    expect(pos.bill.balance).toBe(50);
+    expect(pos.chargeAmount).toBe(50);
+    expect(text).toContain('Propina');
+    expect(text).toContain('Saldo pendiente');
+
+    // La línea nueva se suma a la cuenta del pedido (no la reemplaza) y a cobrar.
+    pos.addProduct(PRODUCTS[0]);
+    fixture.detectChanges();
+
+    expect(pos.bill.subtotal).toBe(114);
+    expect(pos.bill.total).toBe(120);
+    expect(pos.bill.balance).toBe(80);
+    expect(pos.chargeAmount).toBe(80);
+
+    // La línea nueva recuerda cuántas unidades de ese producto ya pidió la mesa.
+    text = fixture.nativeElement.textContent as string;
+    expect(text).toContain('Por agregar');
+    expect(countOf(text, 'Ya en la mesa: 2')).toBe(2);
+    // La línea de la mesa sigue mostrando su propia cantidad después de agregar.
+    expect(countOf(text, 'Cantidad: 2')).toBe(1);
+
+    // El modo «cobrar» de la mesa muestra la misma cuenta con sus productos.
+    pos.cancelAddMode();
+    flushReload();
+    pos.startChargeOrder(tableOrder);
+    fixture.detectChanges();
+
+    expect(pos.targetOrder()?.code).toBe('PED-0009');
+    expect(pos.bill.total).toBe(90);
+    text = fixture.nativeElement.textContent as string;
+    expect(text).toContain('Ya en la mesa');
+    expect(text).toContain('Cafe pasado');
+  });
+
+  /**
+   * Carta de menús: el cajero vende el plato con su precio y la línea viaja al
+   * backend como `menuId`, que es quien expande la receta y descuenta el stock.
+   */
+  it('vende un menú de la carta usando su precio y su disponibilidad', () => {
+    const { fixture, pos } = mount(MENUS);
+    fixture.detectChanges();
+
+    // La grilla de la carta solo muestra los menús disponibles.
+    expect(pos.filteredMenus.map((menu) => menu.name)).toEqual(['Parrilla']);
+
+    pos.addMenu(MENUS[0]);
+    fixture.detectChanges();
+
+    const line = pos.lines()[0];
+    expect(line.menuId).toBe('m1');
+    expect(line.productId).toBeNull();
+    expect(line.unitPrice).toBe(18);
+    expect(line.ingredientCount).toBe(1);
+    // `maxServings` (5) es el tope de porciones que permite el inventario.
+    expect(line.stock).toBe(5);
+    expect(pos.subtotal).toBe(18);
+    expect(pos.lineKey(line)).toBe('m:m1');
+
+    // Volver a tocar el plato suma una porción en la misma línea.
+    pos.addMenu(MENUS[0]);
+    expect(pos.lines().length).toBe(1);
+    expect(pos.lines()[0].quantity).toBe(2);
+    expect(pos.subtotal).toBe(36);
+
+    // Un menú agotado no se puede agregar y avisa por qué.
+    pos.addMenu(MENUS[1]);
+    expect(pos.lines().length).toBe(1);
+    expect(pos.formError()).toContain('no tiene stock suficiente');
+
+    // Quitar la línea usa la clave del menú (no un `productId`).
+    pos.removeLine('m:m1');
+    expect(pos.lines().length).toBe(0);
+  });
 });
+
+/** Cuenta cuantas veces aparece un texto completo en el contenido renderizado. */
+function countOf(text: string, token: string): number {
+  const escaped = token.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return (text.match(new RegExp(`${escaped}\\b`, 'g')) ?? []).length;
+}

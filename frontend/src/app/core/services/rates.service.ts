@@ -2,12 +2,14 @@ import { HttpClient } from '@angular/common/http';
 import { Injectable, computed, inject, signal } from '@angular/core';
 import { environment } from '../../../environments/environment';
 import {
+  BASE_CURRENCY,
   BASE_CURRENCY_CODE,
   LOCAL_CURRENCY_CODE,
   RATE_META,
   currencyMeta,
 } from '../constants/currency';
 import type {
+  BaseCurrencyInfo,
   CurrencyRateOption,
   CustomRate,
   RateConversion,
@@ -15,12 +17,22 @@ import type {
   RatesSnapshot,
   ReferenceRate,
 } from '../models/rates.model';
-import { bs, money } from '../utils/format';
+import { bs, money, moneyIn, setDisplayCurrency } from '../utils/format';
 
 /** Redondeo monetario (2 decimales) equivalente al del backend. */
 function round2(value: number): number {
   return Math.round((value + Number.EPSILON) * 100) / 100;
 }
+
+/** Moneda base mientras las tasas aún no se han cargado (dólares). */
+const DEFAULT_BASE_CURRENCY: BaseCurrencyInfo = {
+  code: BASE_CURRENCY.code,
+  label: BASE_CURRENCY.label,
+  symbol: BASE_CURRENCY.symbol,
+  decimals: 2,
+  bsPerUnit: null,
+  bsPerUsd: 0,
+};
 
 /** Preferencia local: mostrar los montos "al cambio" en todo el sistema. */
 const CONVERSIONS_KEY = 'nexo-hub.rate-conversions';
@@ -88,6 +100,14 @@ export class RatesService {
   readonly enabledCurrencies = computed(() =>
     this.currencies().filter((item) => item.enabled),
   );
+  /** Moneda base con la que se muestran los montos (USD por defecto). */
+  readonly baseCurrency = computed<BaseCurrencyInfo>(
+    () => this._snapshot()?.baseCurrency ?? DEFAULT_BASE_CURRENCY,
+  );
+  /** Código de la moneda base (el que pinta `format.money()`). */
+  readonly baseCode = computed(() => this.baseCurrency().code);
+  /** `true` cuando los montos se muestran en una moneda distinta del dólar. */
+  readonly convertsBase = computed(() => this.baseCode() !== BASE_CURRENCY_CODE);
   /** Bolívares por 1 USD con la tasa activa del sistema (personalizada si existe). */
   readonly bsPerUsd = computed(() => {
     const base = this.currencies().find((item) => item.isBase);
@@ -113,6 +133,7 @@ export class RatesService {
         next: (snapshot) => {
           if (requestId !== this.requestId) return;
           this._snapshot.set(snapshot);
+          this.applyDisplayBase(snapshot);
           this._error.set(null);
           this._loading.set(false);
         },
@@ -127,6 +148,28 @@ export class RatesService {
   /** Carga las tasas solo una vez (al montar el layout). */
   ensureLoaded(): void {
     if (!this.ready() && !this._loading()) this.load();
+  }
+
+  /**
+   * Sincroniza el formateo global de montos (`format.money()`) con la moneda
+   * base de la empresa: así tarjetas, listados y reportes muestran primero esa
+   * moneda sin cambiar de dónde salen los datos (que siguen en USD).
+   */
+  private applyDisplayBase(snapshot: RatesSnapshot): void {
+    const base = snapshot.baseCurrency;
+    // Compatibilidad: un snapshot sin moneda base deja los montos en dólares.
+    if (!base) {
+      setDisplayCurrency(null);
+      return;
+    }
+    setDisplayCurrency({
+      code: base.code,
+      label: base.label,
+      symbol: base.symbol,
+      decimals: base.decimals ?? 2,
+      bsPerUnit: base.bsPerUnit,
+      bsPerUsd: base.bsPerUsd,
+    });
   }
 
   /** Guarda la tasa personalizada; con `null` la elimina. */
@@ -180,6 +223,33 @@ export class RatesService {
       amount: value * option.rate,
       text: bs(value * option.rate),
     }));
+  }
+
+  /**
+   * Convierte un monto (en moneda base contable, USD) a las demás monedas
+   * configuradas: es la lista que se muestra debajo del monto cuando la moneda
+   * base elegida no es el dólar.
+   */
+  currencyConversions(amount: number | null | undefined): RateConversion[] {
+    const usd = Number(amount ?? 0);
+    const bsPerUsd = this.bsPerUsd();
+    const base = this.baseCode();
+    if (!bsPerUsd) return [];
+
+    return this.currencies()
+      .filter((item) => item.enabled && item.code !== base && !!item.bsPerUnit)
+      .map((item) => {
+        const bsPerUnit = item.bsPerUnit as number;
+        const value = round2((usd * bsPerUsd) / bsPerUnit);
+        return {
+          key: item.code,
+          code: item.code,
+          label: item.code,
+          rate: bsPerUnit,
+          amount: value,
+          text: moneyIn(value, item.code),
+        };
+      });
   }
 
   /** Equivalente en bolívares con la tasa indicada (la activa por defecto). */

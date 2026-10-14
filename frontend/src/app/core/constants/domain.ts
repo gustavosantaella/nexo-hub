@@ -82,6 +82,27 @@ export const STOCK_MOVEMENT_LABELS: Record<string, string> = {
 };
 export const STOCK_MOVEMENT_OPTIONS = toOptions(STOCK_MOVEMENT_LABELS);
 
+/** Seccion del ingrediente dentro de un menu (combo). */
+export const MENU_SECTION_LABELS: Record<string, string> = {
+  Principal: 'Principal',
+  Bebida: 'Bebida',
+  Postre: 'Postre',
+  Acompanamiento: 'Acompañamiento',
+  Otro: 'Otro',
+};
+export const MENU_SECTION_OPTIONS = Object.keys(MENU_SECTION_LABELS).map(
+  (value) => ({ value, label: MENU_SECTION_LABELS[value] }),
+) as { value: string; label: string }[];
+
+/** Como se ofrece un menu en la carta. */
+export const MENU_AVAILABILITY_LABELS: Record<string, string> = {
+  ALL: 'Todos los servicios',
+  DINE_IN: 'Solo salón',
+  TAKEAWAY: 'Solo para llevar',
+  DELIVERY: 'Solo delivery',
+};
+export const MENU_AVAILABILITY_OPTIONS = toOptions(MENU_AVAILABILITY_LABELS);
+
 export const EXPENSE_CATEGORY_LABELS: Record<string, string> = {
   OPERATIVO: 'Operativo',
   SERVICIOS: 'Servicios',

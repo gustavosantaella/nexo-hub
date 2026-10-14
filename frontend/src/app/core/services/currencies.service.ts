@@ -4,6 +4,7 @@ import { environment } from '../../../environments/environment';
 import type {
   CurrenciesResponse,
   CurrencySettingPayload,
+  UpdateCurrenciesPayload,
 } from '../models/currencies.model';
 import { RatesService } from './rates.service';
 
@@ -25,19 +26,25 @@ export class CurrenciesService {
   /** Monedas configuradas con su tasa en bolívares. */
   readonly currencies = computed(() => this.rates.currencies());
 
-  /** Guarda la configuración completa y refresca las tasas. */
-  save(payload: CurrencySettingPayload[], onDone?: () => void): void {
+  /**
+   * Guarda la configuración completa (y la moneda base del sistema) y refresca
+   * las tasas, que son las que repintan los montos de todo el sistema.
+   */
+  save(
+    payload: CurrencySettingPayload[],
+    base: string,
+    onDone?: () => void,
+  ): void {
     this._saving.set(true);
-    this.http
-      .put<CurrenciesResponse>(this.baseUrl, { currencies: payload })
-      .subscribe({
-        next: () => {
-          this._saving.set(false);
-          this.rates.load(true);
-          onDone?.();
-        },
-        error: () => this._saving.set(false),
-      });
+    const body: UpdateCurrenciesPayload = { currencies: payload, base };
+    this.http.put<CurrenciesResponse>(this.baseUrl, body).subscribe({
+      next: () => {
+        this._saving.set(false);
+        this.rates.load(true);
+        onDone?.();
+      },
+      error: () => this._saving.set(false),
+    });
   }
 
   /** Quita una moneda de la configuración (USD no se puede quitar). */

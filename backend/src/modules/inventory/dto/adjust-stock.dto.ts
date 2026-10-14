@@ -1,11 +1,18 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { Type } from 'class-transformer';
-import { IsInt, IsOptional, IsString, Min } from 'class-validator';
+import { IsNumber, IsOptional, IsString, Min } from 'class-validator';
+import { QTY_DECIMALS } from '../../../common/utils/quantity.util';
 
 export class AdjustStockDto {
-  @ApiProperty({ description: 'Stock final deseado tras el ajuste' })
+  @ApiProperty({
+    description:
+      'Stock final deseado tras el ajuste (admite hasta 3 decimales)',
+  })
   @Type(() => Number)
-  @IsInt({ message: 'El stock debe ser un numero entero' })
+  @IsNumber(
+    { maxDecimalPlaces: QTY_DECIMALS },
+    { message: 'El stock admite hasta 3 decimales' },
+  )
   @Min(0)
   newStock!: number;
 

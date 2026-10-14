@@ -64,7 +64,9 @@ recrea y la vuelve a sembrar (los datos de demo se regeneran siempre).
 El seed deja la base lista para probar **todo** el sistema:
 
 - **Maestros** (se actualizan con `upsert`, nunca se duplican): 4 usuarios, 7
-  categorías, 5 proveedores, 8 clientes, 24 productos, la configuración de
+  categorías, 5 proveedores, 8 clientes, 24 productos, **3 categorías de menú y 5
+  menús con su receta** (recetas sobre los productos del catálogo, con un
+  ingrediente fraccionario: medio litro de jugo), la configuración de
   monedas (`USD`, `VES`, `EUR`, `COP` activas y `PEN` desactivada) y la **tasa
   personalizada** del dólar.
 - **Dos empresas** (`Nexo Hub Demo, C.A.` y `Bodegon La Esquina, C.A.`): la
@@ -96,6 +98,11 @@ Para partir de cero: `npm run db:reset` (borra la base, la recrea y siembra).
 - **Caja**: una sola sesión `OPEN` a la vez; movimientos *append-only*;
   `esperado = fondo + efectivo IN − efectivo OUT`; cierre con arqueo
   (`countedAmount` vs `expectedAmount` → `difference`) y guardado contra dobles cierres.
+  El movimiento del cobro guarda el pago completo, así que el arqueo **separa las
+  propinas de las ventas** (`tipsTotal`): la propina del pedido se reparte entre sus
+  cobros (primero se cubre el consumo y la propina entra con el pago que lo completa),
+  `salesTotal` queda sin propina y la tarjeta *Propinas* de la caja muestra lo recaudado
+  en el turno (la vista de cajero/POS no la muestra).
 - **Pedidos**: máquina de estados `PENDING → CONFIRMED → PREPARING → READY → COMPLETED`;
   cancelar exige que el pedido no tenga pagos; el pago total marca el pedido como `COMPLETED`.
   A un pedido en curso se le pueden **agregar productos** (`POST /orders/:id/items`, botón
@@ -108,10 +115,42 @@ Para partir de cero: `npm run db:reset` (borra la base, la recrea y siembra).
   (o se devuelve completo) y los totales se recalculan; el pedido debe conservar al menos
   una línea y el nuevo total no puede quedar por debajo de lo ya pagado.
   Todo cobro (incluso con tarjeta) requiere una caja abierta.
+- **Menús (platos y combos)**: además de los productos sueltos, el local vende
+  **menús**: un plato o combo (`nombre`, `precio`, categoría propia de menús,
+  disponibilidad, foto y minutos de preparación) armado con una **receta** de
+  ingredientes tomados del inventario. Cada línea de la receta indica **cuánto
+  consume una unidad del menú** en la misma unidad del stock del producto
+  (`0.1` = 100 g si la carne se controla en kilos; `0.5` = medio litro de jugo) y
+  una **sección** para la carta/comanda (*Principal*, *Bebida*, *Postre*,
+  *Acompañamiento*). El sistema **costea la receta solo** (`Σ costo × cantidad`),
+  muestra el **margen** y calcula la **disponibilidad**: `maxServings =`
+  mínimo de `stock / cantidad` entre los ingredientes con control de inventario
+  (`Ilimitado` si ninguno lo lleva, `Agotado` si el stock no alcanza).
+  `POST /menus` valida que todos los productos existan y estén activos en la
+  empresa, que no se repitan y que la cantidad sea mayor a 0; el código (`MEN-…`)
+  se genera solo si no se envía y es único por empresa; el borrado es **baja
+  lógica** (los pedidos referencian los menús vendidos).
+  Se administra en `/panel/menus` (pestañas **Menús** y **Categorías**) y se
+  ofrece en el **POS** (pestaña *Menús* de la grilla, que es la vista del cajero
+  en `/panel/caja`) y en **Pedidos** (buscador y carrito con pestañas
+  *Productos* | *Menús*). En la línea del pedido el menú viaja como `menuId`
+  (una línea vende un producto **o** un menú, nunca ambos) y al guardar el
+  backend **expande la receta** y descuenta el inventario de cada ingrediente
+  (una salida por producto, agregando las cantidades repetidas); al corregir la
+  cantidad, quitar la línea o cancelar el pedido, el stock se devuelve en la
+  misma proporción. Los productos sin control de inventario no generan
+  movimiento; los menús sin receta no se pueden vender y se cobran a su precio.
+  En los reportes, la venta de un menú se atribuye **al menú** (no reparte el
+  importe entre sus ingredientes): el menú aparece en *más vendidos* con su costo
+  de receta y en *ventas por categoría* con su categoría de menú.
 - **Cuentas por cobrar/pagar**: el estado se deriva de `amount`/`paidAmount`;
   el saldo nunca es negativo; sobregiros rechazados; `CANCELLED` es un estado explícito.
 - **Inventario**: motor único de stock con trazabilidad (`stockBefore`/`stockAfter`),
-  salidas mayores al disponible rechazadas y ajustes a stock final.
+  salidas mayores al disponible rechazadas y ajustes a stock final. Las existencias
+  y las cantidades de los movimientos son **decimales de hasta 3 cifras** (0.1 =
+  100 g de un producto medido en kilos): las recetas de los menús consumen
+  fracciones, así que el motor de inventario es el único que normaliza el
+  redondeo (`common/utils/quantity.util.ts`).
 - **Tasas de cambio**: las tasas oficiales se leen del BCV (publicadas por
   [dolarvzla](https://rates.dolarvzla.com/bcv/current.json)) y se cachean en el
   backend; el local puede además fijar una **tasa personalizada** (Bs por USD)
@@ -218,9 +257,10 @@ La URL base de la API se configura en `src/environments/environment.ts`.
 | `/login` | Inicio de sesión (accesos de prueba con un clic) |
 | `/registro` | Registro de una empresa nueva con su usuario administrador |
 | `/panel` | Panel con KPIs, caja, cobros del día y stock crítico |
-| `/panel/pedidos` | Tablero operativo + historial, creación de pedidos, cobros, y agregar/corregir/quitar productos a un pedido en curso |
-| `/panel/caja` | Apertura/cierre con arqueo, movimientos e historial de sesiones |
+| `/panel/pedidos` | Tablero operativo + historial, creación de pedidos (productos y menús), cobros, y agregar/corregir/quitar productos a un pedido en curso |
+| `/panel/caja` | Apertura/cierre con arqueo, movimientos e historial de sesiones; incluye el **POS** del cajero, con la grilla de productos y la carta de **menús** |
 | `/panel/inventario` | Niveles de stock, movimientos y ajustes |
+| `/panel/menus` | Menús (platos/combos) con su receta de ingredientes, costo, margen y disponibilidad, y sus categorías |
 | `/panel/productos`, `/panel/categorias`, `/panel/proveedores`, `/panel/clientes` | Catálogo |
 | `/panel/gastos`, `/panel/cuentas-por-pagar`, `/panel/cuentas-por-cobrar` | Finanzas |
 | `/panel/reportes` | Series de ventas/gastos/utilidad, top productos, métodos de pago y cobros por moneda |

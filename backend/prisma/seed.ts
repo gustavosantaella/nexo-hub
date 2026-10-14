@@ -950,6 +950,177 @@ async function seedCatalog(): Promise<{
 }
 
 // ===========================================================================
+//  Menus demo (recetas con los productos del catalogo)
+// ===========================================================================
+
+/** Categorias comerciales del menu. */
+const MENU_CATEGORIES = [
+  { name: 'Almuerzos', description: 'Platos del dia', color: '#f59e0b', sortOrder: 1 },
+  { name: 'Combos', description: 'Plato + bebida', color: '#0ea5e9', sortOrder: 2 },
+  { name: 'Postres', description: 'Dulces de la casa', color: '#ec4899', sortOrder: 3 },
+];
+
+interface SeedMenu {
+  code: string;
+  name: string;
+  description: string;
+  category: string;
+  price: number;
+  preparationMinutes: number;
+  /** Receta: SKU del producto y cuanto consume UNA unidad del menu. */
+  ingredients: { sku: string; quantity: number; section?: string }[];
+}
+
+const MENU_ITEMS: SeedMenu[] = [
+  {
+    code: 'MENU-0001',
+    name: 'Pollo a la brasa + gaseosa',
+    description: 'Cuarto de pollo con guarnicion y gaseosa de 500 ml',
+    category: 'Combos',
+    price: 22,
+    preparationMinutes: 20,
+    ingredients: [
+      { sku: 'COM-002', quantity: 1 },
+      { sku: 'BEB-001', quantity: 1, section: 'Bebida' },
+    ],
+  },
+  {
+    code: 'MENU-0002',
+    name: 'Hamburguesa + malta',
+    description: 'Hamburguesa clasica con malta bien fria',
+    category: 'Combos',
+    price: 18,
+    preparationMinutes: 15,
+    ingredients: [
+      { sku: 'COM-003', quantity: 1 },
+      { sku: 'BEB-003', quantity: 1, section: 'Bebida' },
+    ],
+  },
+  {
+    code: 'MENU-0003',
+    name: 'Pizza personal + jugo',
+    description: 'Pizza personal acompanada de medio litro de jugo natural',
+    category: 'Almuerzos',
+    price: 20,
+    preparationMinutes: 18,
+    ingredients: [
+      { sku: 'COM-004', quantity: 1 },
+      // Medio litro: el jugo se controla en litros, asi que la receta consume 0.5.
+      { sku: 'BEB-004', quantity: 0.5, section: 'Bebida' },
+    ],
+  },
+  {
+    code: 'MENU-0004',
+    name: 'Menu del dia con postre',
+    description: 'Sopa + segundo + refresco y flan casero de postre',
+    category: 'Almuerzos',
+    price: 17,
+    preparationMinutes: 15,
+    ingredients: [
+      { sku: 'COM-001', quantity: 1 },
+      { sku: 'POS-001', quantity: 1, section: 'Postre' },
+    ],
+  },
+  {
+    code: 'MENU-0005',
+    name: 'Ensalada cesar con pan de queso',
+    description: 'Ensalada cesar con dos panes de queso',
+    category: 'Almuerzos',
+    price: 13,
+    preparationMinutes: 10,
+    ingredients: [
+      { sku: 'COM-006', quantity: 1 },
+      { sku: 'PAN-002', quantity: 2, section: 'Acompanamiento' },
+    ],
+  },
+];
+
+/**
+ * Categorias y menus de demo. La receta usa los productos del catalogo, asi que
+ * vender un menu descuenta sus ingredientes igual que en produccion: el costo se
+ * calcula con el costo de cada producto y su cantidad.
+ */
+async function seedMenus(): Promise<void> {
+  const menuCategoryIds = new Map<string, string>();
+  for (const category of MENU_CATEGORIES) {
+    const row = await prisma.menuCategory.upsert({
+      where: { companyId_name: { companyId: COMPANY_ID, name: category.name } },
+      update: {
+        description: category.description,
+        color: category.color,
+        sortOrder: category.sortOrder,
+        active: true,
+      },
+      create: { ...category, companyId: COMPANY_ID },
+    });
+    menuCategoryIds.set(row.name, row.id);
+  }
+
+  const products = await prisma.product.findMany({
+    where: { companyId: COMPANY_ID },
+    select: { id: true, sku: true, cost: true },
+  });
+  const productBySku = new Map(products.map((product) => [product.sku, product]));
+
+  let created = 0;
+  for (const item of MENU_ITEMS) {
+    const recipe = item.ingredients
+      .map((ingredient) => ({
+        ...ingredient,
+        product: productBySku.get(ingredient.sku),
+      }))
+      .filter(
+        (ingredient): ingredient is typeof ingredient & { product: { id: string; cost: number } } =>
+          !!ingredient.product,
+      );
+    if (recipe.length === 0) continue;
+
+    const cost =
+      Math.round(
+        recipe.reduce(
+          (acc, ingredient) => acc + ingredient.product.cost * ingredient.quantity,
+          0,
+        ) * 100,
+      ) / 100;
+
+    const base = {
+      name: item.name,
+      description: item.description,
+      price: item.price,
+      cost,
+      availability: 'ALL',
+      preparationMinutes: item.preparationMinutes,
+      categoryId: menuCategoryIds.get(item.category) ?? null,
+      active: true,
+    };
+
+    const menu = await prisma.menu.upsert({
+      where: { companyId_code: { companyId: COMPANY_ID, code: item.code } },
+      update: base,
+      create: { ...base, companyId: COMPANY_ID, code: item.code },
+    });
+
+    // La receta se reconstruye en cada siembra (no se duplica).
+    await prisma.menuIngredient.deleteMany({ where: { menuId: menu.id } });
+    await prisma.menuIngredient.createMany({
+      data: recipe.map((ingredient, index) => ({
+        companyId: COMPANY_ID,
+        menuId: menu.id,
+        productId: ingredient.product.id,
+        quantity: ingredient.quantity,
+        section: ingredient.section ?? 'Principal',
+        sortOrder: index,
+      })),
+    });
+    created += 1;
+  }
+
+  console.log(
+    `  Menus: ${menuCategoryIds.size} categorias y ${created} menus con receta`,
+  );
+}
+
+// ===========================================================================
 //  Generacion del historial de operacion
 // ===========================================================================
 
@@ -2240,6 +2411,7 @@ async function main(): Promise<void> {
   // Empresa principal: configuracion, catalogo e historial completo.
   await withCompany(primaryId, () => seedSettings(adminId));
   const catalog = await withCompany(primaryId, () => seedCatalog());
+  await withCompany(primaryId, () => seedMenus());
   await withCompany(primaryId, () =>
     seedDemoData({
       adminId,
@@ -2254,6 +2426,7 @@ async function main(): Promise<void> {
   // probar el cambio de empresa activa desde el panel.
   await withCompany(secondaryId, () => seedSettings(adminId));
   await withCompany(secondaryId, () => seedCatalog());
+  await withCompany(secondaryId, () => seedMenus());
 
   COMPANY_ID = primaryId;
   await printSummary();

@@ -17,7 +17,7 @@ import {
   SuppliersService,
 } from '../../core/services/catalog.service';
 import { ToastService } from '../../core/services/toast.service';
-import { apiErrorMessage, divMoney, number } from '../../core/utils/format';
+import { apiErrorMessage, divMoney, number, quantity } from '../../core/utils/format';
 import {
   boxUnitsOf,
   isBoxProduct,
@@ -208,7 +208,7 @@ interface ProductForm {
                   <td class="text-right text-slate-500"><app-money [amount]="item.cost" alignEnd="true" /></td>
                   <td class="text-right">
                     <span class="inline-flex items-center gap-2">
-                      <span>{{ number(item.stock) }} {{ soldUnitLabel(item) }}</span>
+                      <span>{{ quantity(item.stock) }} {{ soldUnitLabel(item) }}</span>
                       @if (isLowStock(item)) {
                         <span
                           class="badge bg-rose-100 text-rose-700"
@@ -398,7 +398,7 @@ interface ProductForm {
                 name="stock"
                 type="number"
                 min="0"
-                step="0.01"
+                step="0.001"
                 class="input"
                 [(ngModel)]="form.stock"
               />
@@ -411,7 +411,7 @@ interface ProductForm {
               name="minStock"
               type="number"
               min="0"
-              step="0.01"
+              step="0.001"
               class="input"
               [(ngModel)]="form.minStock"
             />
@@ -503,6 +503,8 @@ export class ProductsPage implements OnInit {
   readonly baseCurrency = BASE_CURRENCY;
   /** Helpers de formato expuestos a la plantilla. */
   readonly number = number;
+  /** Cantidades/existencias: hasta 3 decimales, sin ceros de relleno. */
+  readonly quantity = quantity;
   /** `true` cuando el producto se vende por caja (precio de caja, stock por unidad). */
   readonly isBoxProduct = isBoxProduct;
   readonly boxUnitsOf = boxUnitsOf;

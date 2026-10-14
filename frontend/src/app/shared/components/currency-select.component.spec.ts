@@ -44,6 +44,7 @@ const SNAPSHOT: RatesSnapshot = {
       bsPerUnit: 876.7976,
       source: 'BASE',
       isBase: true,
+      isDisplayBase: true,
       bsPerUsd: 876.7976,
     },
     {
@@ -54,6 +55,7 @@ const SNAPSHOT: RatesSnapshot = {
       bsPerUnit: 1,
       source: 'BASE',
       isBase: false,
+      isDisplayBase: false,
       bsPerUsd: 876.7976,
     },
     {
@@ -64,6 +66,7 @@ const SNAPSHOT: RatesSnapshot = {
       bsPerUnit: 0.22,
       source: 'MANUAL',
       isBase: false,
+      isDisplayBase: false,
       bsPerUsd: 876.7976,
     },
     {
@@ -74,9 +77,18 @@ const SNAPSHOT: RatesSnapshot = {
       bsPerUnit: null,
       source: 'NONE',
       isBase: false,
+      isDisplayBase: false,
       bsPerUsd: 876.7976,
     },
   ],
+  baseCurrency: {
+    code: 'USD',
+    label: 'Dólares',
+    symbol: '$',
+    decimals: 2,
+    bsPerUnit: 876.7976,
+    bsPerUsd: 876.7976,
+  },
   reference: null,
 };
 

@@ -11,6 +11,7 @@ import {
 import { buildPaginatedResult, toSkip } from '../../common/utils/pagination.util';
 import { buildDateRange } from '../../common/utils/date.util';
 import { money } from '../../common/utils/money.util';
+import { compareQty, toQty } from '../../common/utils/quantity.util';
 import { tenantWhere } from '../../common/utils/tenant.util';
 import { PrismaService, type PrismaClientLike } from '../../prisma/prisma.service';
 import { AdjustStockDto } from './dto/adjust-stock.dto';
@@ -21,6 +22,7 @@ import { MovementQueryDto } from './dto/movement-query.dto';
 export interface MovementInput {
   productId: string;
   type: StockMovementTypeT;
+  /** Cantidad en la unidad del producto (3 decimales: 0.1 = 100 g). */
   quantity: number;
   unitCost?: number;
   reason?: string;
@@ -62,24 +64,25 @@ export class InventoryService {
       throw new NotFoundException(`Producto no encontrado: ${input.productId}`);
     }
 
-    const stockBefore = product.stock;
+    const stockBefore = toQty(product.stock);
+    const quantity = toQty(input.quantity);
     let stockAfter = stockBefore;
 
     switch (input.type) {
       case StockMovementType.IN:
-        stockAfter = stockBefore + input.quantity;
+        stockAfter = toQty(stockBefore + quantity);
         break;
       case StockMovementType.OUT:
-        stockAfter = stockBefore - input.quantity;
+        stockAfter = toQty(stockBefore - quantity);
         if (stockAfter < 0 && !input.allowNegative) {
           throw new BadRequestException(
-            `Stock insuficiente para "${product.name}". Disponible: ${stockBefore}, requerido: ${input.quantity}.`,
+            `Stock insuficiente para "${product.name}". Disponible: ${stockBefore}, requerido: ${quantity}.`,
           );
         }
         break;
       case StockMovementType.ADJUSTMENT:
         // En ajustes, `quantity` representa el stock FINAL deseado.
-        stockAfter = input.quantity;
+        stockAfter = quantity;
         if (stockAfter < 0) {
           throw new BadRequestException('El stock no puede ser negativo');
         }
@@ -93,7 +96,7 @@ export class InventoryService {
         companyId,
         productId: product.id,
         type: input.type,
-        quantity: Math.abs(stockAfter - stockBefore),
+        quantity: toQty(Math.abs(stockAfter - stockBefore)),
         stockBefore,
         stockAfter,
         unitCost: input.unitCost ?? null,
@@ -206,7 +209,7 @@ export class InventoryService {
     const items = products.map((p) => ({
       ...p,
       stockValue: money.mul(p.stock, p.cost),
-      isLowStock: p.stock <= p.minStock,
+      isLowStock: compareQty(p.stock, p.minStock) <= 0,
     }));
 
     return options.lowOnly ? items.filter((p) => p.isLowStock) : items;

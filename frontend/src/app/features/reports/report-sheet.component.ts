@@ -19,7 +19,7 @@ import {
 import { BASE_CURRENCY } from '../../core/constants/currency';
 import type { ReportData } from '../../core/models/report.model';
 import type { SalesPoint } from '../../core/models/stats.model';
-import { bs, dateTime, money, moneyIn, number, rate, shortDate } from '../../core/utils/format';
+import { bs, dateTime, displayBaseLabel, money, moneyIn, number, quantity, rate, shortDate } from '../../core/utils/format';
 import { AuthService } from '../../core/services/auth.service';
 import { IconComponent } from '../../shared/components/icon.component';
 import { REPORT_CSS, REPORT_PRINT_CSS } from './report.styles';
@@ -241,7 +241,7 @@ import { REPORT_CSS, REPORT_PRINT_CSS } from './report.styles';
           <section class="rp-section">
             <h2 class="rp-section-title">
               Cobros por moneda
-              <small>Equivalente en {{ baseCurrency.label }}</small>
+              <small>Equivalente en {{ moneyBaseLabel() }}</small>
             </h2>
             @if (data.paymentsByCurrency.items.length === 0) {
               <p class="rp-empty">Sin cobros en el período.</p>
@@ -525,8 +525,8 @@ import { REPORT_CSS, REPORT_PRINT_CSS } from './report.styles';
                     <tr>
                       <td class="rp-dim">{{ item.sku }}</td>
                       <td class="rp-strong">{{ item.name }}</td>
-                      <td class="rp-num rp-neg">{{ number(item.stock) }}</td>
-                      <td class="rp-num rp-dim">{{ number(item.minStock) }}</td>
+                      <td class="rp-num rp-neg">{{ quantity(item.stock) }}</td>
+                      <td class="rp-num rp-dim">{{ quantity(item.minStock) }}</td>
                       <td class="rp-dim">{{ label(unitLabels, item.unit) }}</td>
                     </tr>
                   }
@@ -633,11 +633,15 @@ export class ReportSheetComponent {
   readonly cashCategoryLabels = CASH_CATEGORY_LABELS;
   readonly unitLabels = PRODUCT_UNIT_LABELS;
   readonly baseCurrency = BASE_CURRENCY;
+  /** Etiqueta de la moneda base con la que se muestran los montos. */
+  readonly moneyBaseLabel = displayBaseLabel;
 
   /** Helpers de formato. */
   readonly money = money;
   readonly moneyIn = moneyIn;
   readonly number = number;
+  /** Cantidades/existencias: hasta 3 decimales, sin ceros de relleno. */
+  readonly quantity = quantity;
   readonly rate = rate;
   readonly shortDate = shortDate;
   readonly dateTime = dateTime;

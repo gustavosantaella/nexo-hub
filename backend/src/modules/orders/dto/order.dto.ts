@@ -19,9 +19,21 @@ import {
 } from '../../../common/constants/enums';
 
 export class OrderItemDto {
-  @ApiProperty()
+  @ApiPropertyOptional({
+    description:
+      'Producto suelto del inventario. Excluyente con `menuId`: cada linea vende uno u otro.',
+  })
+  @IsOptional()
   @IsString()
-  productId!: string;
+  productId?: string;
+
+  @ApiPropertyOptional({
+    description:
+      'Menu (plato/combo) con receta. Al venderlo se descuentan sus ingredientes del inventario.',
+  })
+  @IsOptional()
+  @IsString()
+  menuId?: string;
 
   @ApiProperty({ example: 2 })
   @Type(() => Number)
@@ -29,7 +41,7 @@ export class OrderItemDto {
   @Min(1, { message: 'La cantidad minima es 1' })
   quantity!: number;
 
-  @ApiPropertyOptional({ description: 'Precio unitario (por defecto el del producto)' })
+  @ApiPropertyOptional({ description: 'Precio unitario (por defecto el del producto/menu)' })
   @IsOptional()
   @Type(() => Number)
   @IsNumber()

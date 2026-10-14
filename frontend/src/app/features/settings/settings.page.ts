@@ -78,6 +78,8 @@ interface CurrencyRow {
   isBase: boolean;
   /** Moneda por defecto (USD, VES, EUR): no se puede quitar, solo desactivar. */
   isDefault: boolean;
+  /** `true` cuando la moneda puede ser la base con la que se muestran los montos. */
+  canBeBase: boolean;
 }
 
 @Component({
@@ -572,7 +574,7 @@ interface CurrencyRow {
               </div>
               <div class="card-body space-y-3">
                 <div>
-                  <label class="label" for="preview-amount">Monto en dólares</label>
+                  <label class="label" for="preview-amount">Monto en dólares (USD)</label>
                   <input
                     id="preview-amount"
                     type="number"
@@ -582,7 +584,8 @@ interface CurrencyRow {
                     [(ngModel)]="previewAmount"
                   />
                   <p class="mt-1 text-xs text-slate-400">
-                    Moneda base del sistema: {{ baseCurrency.label }} ({{ baseCurrency.code }})
+                    Moneda base del sistema: {{ displayBase().label }} ({{ displayBase().code }}) —
+                    así se muestra ese monto en todo el sistema.
                   </p>
                 </div>
 
@@ -617,8 +620,11 @@ interface CurrencyRow {
                   por defecto y no se pueden quitar: el dólar y el euro toman su tasa
                   de la API del BCV ({{ bcv()?.current?.date }}) y el bolívar queda a
                   1 Bs = 1 Bs. Desactiva las que no uses (el dólar no se puede
-                  desactivar) y, si defines una tasa personalizada del dólar, esa es
-                  la que se usa para convertir a {{ baseCurrency.label }}.
+                  desactivar). Si defines una tasa personalizada del dólar, esa es
+                  la que se usa para convertir a {{ baseCurrency.label }}. En la
+                  columna <span class="font-medium text-slate-600">Base</span> eliges
+                  en qué moneda se muestran los montos del sistema (tarjetas,
+                  listados y reportes): los montos se siguen guardando en dólares.
                 </p>
               </div>
               <span class="badge bg-slate-100 text-slate-600">
@@ -632,6 +638,7 @@ interface CurrencyRow {
                   <tr>
                     <th>Moneda</th>
                     <th class="text-right">Tasa (Bs por unidad)</th>
+                    <th class="text-center">Base</th>
                     <th class="text-center">Aceptada</th>
                     <th class="text-right">Acciones</th>
                   </tr>
@@ -701,6 +708,21 @@ interface CurrencyRow {
                       </td>
                       <td class="text-center">
                         <input
+                          type="radio"
+                          name="base-currency"
+                          class="h-4 w-4 border-slate-300 text-brand-600 focus:ring-brand-300"
+                          [attr.aria-label]="'Mostrar los montos en ' + row.code"
+                          [value]="row.code"
+                          [checked]="baseCode() === row.code"
+                          [disabled]="!canManage() || !row.canBeBase"
+                          (change)="setBaseCurrency(row.code)"
+                        />
+                        @if (!row.canBeBase) {
+                          <span class="block text-[10px] text-slate-400">sin tasa</span>
+                        }
+                      </td>
+                      <td class="text-center">
+                        <input
                           type="checkbox"
                           class="h-4 w-4 rounded border-slate-300 text-brand-600 focus:ring-brand-300"
                           [disabled]="!canManage() || row.isBase"
@@ -733,6 +755,13 @@ interface CurrencyRow {
               </table>
             </div>
 
+            @if (baseDirty()) {
+              <p class="border-t border-slate-200 px-5 py-2 text-xs text-slate-500">
+                Al guardar, los montos del sistema se mostrarán primero en
+                <span class="font-medium text-slate-700">{{ baseLabel() }}</span>.
+              </p>
+            }
+
             <div class="card-body flex flex-wrap items-end gap-2 border-t border-slate-200">
               <div>
                 <label class="label" for="new-currency">Agregar moneda</label>
@@ -758,7 +787,7 @@ interface CurrencyRow {
                 <button
                   type="button"
                   class="btn-secondary"
-                  [disabled]="!currencyDirty || currencySaving()"
+                  [disabled]="(!currencyDirty && !baseDirty()) || currencySaving()"
                   (click)="resetCurrencies()"
                 >
                   Descartar
@@ -766,7 +795,7 @@ interface CurrencyRow {
                 <button
                   type="button"
                   class="btn-primary"
-                  [disabled]="!canManage() || !currencyDirty || currencySaving()"
+                  [disabled]="!canManage() || (!currencyDirty && !baseDirty()) || currencySaving()"
                   (click)="saveCurrencies()"
                 >
                   <app-icon name="check" size="h-4 w-4" />
@@ -1165,13 +1194,15 @@ export class SettingsPage implements OnInit {
 
   readonly rateMeta = RATE_META;
   readonly baseCurrency = BASE_CURRENCY;
-  readonly baseCode = BASE_CURRENCY_CODE;
   readonly localCurrency = currencyMeta(LOCAL_CURRENCY_CODE);
   readonly rate = rate;
   readonly bs = bs;
   readonly money = money;
   readonly signedPercent = signedPercent;
   readonly canManage = this.auth.canManage;
+
+  /** Moneda con la que el sistema muestra los montos ahora mismo. */
+  readonly displayBase = this.ratesService.baseCurrency;
 
   // --------------------------------- Pestañas --------------------------------
   /** Pestaña visible: solo se pinta la sección elegida. */
@@ -1311,6 +1342,19 @@ export class SettingsPage implements OnInit {
   newCurrencyCode = 'EUR';
   /** `true` cuando hay cambios sin guardar en la tabla de monedas. */
   currencyDirty = false;
+  /** Moneda base elegida sin guardar (`null` = la guardada). */
+  readonly baseDraft = signal<string | null>(null);
+  /** Moneda base guardada en el backend. */
+  private readonly storedBaseCode = this.ratesService.baseCode;
+  /** Moneda base que quedará al guardar (la elegida o la guardada). */
+  readonly baseCode = computed(() => this.baseDraft() ?? this.storedBaseCode());
+  /** `true` cuando la moneda base elegida aún no se ha guardado. */
+  readonly baseDirty = computed(() => this.baseCode() !== this.storedBaseCode());
+  /** Etiqueta de la moneda base elegida, ej. `Bolívares (VES)`. */
+  readonly baseLabel = computed(() => {
+    const code = this.baseCode();
+    return `${currencyMeta(code).label} (${code})`;
+  });
 
   /** Tasa personalizada en edición ('' = sin definir). */
   customInput = '';
@@ -1664,6 +1708,8 @@ export class SettingsPage implements OnInit {
       source: item.source,
       isBase: item.isBase,
       isDefault: isDefaultCurrency(item.code),
+      // Solo se puede mostrar en una moneda que tenga tasa (1 Bs para el bolivar).
+      canBeBase: item.bsPerUnit !== null,
     }));
   }
 
@@ -1700,26 +1746,39 @@ export class SettingsPage implements OnInit {
         source: 'NONE',
         isBase: meta.code === BASE_CURRENCY_CODE,
         isDefault: isDefaultCurrency(meta.code),
+        // Sin tasa todavia: primero hay que configurarla para usarla como base.
+        canBeBase: false,
       },
     ];
     this.currencyDirty = true;
+  }
+
+  /**
+   * Elige la moneda con la que se muestran los montos del sistema. Se aplica al
+   * guardar (junto con las monedas), no al marcarla.
+   */
+  setBaseCurrency(code: string): void {
+    this.baseDraft.set(code);
   }
 
   removeCurrency(code: string): void {
     // USD, VES y EUR son monedas por defecto: se desactivan, no se quitan.
     if (code === BASE_CURRENCY_CODE || isDefaultCurrency(code)) return;
     this.currencyRows = this.currencyRows.filter((row) => row.code !== code);
+    // Si la moneda quitada era la base elegida, se vuelve al dólar.
+    if (this.baseCode() === code) this.baseDraft.set(BASE_CURRENCY_CODE);
     this.currencyDirty = true;
   }
 
   /** Descarta los cambios y vuelve a la configuracion guardada. */
   resetCurrencies(): void {
     this.currencyDirty = false;
+    this.baseDraft.set(null);
     this.currencyRows = this.toRows(this.ratesService.currencies());
   }
 
   saveCurrencies(): void {
-    if (!this.currencyDirty || this.currencySaving()) return;
+    if ((!this.currencyDirty && !this.baseDirty()) || this.currencySaving()) return;
 
     const payload: CurrencySettingPayload[] = [];
     for (const row of this.currencyRows) {
@@ -1752,8 +1811,17 @@ export class SettingsPage implements OnInit {
       });
     }
 
-    this.currenciesService.save(payload, () => {
+    const base = this.baseCode();
+    if (!this.currencyRows.some((row) => row.code === base)) {
+      this.toast.warning(
+        `Agrega ${base} a la lista de monedas para poder mostrar los montos en ella.`,
+      );
+      return;
+    }
+
+    this.currenciesService.save(payload, base, () => {
       this.currencyDirty = false;
+      this.baseDraft.set(null);
       this.toast.success('Monedas actualizadas', 'Configuración');
     });
   }

@@ -9,7 +9,11 @@
  *
  * Esta lista es la UNICA fuente de verdad: el codec la usa para convertir
  * escrituras y lecturas, y `money-columns.spec.ts` falla si el esquema agrega
- * una columna de dinero (o una tasa) que no este declarada aqui.
+ * una columna de dinero (o una tasa, o una cantidad) que no este declarada aqui.
+ *
+ * Las CANTIDADES (`Float` con 3 decimales: existencias y movimientos de stock)
+ * se declaran en `QUANTITY_COLUMNS` y no pasan por ningun codec: el motor de
+ * inventario las redondea al escribir.
  *
  * El nombre del modelo es el de Prisma en PascalCase (tal como lo entrega
  * `Prisma.dmmf` y los hooks de las extensiones).
@@ -17,6 +21,7 @@
 export const MONEY_COLUMNS = {
   Product: ['price', 'cost'],
   StockMovement: ['unitCost'],
+  Menu: ['price', 'cost'],
   Order: ['subtotal', 'discount', 'tax', 'tip', 'total', 'paidAmount'],
   OrderItem: ['unitPrice', 'total'],
   OrderPayment: ['amount', 'baseAmount'],
@@ -44,11 +49,25 @@ export const RATE_COLUMNS = {
   CashSession: ['openingRate', 'countedRate'],
 } as const;
 
-/** Columnas `Int` que no son dinero (conteos y existencias). */
+/** Columnas `Int` que no son dinero (conteos, existencias y orden). */
 export const NON_MONEY_INT_COLUMNS = {
-  Product: ['stock', 'minStock', 'unitsPerBox'],
-  StockMovement: ['quantity', 'stockBefore', 'stockAfter'],
+  Product: ['unitsPerBox'],
   OrderItem: ['quantity'],
+  MenuCategory: ['sortOrder'],
+  Menu: ['preparationMinutes'],
+  MenuIngredient: ['sortOrder'],
+} as const;
+
+/**
+ * Columnas `Float` que NO son dinero ni tasas: son EXISTENCIAS/CANTIDADES en la
+ * unidad del producto. Se guardan con 3 decimales porque las recetas consumen
+ * fracciones (100 g de un producto controlado en kilos = 0.1). El redondeo lo
+ * aplica el motor de inventario, unico punto autorizado para variar el stock.
+ */
+export const QUANTITY_COLUMNS = {
+  Product: ['stock', 'minStock'],
+  StockMovement: ['quantity', 'stockBefore', 'stockAfter'],
+  MenuIngredient: ['quantity'],
 } as const;
 
 /**

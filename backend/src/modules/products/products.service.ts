@@ -9,7 +9,8 @@ import { StockMovementType } from '../../common/constants/enums';
 import { PaginationQueryDto } from '../../common/dto/pagination-query.dto';
 import { buildPaginatedResult, toSkip } from '../../common/utils/pagination.util';
 import { toMoney } from '../../common/utils/money.util';
-import { normalizeNullableId } from '../../common/utils/normalize.util';
+import { normalizeImageUrl, normalizeNullableId } from '../../common/utils/normalize.util';
+import { toQty } from '../../common/utils/quantity.util';
 import { tenantWhere } from '../../common/utils/tenant.util';
 import { PrismaService } from '../../prisma/prisma.service';
 import { InventoryService } from '../inventory/inventory.service';
@@ -21,12 +22,6 @@ const PRODUCT_INCLUDE = {
   category: { select: { id: true, name: true } },
   supplier: { select: { id: true, name: true } },
 } satisfies Prisma.ProductInclude;
-
-/** La foto vacia se guarda como `null` (asi el formulario puede quitarla). */
-function normalizeImageUrl(value: string | null | undefined): string | null {
-  const trimmed = value?.trim();
-  return trimmed ? trimmed : null;
-}
 
 @Injectable()
 export class ProductsService {
@@ -50,7 +45,7 @@ export class ProductsService {
         price: toMoney(dto.price),
         cost: toMoney(cost ?? 0),
         stock: 0,
-        minStock: dto.minStock ?? 0,
+        minStock: toQty(dto.minStock ?? 0),
         unit: dto.unit ?? 'UND',
         unitsPerBox: dto.unitsPerBox ?? 1,
         trackStock: dto.trackStock ?? true,
@@ -120,6 +115,9 @@ export class ProductsService {
         sku: true,
         name: true,
         price: true,
+        // El costo viaja con las opciones para que el formulario de menus pueda
+        // costear la receta en vivo (producto x cantidad).
+        cost: true,
         stock: true,
         unit: true,
         unitsPerBox: true,
@@ -150,6 +148,9 @@ export class ProductsService {
 
     const data: Prisma.ProductUpdateInput = {
       ...rest,
+      // Las existencias se normalizan a 3 decimales (misma regla que el motor de
+      // inventario) aunque el campo no sea dinero.
+      ...(rest.minStock !== undefined ? { minStock: toQty(rest.minStock) } : {}),
       ...(cost !== undefined ? { cost: toMoney(cost) } : {}),
       ...(imageUrl !== undefined ? { imageUrl: normalizeImageUrl(imageUrl) } : {}),
       ...(rest.price !== undefined ? { price: toMoney(rest.price) } : {}),

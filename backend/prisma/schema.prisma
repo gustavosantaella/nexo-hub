@@ -52,6 +52,9 @@ model Company {
   suppliers          Supplier[]
   customers          Customer[]
   products           Product[]
+  menuCategories     MenuCategory[]
+  menus              Menu[]
+  menuIngredients    MenuIngredient[]
   stockMovements     StockMovement[]
   orders             Order[]
   orderItems         OrderItem[]
@@ -195,8 +198,12 @@ model Product {
   imageUrl    String?
   price       Int      @default(0)
   cost        Int      @default(0)
-  stock       Int      @default(0)
-  minStock    Int      @default(0)
+  // Existencias en la unidad del producto. Es decimal (`Float`) porque las
+  // recetas consumen fracciones: 100 g de un producto que se controla en kilos
+  // son 0.1. El redondeo a 3 decimales ocurre en el motor de inventario, que es
+  // el unico punto autorizado para variar el stock.
+  stock       Float    @default(0)
+  minStock    Float    @default(0)
   unit        String   @default("UND") // UND | KG | LT | CAJA | PAQUETE
   // Unidades individuales que trae la presentacion (caja/paquete). El `price`
   // sigue siendo el de la presentacion completa y el stock se lleva en unidades
@@ -214,6 +221,7 @@ model Product {
   supplier   Supplier?       @relation(fields: [supplierId], references: [id], onDelete: SetNull)
   movements  StockMovement[]
   orderItems OrderItem[]
+  menuIngredients MenuIngredient[]
 
   @@unique([companyId, sku])
   @@index([companyId])
@@ -230,9 +238,12 @@ model StockMovement {
   companyId     String
   productId     String
   type          String // IN | OUT | ADJUSTMENT
-  quantity      Int // siempre positivo, la direccion la da "type"
-  stockBefore   Int
-  stockAfter    Int
+  // Cantidades en la unidad del producto (3 decimales): las recetas descuentan
+  // fracciones (0.1 = 100 g). `quantity` es siempre positivo, la direccion la da
+  // "type".
+  quantity      Float
+  stockBefore   Float
+  stockAfter    Float
   unitCost      Int?
   reason        String?
   referenceType String? // ORDER | PURCHASE | MANUAL | ADJUSTMENT
@@ -292,7 +303,10 @@ model OrderItem {
   id        String @id @default(cuid())
   companyId String
   orderId   String
-  productId String
+  // Una linea vende un PRODUCTO suelto o un MENU (receta). Nunca ambos: el
+  // servicio de pedidos lo valida al resolver las lineas.
+  productId String?
+  menuId    String?
   name      String // snapshot del nombre al momento de la venta
   quantity  Int
   unitPrice Int
@@ -300,10 +314,12 @@ model OrderItem {
 
   company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
   order   Order   @relation(fields: [orderId], references: [id], onDelete: Cascade)
-  product Product @relation(fields: [productId], references: [id], onDelete: Restrict)
+  product Product? @relation(fields: [productId], references: [id], onDelete: Restrict)
+  menu    Menu?    @relation(fields: [menuId], references: [id], onDelete: Restrict)
 
   @@index([companyId])
   @@index([orderId])
+  @@index([menuId])
   @@map("order_items")
 }
 
@@ -327,6 +343,96 @@ model OrderPayment {
   @@index([companyId])
   @@index([orderId])
   @@map("order_payments")
+}
+
+// ================================= Menus ===================================
+// El MENU es lo que se vende (plato, combo, "parrilla"): un producto elaborado
+// a partir de una RECETA de ingredientes tomados del inventario. Vender un menu
+// descuenta del stock cada ingrediente segun su cantidad (100 g de carne que se
+// controla en kilos = 0.1).
+
+// Agrupacion comercial del menu (Desayunos, Almuerzos, Combos, Postres). Es
+// independiente de las categorias de productos: un menu se agrupa por como se
+// vende, no por como se compra.
+model MenuCategory {
+  id          String   @id @default(cuid())
+  companyId   String
+  name        String
+  description String?
+  // Color con el que el POS pinta la tarjeta/etiqueta del grupo (clase de
+  // Tailwind o hex). Opcional: sin color usa el estilo por defecto.
+  color       String?
+  sortOrder   Int      @default(0)
+  active      Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  menus   Menu[]
+
+  @@unique([companyId, name])
+  @@index([companyId])
+  @@index([sortOrder])
+  @@map("menu_categories")
+}
+
+// Plato/combo vendible con su receta y su costo calculado.
+model Menu {
+  id          String   @id @default(cuid())
+  companyId   String
+  code        String // codigo legible unico por empresa (MEN-0001)
+  name        String
+  description String?
+  imageUrl    String?
+  price       Int      @default(0) // precio de venta (centavos)
+  // Costo de la receta (ingredientes x costo del producto). Se recalcula al
+  // guardar y sirve para medir el margen sin abrir la ficha.
+  cost        Int      @default(0)
+  // Como se ofrece el menu en la carta: DINE_IN | TAKEAWAY | DELIVERY | ALL.
+  availability String  @default("ALL")
+  preparationMinutes Int? // tiempo estimado de preparacion (minutos)
+  categoryId  String?
+  active      Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  company     Company          @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  category    MenuCategory?    @relation(fields: [categoryId], references: [id], onDelete: SetNull)
+  ingredients MenuIngredient[]
+  orderItems  OrderItem[]
+
+  @@unique([companyId, code])
+  @@index([companyId])
+  @@index([name])
+  @@index([categoryId])
+  @@map("menus")
+}
+
+// Linea de la receta: cuanto de un producto consume UNA unidad del menu.
+// `quantity` esta en la MISMA unidad en la que se lleva el stock del producto
+// (0.1 = 100 g si el producto se controla en kilos; 1 = una unidad).
+model MenuIngredient {
+  id        String  @id @default(cuid())
+  companyId String
+  menuId    String
+  productId String
+  quantity  Float   @default(0)
+  // Como se ofrece dentro del menu: "Principal" | "Bebida" | "Postre" |
+  // "Acompanamiento". Permite imprimir/ver el combo por secciones.
+  section   String? @default("Principal")
+  note      String?
+  sortOrder Int     @default(0)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  menu    Menu    @relation(fields: [menuId], references: [id], onDelete: Cascade)
+  product Product @relation(fields: [productId], references: [id], onDelete: Restrict)
+
+  @@unique([menuId, productId])
+  @@index([companyId])
+  @@index([productId])
+  @@map("menu_ingredients")
 }
 
 // =============================== Finanzas ==================================

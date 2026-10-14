@@ -1,9 +1,80 @@
 import { HttpErrorResponse } from '@angular/common/http';
-import {
-  BASE_CURRENCY,
-  QUOTE_CURRENCY,
-  currencyMeta,
-} from '../constants/currency';
+import { signal } from '@angular/core';
+import { BASE_CURRENCY, QUOTE_CURRENCY, currencyMeta } from '../constants/currency';
+
+/**
+ * Moneda en la que el sistema muestra los montos base (los que se guardan en
+ * dólares). Se configura en Configuración → Tasas; por defecto es USD.
+ */
+export interface DisplayCurrency {
+  code: string;
+  label: string;
+  symbol: string;
+  /** Decimales sugeridos al mostrar montos en esta moneda. */
+  decimals: number;
+  /** Bolívares por 1 unidad de esta moneda. */
+  bsPerUnit: number | null;
+  /** Bolívares por 1 USD: puente desde la moneda guardada a la mostrada. */
+  bsPerUsd: number | null;
+}
+
+/** Moneda base del sistema mientras la empresa no elija otra. */
+const DEFAULT_DISPLAY_CURRENCY: DisplayCurrency = {
+  code: BASE_CURRENCY.code,
+  label: BASE_CURRENCY.label,
+  symbol: BASE_CURRENCY.symbol,
+  decimals: 2,
+  bsPerUnit: null,
+  bsPerUsd: null,
+};
+
+/**
+ * Moneda de visualización (signal): `RatesService` la sincroniza con la que la
+ * empresa eligió, así todo el sistema (tarjetas, listados y reportes) repinta
+ * los montos sin cambiar de dónde salen.
+ */
+const display = signal<DisplayCurrency>(DEFAULT_DISPLAY_CURRENCY);
+
+/** Cambia la moneda de visualización (con `null` vuelve a dólares). */
+export function setDisplayCurrency(next: DisplayCurrency | null): void {
+  display.set(next ?? DEFAULT_DISPLAY_CURRENCY);
+}
+
+/** Código de la moneda base con la que se muestran los montos (USD por defecto). */
+export function displayBaseCode(): string {
+  return display().code;
+}
+
+/** Etiqueta de la moneda base con la que se muestran los montos. */
+export function displayBaseLabel(): string {
+  return display().label;
+}
+
+/**
+ * Monto guardado en dólares (moneda base contable) con su símbolo, valor y
+ * decimales ya expresados en la moneda de visualización.
+ */
+function toDisplay(value: number | null | undefined): {
+  symbol: string;
+  value: number;
+  decimals: number;
+} {
+  const amount = Number(value ?? 0);
+  const state = display();
+  if (state.code === BASE_CURRENCY.code) {
+    return { symbol: state.symbol, value: amount, decimals: state.decimals };
+  }
+  const { bsPerUsd, bsPerUnit } = state;
+  // Sin tasas no hay forma de convertir: se muestra el monto tal cual (en USD).
+  if (!bsPerUsd || !bsPerUnit) {
+    return { symbol: BASE_CURRENCY.symbol, value: amount, decimals: 2 };
+  }
+  return {
+    symbol: state.symbol,
+    value: (amount * bsPerUsd) / bsPerUnit,
+    decimals: state.decimals,
+  };
+}
 
 /** Numero con separador de miles y la cantidad de decimales indicada. */
 function decimal(value: number, digits: number): string {
@@ -14,11 +85,13 @@ function decimal(value: number, digits: number): string {
 }
 
 /**
- * Formatea un monto en la moneda base del sistema (USD).
- * Ej.: `money(1234.5)` -> `$ 1,234.50`.
+ * Formatea un monto de la moneda base del sistema en la moneda de
+ * visualización elegida (USD por defecto).
+ * Ej.: `money(1234.5)` -> `$ 1,234.50`; con moneda base VES -> `Bs 1,082,406.05`.
  */
 export function money(value: number | null | undefined): string {
-  return `${BASE_CURRENCY.symbol} ${decimal(Number(value ?? 0), 2)}`;
+  const part = toDisplay(value);
+  return `${part.symbol} ${decimal(part.value, part.decimals)}`;
 }
 
 /**
@@ -72,6 +145,19 @@ export function number(value: number | null | undefined, digits = 0): string {
 }
 
 /**
+ * Cantidad/existencia de inventario: hasta 3 decimales y sin ceros de relleno,
+ * porque las recetas consumen fracciones (0.1 = 100 g de algo medido en kilos).
+ * Ej.: `quantity(1.5)` -> `1.5`; `quantity(3)` -> `3`.
+ */
+export function quantity(value: number | null | undefined, digits = 3): string {
+  const amount = Number(value ?? 0);
+  const safe = Number.isFinite(amount) ? Math.round(amount * 1000) / 1000 : 0;
+  return new Intl.NumberFormat(BASE_CURRENCY.locale, {
+    maximumFractionDigits: digits,
+  }).format(safe);
+}
+
+/**
  * Escalas de los numeros abreviados, de la mayor a la menor: 1 500 -> `1.5k`,
  * 1 200 000 -> `1.2m`, 2 500 000 000 -> `2.5b`.
  */
@@ -119,9 +205,13 @@ export function compact(value: number | null | undefined, digits = 1): string {
   return `${sign}${scaledText(scaled, digits)}${COMPACT_STEPS[index].suffix}`;
 }
 
-/** Monto de la moneda base abreviado. Ej.: `moneyCompact(1250000)` -> `$ 1.3m`. */
+/**
+ * Monto abreviado en la moneda de visualización.
+ * Ej.: `moneyCompact(1250000)` -> `$ 1.3m`.
+ */
 export function moneyCompact(value: number | null | undefined, digits = 1): string {
-  return `${BASE_CURRENCY.symbol} ${compact(value, digits)}`;
+  const part = toDisplay(value);
+  return `${part.symbol} ${compact(part.value, digits)}`;
 }
 
 /** Monto abreviado en la moneda indicada. Ej.: `moneyInCompact(3200, 'VES')` -> `Bs 3.2k`. */

@@ -3,7 +3,7 @@ import {
   HttpTestingController,
   provideHttpClientTesting,
 } from '@angular/common/http/testing';
-import { TestBed } from '@angular/core/testing';
+import { TestBed, type ComponentFixture } from '@angular/core/testing';
 import { provideRouter } from '@angular/router';
 import { environment } from '../../../environments/environment';
 import type { PaginationMeta } from '../../core/models/api.model';
@@ -49,6 +49,7 @@ function currencyRate(
     bsPerUnit,
     source: isBase ? 'CUSTOM' : 'BCV',
     isBase,
+    isDisplayBase: isBase,
     bsPerUsd: BS_PER_USD,
   };
 }
@@ -95,6 +96,14 @@ const SNAPSHOT: RatesSnapshot = {
     currencyRate('VES', 'Bolivares', 1),
     currencyRate('EUR', 'Euros', BS_PER_EUR),
   ],
+  baseCurrency: {
+    code: 'USD',
+    label: 'Dolares',
+    symbol: '$',
+    decimals: 2,
+    bsPerUnit: BS_PER_USD,
+    bsPerUsd: BS_PER_USD,
+  },
   reference: null,
 };
 
@@ -115,6 +124,8 @@ describe('CashPage (fondo inicial multimoneda)', () => {
   let http: HttpTestingController;
   let rates: RatesService;
   let confirm: ConfirmService;
+  /** Componente montado por `mount()`: permite revisar el DOM renderizado. */
+  let fixture: ComponentFixture<CashPage>;
 
   beforeEach(async () => {
     await TestBed.configureTestingModule({
@@ -134,7 +145,7 @@ describe('CashPage (fondo inicial multimoneda)', () => {
     rates.load();
     if (withRates) http.expectOne(`${API}/rates`).flush(SNAPSHOT);
 
-    const fixture = TestBed.createComponent(CashPage);
+    fixture = TestBed.createComponent(CashPage);
     fixture.detectChanges();
 
     http
@@ -300,6 +311,7 @@ describe('CashPage (fondo inicial multimoneda)', () => {
       totalOut: 0,
       net: 0,
       salesTotal: 0,
+      tipsTotal: 0,
       movementCount: 0,
       byMethod: [],
       byCategory: [],
@@ -328,5 +340,66 @@ describe('CashPage (fondo inicial multimoneda)', () => {
       baseAmount: 5.52,
     });
     expect(page.openingStatHint).toBe('contado en 2 monedas');
+  });
+
+  it('muestra la tarjeta de propinas y separa las ventas en el cierre', () => {
+    const page = mount();
+    const summary: CashSummary = {
+      cashIn: 110,
+      cashOut: 0,
+      expectedCash: 110,
+      totalIn: 110,
+      totalOut: 0,
+      net: 110,
+      // Un cobro de 110: 100 de consumo + 10 de propina.
+      salesTotal: 100,
+      tipsTotal: 10,
+      movementCount: 1,
+      byMethod: [],
+      byCategory: [],
+      byCurrency: [],
+    };
+    page.session.set(session({ status: 'OPEN', openingAmount: 0 }));
+    page.summary.set(summary);
+    fixture.detectChanges();
+
+    // Tarjeta del arqueo (vista de caja) con la propina del turno.
+    const cards = fixture.nativeElement.textContent as string;
+    expect(cards).toContain('Propinas');
+    expect(page.salesTotal).toBe(100);
+    expect(page.tipsTotal).toBe(10);
+    // Lo cobrado por ventas = consumo + propina.
+    expect(page.salesGrossTotal).toBe(110);
+
+    // El cierre separa propinas de ventas antes de contar el cajón.
+    page.openClose();
+    fixture.detectChanges();
+    const closing = fixture.nativeElement.textContent as string;
+    expect(closing).toContain('Ventas (sin propinas)');
+    expect(closing).toContain('Total cobrado por ventas');
+    expect(page.closeDifference).toBe(0);
+  });
+
+  it('deja las propinas en cero cuando el turno no cobró ninguna', () => {
+    const page = mount();
+    const summary: CashSummary = {
+      cashIn: 25,
+      cashOut: 0,
+      expectedCash: 25,
+      totalIn: 25,
+      totalOut: 0,
+      net: 25,
+      salesTotal: 25,
+      tipsTotal: 0,
+      movementCount: 1,
+      byMethod: [],
+      byCategory: [],
+      byCurrency: [],
+    };
+    page.summary.set(summary);
+
+    expect(page.tipsTotal).toBe(0);
+    // Sin propinas, lo cobrado por ventas es la venta tal cual.
+    expect(page.salesGrossTotal).toBe(25);
   });
 });

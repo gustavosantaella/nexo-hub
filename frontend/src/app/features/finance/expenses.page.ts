@@ -19,6 +19,7 @@ import { ExpensesService } from '../../core/services/finance.service';
 import { ToastService } from '../../core/services/toast.service';
 import {
   apiErrorMessage,
+  displayBaseCode,
   money,
   moneyIn,
   number,
@@ -219,7 +220,7 @@ const CATEGORY_TONES: Record<string, string> = {
                 <th>Método</th>
                 <th>Moneda</th>
                 <th class="text-right">Monto</th>
-                <th class="text-right">Equivalente ({{ baseCurrency.code }})</th>
+                <th class="text-right">Equivalente ({{ moneyBaseCode() }})</th>
                 <th>Registrado por</th>
                 <th class="text-right">Acciones</th>
               </tr>
@@ -361,6 +362,8 @@ export class ExpensesPage implements OnInit {
   readonly categoryLabels = EXPENSE_CATEGORY_LABELS;
   readonly methodLabels = PAYMENT_METHOD_LABELS;
   readonly money = money;
+  /** Código de la moneda base con la que se muestran los montos (USD por defecto). */
+  readonly moneyBaseCode = displayBaseCode;
   readonly number = number;
   readonly shortDate = shortDate;
   readonly baseCurrency = BASE_CURRENCY;

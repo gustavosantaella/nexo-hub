@@ -79,7 +79,11 @@ function createService(options: { session?: unknown } = {}) {
     },
   };
 
-  const cash = { buildBreakdown: jest.fn() } as unknown as CashService;
+  const cash = {
+    buildBreakdown: jest.fn(),
+    // El reparto de propinas solo lee del pedido: en el panel se deja igual.
+    withTips: jest.fn(async (_companyId: string, movements: unknown[]) => movements),
+  } as unknown as CashService;
   const payables = {
     outstandingBalance: jest.fn().mockResolvedValue(50),
   } as unknown as PayablesService;

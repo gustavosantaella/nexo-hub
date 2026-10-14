@@ -2,7 +2,6 @@ import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { Type } from 'class-transformer';
 import {
   IsIn,
-  IsInt,
   IsNumber,
   IsOptional,
   IsString,
@@ -12,6 +11,7 @@ import {
   STOCK_MOVEMENT_TYPES,
   type StockMovementType,
 } from '../../../common/constants/enums';
+import { QTY_DECIMALS } from '../../../common/utils/quantity.util';
 
 export class CreateMovementDto {
   @ApiProperty()
@@ -23,10 +23,14 @@ export class CreateMovementDto {
   type!: StockMovementType;
 
   @ApiProperty({
-    description: 'IN/OUT: unidades a mover. ADJUSTMENT: stock final deseado.',
+    description:
+      'IN/OUT: unidades a mover. ADJUSTMENT: stock final deseado. Admite hasta 3 decimales (0.1 = 100 g de un producto medido en kilos).',
   })
   @Type(() => Number)
-  @IsInt({ message: 'La cantidad debe ser un numero entero' })
+  @IsNumber(
+    { maxDecimalPlaces: QTY_DECIMALS },
+    { message: 'La cantidad admite hasta 3 decimales' },
+  )
   @Min(0)
   quantity!: number;
 

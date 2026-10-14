@@ -18,12 +18,22 @@ const TIP_PERCENT_KEY = 'nexo-hub.tip-percent';
 /** Doble mínimo de `RatesService`: aquí solo importa la navegación por pestañas. */
 const ratesStub = {
   loading: signal(false),
-  snapshot: signal(null),
+  snapshot: signal<unknown>(null),
   bcv: signal(null),
   custom: signal(null),
   hasCustom: signal(false),
   rates: signal([]),
   currencies: signal([]),
+  baseCurrency: signal({
+    code: 'USD',
+    label: 'Dólares',
+    symbol: '$',
+    decimals: 2,
+    bsPerUnit: null,
+    bsPerUsd: 0,
+  }),
+  baseCode: signal('USD'),
+  convertsBase: signal(false),
   stale: signal(false),
   activeKey: signal(null),
   showConversions: signal(true),
@@ -49,7 +59,7 @@ const companiesStub = {
   create: () => EMPTY,
 };
 
-const currenciesStub = { saving: signal(false), save: () => undefined };
+const currenciesStub = { saving: signal(false), save: jasmine.createSpy('save') };
 
 /**
  * Pruebas de las pestañas de Configuración: se pinta una sola sección a la vez y
@@ -112,6 +122,18 @@ describe('SettingsPage (pestañas de configuración)', () => {
   function subtitle(): string {
     const header = fixture.nativeElement.querySelector('header') as HTMLElement;
     return header.textContent ?? '';
+  }
+
+  /** Radio de la columna Base de la tabla de monedas. */
+  function baseRadio(code: string): HTMLInputElement {
+    const radios = Array.from(
+      fixture.nativeElement.querySelectorAll(
+        'input[name="base-currency"]',
+      ) as NodeListOf<HTMLInputElement>,
+    );
+    const found = radios.find((radio) => radio.value === code);
+    if (!found) throw new Error(`No se encontró el selector de base para ${code}`);
+    return found;
   }
 
   function pressArrow(button: HTMLButtonElement, key: string): void {
@@ -230,5 +252,75 @@ describe('SettingsPage (pestañas de configuración)', () => {
     // Cualquier otra tecla no cambia de pestaña.
     pressArrow(tab('Mis datos'), 'Tab');
     expect(panel().id).toBe('profile-panel');
+  });
+
+  it('deja elegir la moneda base con la que se muestran los montos', () => {
+    // La sección de monedas solo se pinta cuando las tasas ya cargaron.
+    ratesStub.snapshot.set({});
+
+    try {
+      fixture.componentInstance.currencyRows = [
+        {
+          code: 'USD',
+          label: 'Dólares',
+          symbol: '$',
+          enabled: true,
+          rate: '',
+          bsPerUnit: 876.7976,
+          source: 'BCV',
+          isBase: true,
+          isDefault: true,
+          canBeBase: true,
+        },
+        {
+          code: 'VES',
+          label: 'Bolívares',
+          symbol: 'Bs',
+          enabled: true,
+          rate: '',
+          bsPerUnit: 1,
+          source: 'BASE',
+          isBase: false,
+          isDefault: true,
+          canBeBase: true,
+        },
+        {
+          code: 'COP',
+          label: 'Pesos colombianos',
+          symbol: 'COL$',
+          enabled: false,
+          rate: '',
+          bsPerUnit: null,
+          source: 'NONE',
+          isBase: false,
+          isDefault: false,
+          canBeBase: false,
+        },
+      ];
+      fixture.detectChanges();
+
+      // La moneda base guardada es el dólar; el bolívar puede reemplazarlo.
+      expect(baseRadio('USD').checked).toBe(true);
+      // Una moneda sin tasa no puede ser la base.
+      expect(baseRadio('COP').disabled).toBe(true);
+
+      const ves = baseRadio('VES');
+      ves.checked = true;
+      ves.dispatchEvent(new Event('change', { bubbles: true }));
+      fixture.detectChanges();
+
+      expect(baseRadio('VES').checked).toBe(true);
+      expect(panel().textContent).toContain('Bolívares (VES)');
+
+      fixture.componentInstance.saveCurrencies();
+
+      expect(currenciesStub.save).toHaveBeenCalledWith(
+        jasmine.any(Array),
+        'VES',
+        jasmine.any(Function),
+      );
+    } finally {
+      ratesStub.snapshot.set(null);
+    }
   });
 });

@@ -124,6 +124,35 @@ describe('CashService (arqueo multimoneda)', () => {
       expect(breakdown.salesTotal).toBe(25);
     });
 
+    it('separa las propinas de las ventas del turno', () => {
+      const service = new CashService({} as PrismaService, config, rates);
+
+      const breakdown = service.buildBreakdown(0, [
+        // Cobro de 110 USD: 100 de consumo + 10 de propina.
+        movement({ amount: 110, baseAmount: 110, tipAmount: 10 }),
+        // Movimiento manual de venta: no lleva propina dentro.
+        movement({ amount: 25, baseAmount: 25 }),
+      ]);
+
+      // El efectivo no cambia: la propina entro junto con el cobro del pedido.
+      expect(breakdown.cashIn).toBe(135);
+      expect(breakdown.expectedCash).toBe(135);
+      // Ventas + propinas = lo que se cobro por ventas.
+      expect(breakdown.salesTotal).toBe(125);
+      expect(breakdown.tipsTotal).toBe(10);
+    });
+
+    it('no deja que la propina supere el monto cobrado', () => {
+      const service = new CashService({} as PrismaService, config, rates);
+
+      const breakdown = service.buildBreakdown(0, [
+        movement({ amount: 50, baseAmount: 50, tipAmount: 80 }),
+      ]);
+
+      expect(breakdown.salesTotal).toBe(0);
+      expect(breakdown.tipsTotal).toBe(50);
+    });
+
     it('desglosa el fondo inicial contado en varias monedas', () => {
       const service = new CashService({} as PrismaService, config, rates);
 
@@ -157,6 +186,152 @@ describe('CashService (arqueo multimoneda)', () => {
 
       expect(breakdown.openingByCurrency).toEqual([]);
       expect(breakdown.openingMixed).toBe(false);
+    });
+  });
+
+  describe('propinas del turno', () => {
+    it('no adelanta propina en un abono parcial', () => {
+      const service = new CashService({} as PrismaService, config, rates);
+
+      // Pedido de 110 (100 de consumo + 10 de propina) con un abono de 100.
+      const portions = service.tipPortionsOfOrder(110, 10, [
+        { id: 'p1', baseAmount: 100 },
+      ]);
+
+      expect(portions.get('p1')).toBe(0);
+    });
+
+    it('cobra la propina con el pago que completa el consumo', () => {
+      const service = new CashService({} as PrismaService, config, rates);
+
+      const portions = service.tipPortionsOfOrder(110, 10, [
+        { id: 'p1', baseAmount: 60 },
+        { id: 'p2', baseAmount: 50 },
+      ]);
+
+      expect(portions.get('p1')).toBe(0);
+      expect(portions.get('p2')).toBe(10);
+    });
+
+    it('reparte la propina cuando el primer pago ya cubre el consumo', () => {
+      const service = new CashService({} as PrismaService, config, rates);
+
+      // 105 = 100 de consumo + 5 de propina; quedan 5 de propina para el resto.
+      const portions = service.tipPortionsOfOrder(110, 10, [
+        { id: 'p1', baseAmount: 105 },
+        { id: 'p2', baseAmount: 5 },
+      ]);
+
+      expect(portions.get('p1')).toBe(5);
+      expect(portions.get('p2')).toBe(5);
+    });
+
+    it('usa el monto original en cobros sin equivalente en USD', () => {
+      const service = new CashService({} as PrismaService, config, rates);
+
+      const portions = service.tipPortionsOfOrder(110, 10, [
+        { id: 'p1', amount: 110, baseAmount: 0 },
+      ]);
+
+      expect(portions.get('p1')).toBe(10);
+    });
+
+    it('asigna a cada movimiento la propina de su cobro', async () => {
+      const prisma = {
+        order: {
+          findMany: jest.fn().mockResolvedValue([
+            {
+              id: 'o1',
+              total: 110,
+              tip: 10,
+              payments: [
+                { id: 'p1', amount: 110, baseAmount: 110, cashMovementId: 'm1' },
+              ],
+            },
+          ]),
+        },
+      } as unknown as PrismaService;
+      const service = new CashService(prisma, config, rates);
+
+      const movements = await service.withTips(COMPANY_ID, [
+        movement({
+          id: 'm1',
+          amount: 110,
+          baseAmount: 110,
+          referenceType: 'ORDER',
+          referenceId: 'o1',
+        }),
+        // Movimiento manual: no es el cobro de un pedido.
+        movement({ id: 'm2', amount: 25, baseAmount: 25 }),
+      ]);
+
+      expect(movements[0].tipAmount).toBe(10);
+      expect(movements[1].tipAmount).toBe(0);
+      expect(prisma.order.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: expect.objectContaining({
+            id: { in: ['o1'] },
+            companyId: COMPANY_ID,
+          }),
+        }),
+      );
+    });
+
+    it('no consulta la base cuando ningun movimiento es un cobro de pedido', async () => {
+      const prisma = {
+        order: { findMany: jest.fn() },
+      } as unknown as PrismaService;
+      const service = new CashService(prisma, config, rates);
+
+      await service.withTips(COMPANY_ID, [movement({ id: 'm1', amount: 25 })]);
+
+      expect(prisma.order.findMany).not.toHaveBeenCalled();
+    });
+
+    it('deja las ventas netas y las propinas aparte en el arqueo', async () => {
+      const prisma = {
+        cashSession: {
+          findFirst: jest.fn().mockResolvedValue({
+            id: 's1',
+            companyId: COMPANY_ID,
+            code: 'CJ-1',
+            status: 'OPEN',
+            openedAt: new Date('2026-10-13T08:00:00.000Z'),
+            openingAmount: 0,
+            openingCurrency: 'USD',
+            openingRate: null,
+            openingLines: null,
+            movements: [
+              movement({
+                id: 'm1',
+                amount: 110,
+                baseAmount: 110,
+                referenceType: 'ORDER',
+                referenceId: 'o1',
+              }),
+            ],
+          }),
+        },
+        order: {
+          findMany: jest.fn().mockResolvedValue([
+            {
+              id: 'o1',
+              total: 110,
+              tip: 10,
+              payments: [
+                { id: 'p1', amount: 110, baseAmount: 110, cashMovementId: 'm1' },
+              ],
+            },
+          ]),
+        },
+      } as unknown as PrismaService;
+      const service = new CashService(prisma, config, rates);
+
+      const { summary } = await service.getCurrentSession(COMPANY_ID);
+
+      expect(summary?.cashIn).toBe(110);
+      expect(summary?.salesTotal).toBe(100);
+      expect(summary?.tipsTotal).toBe(10);
     });
   });
 

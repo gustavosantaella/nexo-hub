@@ -31,10 +31,12 @@ import { StatsService } from '../../core/services/stats.service';
 import {
   apiErrorMessage,
   compact,
+  displayBaseLabel,
   moneyIn,
   moneyInCompact,
   isCompact,
   number,
+  quantity,
   toDateInput,
 } from '../../core/utils/format';
 import { ToastService } from '../../core/services/toast.service';
@@ -301,7 +303,7 @@ function toComposition(items: CompositionItem[]): Composition {
               <h2 class="text-sm font-semibold text-slate-800">Cobros por moneda</h2>
               <p class="mt-0.5 text-xs text-slate-500">
                 Cuánto entró en cada moneda y su equivalente en
-                {{ baseCurrency.label }}.
+                {{ moneyBaseLabel() }}.
               </p>
             </div>
             <app-money class="text-xs text-slate-500" [amount]="paymentsByCurrency()?.total ?? 0" alignEnd="true" />
@@ -376,8 +378,8 @@ function toComposition(items: CompositionItem[]): Composition {
                   <tr>
                     <td class="font-medium text-slate-900">{{ item.name }}</td>
                     <td class="text-slate-500">{{ item.sku }}</td>
-                    <td class="text-right font-semibold text-rose-600">{{ number(item.stock) }}</td>
-                    <td class="text-right text-slate-500">{{ number(item.minStock) }}</td>
+                    <td class="text-right font-semibold text-rose-600">{{ quantity(item.stock) }}</td>
+                    <td class="text-right text-slate-500">{{ quantity(item.minStock) }}</td>
                     <td>{{ unitLabels[item.unit] || item.unit }}</td>
                   </tr>
                 }
@@ -402,7 +404,11 @@ export class StatsPage implements OnInit {
   readonly methodLabels = PAYMENT_METHOD_LABELS;
   readonly unitLabels = PRODUCT_UNIT_LABELS;
   readonly number = number;
+  /** Cantidades/existencias: hasta 3 decimales, sin ceros de relleno. */
+  readonly quantity = quantity;
   readonly baseCurrency = BASE_CURRENCY;
+  /** Etiqueta de la moneda base con la que se muestran los montos. */
+  readonly moneyBaseLabel = displayBaseLabel;
 
   /**
    * Formatea un monto en la moneda en la que se cobró. Los montos enormes (las
@@ -516,7 +522,7 @@ export class StatsPage implements OnInit {
       label: item.name,
       value: item.stock,
       valueText: this.countLabel(item.stock, item.unit),
-      caption: `mín. ${number(item.minStock)}`,
+      caption: `mín. ${quantity(item.minStock)}`,
       marker: item.minStock,
       markerLabel: 'Mínimo',
       color: CHART_COLORS.rose,

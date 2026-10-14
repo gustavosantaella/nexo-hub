@@ -18,6 +18,15 @@ import { PrismaService } from '../../prisma/prisma.service';
 /** Clave de `Setting` donde vive la configuracion de monedas (JSON). */
 export const CURRENCIES_KEY = 'currencies.config';
 
+/**
+ * Clave de `Setting` donde vive la moneda base elegida por el local.
+ *
+ * Los montos del sistema SIEMPRE se guardan en dolares (`baseAmount`): esta
+ * clave solo decide en que moneda se muestran primero (tarjetas, listados,
+ * reportes). Cuando no existe, la moneda base es USD.
+ */
+export const BASE_CURRENCY_KEY = 'currencies.base';
+
 /** Entrada aceptada al guardar una moneda. */
 export interface CurrencyInput {
   code: string;
@@ -53,14 +62,34 @@ export class CurrenciesService {
     return (await this.list(companyId)).filter((item) => item.enabled);
   }
 
-  /** Guarda la configuracion completa de la empresa (valida y normaliza). */
+  /**
+   * Codigo de la moneda base con la que el sistema muestra los montos
+   * (USD mientras el local no elija otra).
+   *
+   * No valida contra la configuracion: si la moneda guardada ya no existe, el
+   * snapshot de tasas cae de vuelta al USD.
+   */
+  async baseCurrencyCode(companyId: string): Promise<string> {
+    const row = await this.prisma.setting.findUnique({
+      where: { companyId_key: { companyId, key: BASE_CURRENCY_KEY } },
+    });
+    return normalizeCurrencyCode(row?.value) || BASE_CURRENCY_CODE;
+  }
+
+  /**
+   * Guarda la configuracion completa de la empresa (valida y normaliza).
+   * `base` es opcional: cuando se omite, la moneda base guardada no se toca.
+   */
   async save(
     companyId: string,
     inputs: CurrencyInput[],
     userId?: string,
+    base?: string,
   ): Promise<CurrencySetting[]> {
     const normalized = this.normalizeInputs(inputs);
-    await this.persist(companyId, normalized, userId);
+    const target =
+      base === undefined ? undefined : this.resolveBase(base, normalized);
+    await this.persist(companyId, normalized, userId, target);
     return this.merge(normalized);
   }
 
@@ -94,10 +123,13 @@ export class CurrenciesService {
     const target = normalizeCurrencyCode(code);
     this.assertMutable(target);
     const current = await this.list(companyId);
+    // Si la moneda quitada era la base de visualizacion, el sistema vuelve a USD.
+    const base = await this.baseCurrencyCode(companyId);
     return this.save(
       companyId,
       current.filter((item) => item.code !== target),
       userId,
+      base === target ? BASE_CURRENCY_CODE : undefined,
     );
   }
 
@@ -107,6 +139,7 @@ export class CurrenciesService {
     companyId: string,
     settings: CurrencySetting[],
     userId?: string,
+    base?: string,
   ): Promise<void> {
     const value = JSON.stringify(settings);
     await this.prisma.setting.upsert({
@@ -114,6 +147,49 @@ export class CurrenciesService {
       update: { value, updatedById: userId },
       create: { companyId, key: CURRENCIES_KEY, value, updatedById: userId },
     });
+
+    if (base === undefined) return;
+
+    const baseValue = normalizeCurrencyCode(base) || BASE_CURRENCY_CODE;
+    await this.prisma.setting.upsert({
+      where: { companyId_key: { companyId, key: BASE_CURRENCY_KEY } },
+      update: { value: baseValue, updatedById: userId },
+      create: {
+        companyId,
+        key: BASE_CURRENCY_KEY,
+        value: baseValue,
+        updatedById: userId,
+      },
+    });
+  }
+
+  /**
+   * Valida la moneda base elegida: tiene que estar configurada y poder
+   * convertirse (el bolivar vale 1 Bs, el dolar y el euro salen del BCV y el
+   * resto necesita su tasa manual en bolivares por unidad).
+   */
+  private resolveBase(
+    base: string | null | undefined,
+    settings: CurrencySetting[],
+  ): string {
+    const code = normalizeCurrencyCode(base);
+    if (!code) {
+      throw new BadRequestException('La moneda base no puede quedar vacia');
+    }
+
+    const found = settings.find((item) => item.code === code);
+    if (!found) {
+      throw new BadRequestException(
+        `${code} no esta configurada: agregala a la lista antes de usarla como moneda base`,
+      );
+    }
+    if (!SELF_RATED_CURRENCY_CODES.includes(code) && !found.rate) {
+      throw new BadRequestException(
+        `Configura la tasa de ${code} (bolivares por 1 ${code}) para usarla como moneda base`,
+      );
+    }
+
+    return code;
   }
 
   /**

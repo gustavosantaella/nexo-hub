@@ -51,8 +51,25 @@ export interface RateOption {
 export type CurrencyRateSource = 'BASE' | 'BCV' | 'CUSTOM' | 'MANUAL' | 'NONE';
 
 /**
+ * Moneda base del sistema: la que el local eligió para mostrar los montos
+ * primero (tarjetas, listados y reportes). Los montos se siguen guardando en
+ * dólares (`baseAmount`).
+ */
+export interface BaseCurrencyInfo {
+  code: string;
+  label: string;
+  symbol: string;
+  /** Decimales sugeridos al mostrar montos en esta moneda. */
+  decimals: number;
+  /** Bolívares por 1 unidad de esta moneda (`null` si aún no tiene tasa). */
+  bsPerUnit: number | null;
+  /** Bolívares por 1 USD: puente para pasar de la moneda guardada a la mostrada. */
+  bsPerUsd: number;
+}
+
+/**
  * Moneda con la tasa lista para cobrar/pagar.
- * `bsPerUnit` son los bolivares por 1 unidad de la moneda (null si aun no
+ * `bsPerUnit` son los bolívares por 1 unidad de la moneda (null si aun no
  * tiene tasa configurada) y `bsPerUsd` es el puente hacia la moneda base.
  */
 export interface CurrencyRateOption {
@@ -63,8 +80,10 @@ export interface CurrencyRateOption {
   enabled: boolean;
   bsPerUnit: number | null;
   source: CurrencyRateSource;
-  /** `true` para la moneda base del sistema (USD). */
+  /** `true` para la moneda base CONTABLE del sistema (siempre USD). */
   isBase: boolean;
+  /** `true` para la moneda base con la que se muestran los montos. */
+  isDisplayBase: boolean;
   bsPerUsd: number;
 }
 
@@ -104,6 +123,8 @@ export interface RatesSnapshot {
   activeKey: RateKey;
   /** Monedas configurables con su tasa en bolivares. */
   currencies: CurrencyRateOption[];
+  /** Moneda base con la que se muestran los montos (USD por defecto). */
+  baseCurrency: BaseCurrencyInfo;
   /**
    * Tasa USDT/VES de referencia, solo para mostrar en Configuración.
    * `null` cuando la fuente no respondió y no hay dato previo.
@@ -113,9 +134,12 @@ export interface RatesSnapshot {
 
 /** Monto convertido con una tasa (lo que pinta `<app-money>`). */
 export interface RateConversion {
-  key: RateKey;
+  /** Clave de la tasa (`BCV_USD`) o código de la moneda (`EUR`). */
+  key: string;
   label: string;
   rate: number;
   amount: number;
   text: string;
+  /** Código de la moneda de la conversión (cuando es una moneda, no una tasa). */
+  code?: string;
 }

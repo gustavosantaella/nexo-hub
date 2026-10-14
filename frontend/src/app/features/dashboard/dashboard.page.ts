@@ -99,8 +99,14 @@ import { StatCardComponent } from '../../shared/components/stat-card.component';
                   <dd class="font-medium"><app-money [amount]="cash.openingAmount" alignEnd="true" /></dd>
                 </div>
                 <div class="flex justify-between">
-                  <dt class="text-slate-500">Ventas del turno</dt>
+                  <dt class="text-slate-500">
+                    Ventas del turno <span class="text-slate-400">(sin propinas)</span>
+                  </dt>
                   <dd class="font-medium"><app-money [amount]="cash.salesTotal" alignEnd="true" /></dd>
+                </div>
+                <div class="flex justify-between">
+                  <dt class="text-slate-500">Propinas del turno</dt>
+                  <dd class="font-medium"><app-money [amount]="cash.tipsTotal" alignEnd="true" /></dd>
                 </div>
                 <div class="flex justify-between">
                   <dt class="text-slate-500">Efectivo in / out</dt>
@@ -129,7 +135,7 @@ import { StatCardComponent } from '../../shared/components/stat-card.component';
                         <span class="text-right">
                           <span class="block font-medium">{{ amountIn(row.net, row.currency) }}</span>
                           <span class="block text-[10px] text-slate-400">
-                            = {{ amountIn(row.baseNet, baseCurrency.code) }}
+                            = {{ money(row.baseNet) }}
                           </span>
                         </span>
                       </li>
@@ -248,7 +254,7 @@ import { StatCardComponent } from '../../shared/components/stat-card.component';
             <h2 class="text-sm font-semibold text-slate-800">Hoy en monedas</h2>
             <p class="mt-0.5 text-xs text-slate-500">
               En qué moneda entró o salió el dinero y su equivalente en
-              {{ baseCurrency.label }}.
+              {{ displayBase().label }}.
             </p>
           </div>
           <span class="badge bg-slate-100 text-slate-600">
@@ -265,7 +271,7 @@ import { StatCardComponent } from '../../shared/components/stat-card.component';
                 <thead>
                   <tr>
                     <th>Concepto</th>
-                    <th class="text-right">{{ baseCurrency.code }}</th>
+                    <th class="text-right">{{ displayBase().code }}</th>
                     <th class="text-right">Bs</th>
                   </tr>
                 </thead>
@@ -456,6 +462,8 @@ export class DashboardPage implements OnInit {
   readonly money = money;
   readonly number = number;
   readonly baseCurrency = BASE_CURRENCY;
+  /** Moneda base con la que se muestran los montos (USD por defecto). */
+  readonly displayBase = this.rates.baseCurrency;
 
   readonly greeting = computed(() => {
     const hour = new Date().getHours();

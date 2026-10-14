@@ -29,10 +29,12 @@ import {
   buildPaginatedResult,
   toSkip,
 } from '../../common/utils/pagination.util';
+import { mulQty, sumQty } from '../../common/utils/quantity.util';
 import { tenantWhere } from '../../common/utils/tenant.util';
 import { PrismaService, type PrismaClientLike } from '../../prisma/prisma.service';
 import { CashService } from '../cash/cash.service';
 import { InventoryService } from '../inventory/inventory.service';
+import { MenusService, type MenuRecipe } from '../menus/menus.service';
 import { RatesService } from '../rates/rates.service';
 import {
   AddOrderItemsDto,
@@ -58,6 +60,16 @@ const ORDER_DETAIL_INCLUDE = {
   payments: { orderBy: { createdAt: 'asc' } },
 } satisfies Prisma.OrderInclude;
 
+/**
+ * Pedidos activos del tablero operativo (cocina/salon y mapa de mesas del POS).
+ * Ademas del resumen trae las lineas del pedido: el cajero necesita ver los
+ * productos ya cargados en la mesa al entrar a agregar o cobrar.
+ */
+const ORDER_ACTIVE_INCLUDE = {
+  ...ORDER_LIST_INCLUDE,
+  items: true,
+} satisfies Prisma.OrderInclude;
+
 type OrderWithItems = Prisma.OrderGetPayload<{ include: { items: true } }>;
 
 /** Maquina de estados del pedido. Estados terminales: COMPLETED / CANCELLED. */
@@ -78,20 +90,27 @@ export interface OrderTotals {
   total: number;
 }
 
-/** Item resuelto: nombre y precio congelados (snapshot) + control de stock. */
+/** Item resuelto: nombre y precio congelados (snapshot) + consumo de inventario. */
 interface ResolvedOrderItem {
-  productId: string;
+  /** Producto suelto vendido (`null` si la linea es un menu). */
+  productId: string | null;
+  /** Menu vendido (`null` si la linea es un producto suelto). */
+  menuId: string | null;
   name: string;
   quantity: number;
   unitPrice: number;
   total: number;
-  trackStock: boolean;
+  /**
+   * Cuanto consume del inventario UNA unidad de esta linea, en la unidad de cada
+   * producto: un producto se consume a si mismo (1) y un menu, su receta.
+   */
+  consumption: { productId: string; quantity: number }[];
 }
 
 /**
  * Linea final de un pedido al agregar productos.
- * Una linea por `productId` + `unitPrice`: los productos repetidos se suman en
- * una sola linea en vez de crear filas nuevas.
+ * Una linea por `productId` (o `menuId`) + `unitPrice`: los productos repetidos
+ * se suman en una sola linea en vez de crear filas nuevas.
  */
 interface MergedOrderLine {
   /** `id` del item existente que se actualiza (ausente si la linea es nueva). */
@@ -100,7 +119,8 @@ interface MergedOrderLine {
   removeIds: string[];
   /** Cantidad que la linea tenia guardada (0 si la linea es nueva). */
   originalQuantity: number;
-  productId: string;
+  productId: string | null;
+  menuId: string | null;
   name: string;
   quantity: number;
   unitPrice: number;
@@ -140,6 +160,7 @@ export class OrdersService {
     private readonly inventory: InventoryService,
     private readonly cash: CashService,
     private readonly rates: RatesService,
+    private readonly menus: MenusService,
   ) {}
 
   /** Crea el pedido, descuenta stock y guarda el snapshot de precios. */
@@ -173,6 +194,7 @@ export class OrdersService {
             create: items.map((item) => ({
               companyId,
               productId: item.productId,
+              menuId: item.menuId,
               name: item.name,
               quantity: item.quantity,
               unitPrice: item.unitPrice,
@@ -184,22 +206,14 @@ export class OrdersService {
       });
 
       // El stock se consume al registrar la venta (trazable con referenceId).
-      for (const item of items) {
-        if (!item.trackStock) continue;
-        await this.inventory.applyMovement(
-          companyId,
-          {
-            productId: item.productId,
-            type: StockMovementType.OUT,
-            quantity: item.quantity,
-            reason: `Pedido ${order.code}`,
-            referenceType: StockReferenceType.ORDER,
-            referenceId: order.id,
-            createdById: userId,
-          },
-          tx,
-        );
-      }
+      // Los menus se expanden a su receta: una sola salida por producto.
+      await this.applyConsumption(companyId, tx, {
+        order,
+        consumption: this.consumptionOf(items),
+        type: StockMovementType.OUT,
+        reason: `Pedido ${order.code}`,
+        userId,
+      });
 
       return order;
     });
@@ -271,14 +285,8 @@ export class OrdersService {
     const toDelete = lines.flatMap((line) => line.removeIds);
 
     // Salida de stock: una sola por producto, sumando las cantidades repetidas.
-    const stockOut = new Map<string, number>();
-    for (const item of newItems) {
-      if (!item.trackStock) continue;
-      stockOut.set(
-        item.productId,
-        (stockOut.get(item.productId) ?? 0) + item.quantity,
-      );
-    }
+    // Un menu aporta la cantidad de cada ingrediente de su receta.
+    const stockOut = this.consumptionOf(newItems);
 
     return this.prisma.$transaction(async (tx) => {
       const updated = await tx.order.update({
@@ -292,6 +300,7 @@ export class OrdersService {
                   create: toCreate.map((line) => ({
                     companyId,
                     productId: line.productId,
+                    menuId: line.menuId,
                     name: line.name,
                     quantity: line.quantity,
                     unitPrice: line.unitPrice,
@@ -316,21 +325,13 @@ export class OrdersService {
       });
 
       // El stock de los productos agregados se consume igual que al crear.
-      for (const [productId, quantity] of stockOut) {
-        await this.inventory.applyMovement(
-          companyId,
-          {
-            productId,
-            type: StockMovementType.OUT,
-            quantity,
-            reason: `Pedido ${order.code}`,
-            referenceType: StockReferenceType.ORDER,
-            referenceId: order.id,
-            createdById: userId,
-          },
-          tx,
-        );
-      }
+      await this.applyConsumption(companyId, tx, {
+        order,
+        consumption: stockOut,
+        type: StockMovementType.OUT,
+        reason: `Pedido ${order.code}`,
+        userId,
+      });
 
       return updated;
     });
@@ -365,21 +366,22 @@ export class OrdersService {
         : line,
     );
 
+    const recipes = await this.loadItemRecipes(companyId, [item]);
+
     return this.applyItemChange(
       companyId,
       order,
       lines,
-      [
-        {
-          productId: item.productId,
-          type: delta > 0 ? StockMovementType.OUT : StockMovementType.IN,
-          quantity: Math.abs(delta),
-          reason:
-            delta > 0
-              ? `Pedido ${order.code}`
-              : `Devolucion por corregir la cantidad del pedido ${order.code}`,
-        },
-      ],
+      this.itemMovements({
+        item,
+        units: Math.abs(delta),
+        type: delta > 0 ? StockMovementType.OUT : StockMovementType.IN,
+        reason:
+          delta > 0
+            ? `Pedido ${order.code}`
+            : `Devolucion por corregir la cantidad del pedido ${order.code}`,
+        recipes,
+      }),
       userId,
     );
   }
@@ -405,19 +407,19 @@ export class OrdersService {
     }
 
     const lines = order.items.filter((line) => line.id !== itemId);
+    const recipes = await this.loadItemRecipes(companyId, [item]);
 
     return this.applyItemChange(
       companyId,
       order,
       lines,
-      [
-        {
-          productId: item.productId,
-          type: StockMovementType.IN,
-          quantity: item.quantity,
-          reason: `Devolucion por quitar un producto del pedido ${order.code}`,
-        },
-      ],
+      this.itemMovements({
+        item,
+        units: item.quantity,
+        type: StockMovementType.IN,
+        reason: `Devolucion por quitar un producto del pedido ${order.code}`,
+        recipes,
+      }),
       userId,
     );
   }
@@ -425,22 +427,20 @@ export class OrdersService {
   /**
    * Arma las lineas finales del pedido fusionando los productos repetidos.
    *
-   * La clave de fusion es `productId` + `unitPrice` (en centavos, para comparar
-   * con exactitud): el mismo producto al mismo precio ocupa una sola linea con
-   * las cantidades sumadas. Tambien recorre las lineas existentes, por lo que
-   * consolida duplicados previos (esas filas vuelven en `removeIds` para
-   * borrarlas y que los totales sigan cuadrando con la base).
+   * La clave de fusion es la referencia (`productId` o `menuId`) + `unitPrice`
+   * (en centavos, para comparar con exactitud): el mismo producto al mismo precio
+   * ocupa una sola linea con las cantidades sumadas. Tambien recorre las lineas
+   * existentes, por lo que consolida duplicados previos (esas filas vuelven en
+   * `removeIds` para borrarlas y que los totales sigan cuadrando con la base).
    */
   private mergeLines(
     existing: OrderWithItems['items'],
     added: ResolvedOrderItem[],
   ): MergedOrderLine[] {
     const lines = new Map<string, MergedOrderLine>();
-    const keyOf = (productId: string, unitPrice: number) =>
-      `${productId}|${toCents(unitPrice)}`;
 
     for (const item of existing) {
-      const key = keyOf(item.productId, item.unitPrice);
+      const key = this.lineKey(item.menuId, item.productId, item.unitPrice);
       const current = lines.get(key);
       if (!current) {
         lines.set(key, {
@@ -448,6 +448,7 @@ export class OrdersService {
           removeIds: [],
           originalQuantity: item.quantity,
           productId: item.productId,
+          menuId: item.menuId,
           name: item.name,
           quantity: item.quantity,
           unitPrice: item.unitPrice,
@@ -462,13 +463,14 @@ export class OrdersService {
     }
 
     for (const item of added) {
-      const key = keyOf(item.productId, item.unitPrice);
+      const key = this.lineKey(item.menuId, item.productId, item.unitPrice);
       const current = lines.get(key);
       if (!current) {
         lines.set(key, {
           removeIds: [],
           originalQuantity: 0,
           productId: item.productId,
+          menuId: item.menuId,
           name: item.name,
           quantity: item.quantity,
           unitPrice: item.unitPrice,
@@ -484,31 +486,95 @@ export class OrdersService {
     return [...lines.values()];
   }
 
+  /** Clave de fusion de una linea: referencia (producto o menu) + precio. */
+  private lineKey(
+    menuId: string | null,
+    productId: string | null,
+    unitPrice: number,
+  ): string {
+    return `${menuId ? 'm' : 'p'}:${menuId ?? productId}|${toCents(unitPrice)}`;
+  }
+
   /**
-   * Valida los productos de las lineas y arma los items con el snapshot de
-   * nombre y precio. Se usa al crear el pedido y al agregar mas productos.
+   * Valida las lineas (productos sueltos y menus) y arma los items con el
+   * snapshot de nombre y precio mas el consumo de inventario de cada uno. Se usa
+   * al crear el pedido y al agregar mas productos.
    */
   private async resolveItems(
     companyId: string,
     lines: OrderItemDto[],
   ): Promise<ResolvedOrderItem[]> {
-    const productIds = [...new Set(lines.map((i) => i.productId))];
-    const products = await this.prisma.product.findMany({
-      where: { id: { in: productIds }, ...tenantWhere(companyId) },
-      select: { id: true, name: true, price: true, active: true, trackStock: true },
-    });
+    for (const line of lines) {
+      if (!line.productId && !line.menuId) {
+        throw new BadRequestException(
+          'Cada linea del pedido debe indicar un producto o un menu',
+        );
+      }
+      if (line.productId && line.menuId) {
+        throw new BadRequestException(
+          'Una linea del pedido no puede ser producto y menu a la vez',
+        );
+      }
+    }
+
+    const productIds = [
+      ...new Set(lines.filter((line) => !line.menuId).map((line) => line.productId!)),
+    ];
+    const menuIds = [
+      ...new Set(lines.filter((line) => !!line.menuId).map((line) => line.menuId!)),
+    ];
+
+    const products = productIds.length
+      ? await this.prisma.product.findMany({
+          where: { id: { in: productIds }, ...tenantWhere(companyId) },
+          select: { id: true, name: true, price: true, active: true },
+        })
+      : [];
+    const recipes = await this.menus.loadRecipes(companyId, menuIds);
 
     if (products.length !== productIds.length) {
-      const found = new Set(products.map((p) => p.id));
+      const found = new Set(products.map((product) => product.id));
       const missing = productIds.filter((id) => !found.has(id));
       throw new BadRequestException(
         `Producto(s) no encontrado(s): ${missing.join(', ')}`,
       );
     }
 
-    const byId = new Map(products.map((p) => [p.id, p]));
+    const byId = new Map(products.map((product) => [product.id, product]));
     return lines.map((line) => {
-      const product = byId.get(line.productId)!;
+      const quantity = line.quantity;
+
+      if (line.menuId) {
+        const recipe = recipes.get(line.menuId);
+        if (!recipe) {
+          throw new BadRequestException(`Menu no encontrado: ${line.menuId}`);
+        }
+        if (!recipe.active) {
+          throw new BadRequestException(
+            `El menu "${recipe.name}" esta inactivo y no puede venderse`,
+          );
+        }
+        if (recipe.ingredients.length === 0) {
+          throw new BadRequestException(
+            `El menu "${recipe.name}" no tiene receta cargada`,
+          );
+        }
+        const unitPrice = toMoney(line.unitPrice ?? recipe.price);
+        return {
+          productId: null,
+          menuId: recipe.id,
+          name: recipe.name,
+          quantity,
+          unitPrice,
+          total: money.mul(unitPrice, quantity),
+          consumption: recipe.ingredients.map((ingredient) => ({
+            productId: ingredient.productId,
+            quantity: ingredient.quantity,
+          })),
+        };
+      }
+
+      const product = byId.get(line.productId!)!;
       if (!product.active) {
         throw new BadRequestException(
           `El producto "${product.name}" esta inactivo y no puede venderse`,
@@ -517,11 +583,13 @@ export class OrdersService {
       const unitPrice = toMoney(line.unitPrice ?? product.price);
       return {
         productId: product.id,
+        menuId: null,
         name: product.name,
-        quantity: line.quantity,
+        quantity,
         unitPrice,
-        total: money.mul(unitPrice, line.quantity),
-        trackStock: product.trackStock,
+        total: money.mul(unitPrice, quantity),
+        // Un producto suelto se consume a si mismo: 1 unidad por unidad vendida.
+        consumption: [{ productId: product.id, quantity: 1 }],
       };
     });
   }
@@ -592,7 +660,7 @@ export class OrdersService {
           ],
         },
       },
-      include: ORDER_LIST_INCLUDE,
+      include: ORDER_ACTIVE_INCLUDE,
       orderBy: { createdAt: 'asc' },
     });
   }
@@ -859,36 +927,143 @@ export class OrdersService {
     });
   }
 
-  /** Devuelve al inventario los items de productos con control de stock. */
+  /**
+   * Devuelve al inventario todo lo consumido por los items del pedido: los
+   * productos con control de stock y, en los menus, cada ingrediente de la receta
+   * por las unidades vendidas. Se agrega por producto (una sola entrada).
+   */
   private async restockItems(
     companyId: string,
     tx: PrismaClientLike,
     order: OrderWithItems,
     userId: string,
   ) {
-    const products = await tx.product.findMany({
-      where: {
-        id: { in: order.items.map((i) => i.productId) },
-        ...tenantWhere(companyId),
-      },
-      select: { id: true, trackStock: true },
+    const recipes = await this.loadItemRecipes(companyId, order.items, tx);
+
+    const consumption = new Map<string, number>();
+    for (const item of order.items) {
+      for (const part of this.itemConsumption(item, recipes)) {
+        const quantity = mulQty(part.quantity, item.quantity);
+        if (quantity <= 0) continue;
+        consumption.set(
+          part.productId,
+          sumQty([consumption.get(part.productId) ?? 0, quantity]),
+        );
+      }
+    }
+
+    await this.applyConsumption(companyId, tx, {
+      order,
+      consumption,
+      type: StockMovementType.IN,
+      reason: `Devolucion por cancelacion del pedido ${order.code}`,
+      userId,
     });
-    const tracked = new Set(
-      products.filter((p) => p.trackStock).map((p) => p.id),
+  }
+
+  /** Consumo total del pedido por producto (menus expandidos a su receta). */
+  private consumptionOf(items: ResolvedOrderItem[]): Map<string, number> {
+    const totals = new Map<string, number>();
+    for (const item of items) {
+      for (const part of item.consumption) {
+        const quantity = mulQty(part.quantity, item.quantity);
+        if (quantity <= 0) continue;
+        totals.set(
+          part.productId,
+          sumQty([totals.get(part.productId) ?? 0, quantity]),
+        );
+      }
+    }
+    return totals;
+  }
+
+  /** Consumo unitario de una linea YA guardada en el pedido. */
+  private itemConsumption(
+    item: { productId: string | null; menuId: string | null; name: string },
+    recipes: Map<string, MenuRecipe>,
+  ): { productId: string; quantity: number }[] {
+    if (item.menuId) {
+      const recipe = recipes.get(item.menuId);
+      if (!recipe) {
+        throw new BadRequestException(
+          `No se encontro la receta del menu "${item.name}": revisa el menu antes de continuar`,
+        );
+      }
+      return recipe.ingredients.map((ingredient) => ({
+        productId: ingredient.productId,
+        quantity: ingredient.quantity,
+      }));
+    }
+    return item.productId ? [{ productId: item.productId, quantity: 1 }] : [];
+  }
+
+  /** Movimientos de una linea del pedido (producto suelto o menu). */
+  private itemMovements(input: {
+    item: { productId: string | null; menuId: string | null; name: string };
+    units: number;
+    type: StockMovementType;
+    reason: string;
+    recipes: Map<string, MenuRecipe>;
+  }) {
+    return this.itemConsumption(input.item, input.recipes)
+      .map((part) => ({
+        productId: part.productId,
+        type: input.type,
+        quantity: mulQty(part.quantity, input.units),
+        reason: input.reason,
+      }))
+      .filter((movement) => movement.quantity > 0);
+  }
+
+  /** Recetas de los menus referenciados por las lineas del pedido. */
+  private loadItemRecipes(
+    companyId: string,
+    items: { menuId: string | null }[],
+    tx?: PrismaClientLike,
+  ): Promise<Map<string, MenuRecipe>> {
+    const menuIds = items
+      .map((item) => item.menuId)
+      .filter((menuId): menuId is string => !!menuId);
+    return this.menus.loadRecipes(companyId, menuIds, tx);
+  }
+
+  /**
+   * Aplica el consumo de inventario de una venta. Solo mueve los productos con
+   * control de stock (`trackProduct`), igual que antes: un menu con un ingrediente
+   * sin control simplemente no genera movimiento para ese ingrediente.
+   */
+  private async applyConsumption(
+    companyId: string,
+    tx: PrismaClientLike,
+    input: {
+      order: { id: string; code: string };
+      consumption: Map<string, number>;
+      type: StockMovementType;
+      reason: string;
+      userId: string;
+    },
+  ) {
+    const entries = [...input.consumption].filter(([, quantity]) => quantity > 0);
+    if (entries.length === 0) return;
+
+    const tracked = await this.trackedProductIds(
+      companyId,
+      entries.map(([productId]) => productId),
+      tx,
     );
 
-    for (const item of order.items) {
-      if (!tracked.has(item.productId)) continue;
+    for (const [productId, quantity] of entries) {
+      if (!tracked.has(productId)) continue;
       await this.inventory.applyMovement(
         companyId,
         {
-          productId: item.productId,
-          type: StockMovementType.IN,
-          quantity: item.quantity,
-          reason: `Devolucion por cancelacion del pedido ${order.code}`,
+          productId,
+          type: input.type,
+          quantity,
+          reason: input.reason,
           referenceType: StockReferenceType.ORDER,
-          referenceId: order.id,
-          createdById: userId,
+          referenceId: input.order.id,
+          createdById: input.userId,
         },
         tx,
       );
@@ -1036,10 +1211,12 @@ export class OrdersService {
   private async trackedProductIds(
     companyId: string,
     productIds: string[],
+    tx?: PrismaClientLike,
   ): Promise<Set<string>> {
     const unique = [...new Set(productIds)];
     if (unique.length === 0) return new Set();
-    const products = await this.prisma.product.findMany({
+    const client = tx ?? this.prisma;
+    const products = await client.product.findMany({
       where: { id: { in: unique }, ...tenantWhere(companyId) },
       select: { id: true, trackStock: true },
     });

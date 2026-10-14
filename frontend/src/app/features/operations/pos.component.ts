@@ -23,12 +23,16 @@ import type {
   Category,
   Customer,
   CustomerPayload,
+  MenuCategoryRef,
+  MenuOption,
   ProductOption,
 } from '../../core/models/api.model';
 import type {
   CashCurrentResponse,
   CashSession,
   Order,
+  OrderItem,
+  OrderItemPayload,
   OrderStatus,
   OrderType,
   PaymentMethod,
@@ -40,6 +44,10 @@ import {
   ProductsService,
 } from '../../core/services/catalog.service';
 import { LayoutService } from '../../core/services/layout.service';
+import {
+  MenuCategoriesService,
+  MenusService,
+} from '../../core/services/menu.service';
 import { OrdersService } from '../../core/services/orders.service';
 import {
   PreferencesService,
@@ -80,23 +88,49 @@ const COMPLETE_CHAIN: OrderStatus[] = ['CONFIRMED', 'PREPARING', 'READY', 'COMPL
 
 /** Línea del carrito: lo que el cajero está vendiendo. */
 interface PosLine {
-  productId: string;
+  /** Producto del inventario vendido (`null` cuando la línea es un menú). */
+  productId: string | null;
+  /** Menú (plato/combo) vendido (`null` cuando es un producto suelto). */
+  menuId: string | null;
   name: string;
   /** Precio de UNA unidad: en los productos por caja ya viene repartido. */
   unitPrice: number;
   /** Cantidad en unidades individuales (el stock también está en unidades). */
   quantity: number;
+  /**
+   * Unidades disponibles en inventario; en un menú son las porciones que
+   * alcanzan con el stock de sus ingredientes (0 = sin tope conocido).
+   */
   stock: number;
   unit: string;
   /** Unidades que trae la presentacion (1 = producto suelto). */
   unitsPerBox: number;
   imageUrl?: string | null;
+  /** Ingredientes de la receta (solo en las líneas de menú). */
+  ingredientCount?: number;
 }
 
 /** Casilla del mapa de mesas: la mesa y el pedido que la ocupa (si lo hay). */
 interface TableCell {
   number: string;
   order: Order | null;
+}
+
+/**
+ * Cuenta que se muestra en el carrito. Al agregar/cobrar una mesa no solo
+ * entran las líneas nuevas: también los productos ya cargados del pedido, su
+ * descuento, IGV y propina, y lo que el cliente ya pagó.
+ */
+interface BillTotals {
+  subtotal: number;
+  discount: number;
+  tax: number;
+  tip: number;
+  total: number;
+  /** Monto ya cobrado del pedido (0 en una venta nueva). */
+  paid: number;
+  /** Total − pagado: lo que falta cobrar. */
+  balance: number;
 }
 
 /**
@@ -226,20 +260,68 @@ interface TableCell {
           <!-- Grilla de productos del inventario -->
           <section class="card flex min-h-0 flex-col overflow-hidden">
             <div class="card-header shrink-0 flex flex-wrap items-center justify-between gap-2">
-              <div>
-                <h2 class="text-sm font-semibold text-slate-900">Productos</h2>
+              <div class="flex flex-wrap items-center gap-3">
+                <div class="flex rounded-lg border border-slate-200 bg-slate-50 p-0.5">
+                  <button
+                    type="button"
+                    class="rounded-md px-3 py-1 text-sm font-medium transition"
+                    [class]="
+                      gridKind() === 'products'
+                        ? 'bg-white text-brand-700 shadow-sm'
+                        : 'text-slate-500 hover:text-slate-700'
+                    "
+                    (click)="gridKind.set('products')"
+                  >
+                    Productos
+                  </button>
+                  <button
+                    type="button"
+                    class="flex items-center gap-1.5 rounded-md px-3 py-1 text-sm font-medium transition"
+                    [class]="
+                      gridKind() === 'menus'
+                        ? 'bg-white text-brand-700 shadow-sm'
+                        : 'text-slate-500 hover:text-slate-700'
+                    "
+                    (click)="gridKind.set('menus')"
+                  >
+                    Menús
+                    @if (menus().length > 0) {
+                      <span class="badge bg-slate-100 text-slate-600">{{ menus().length }}</span>
+                    }
+                  </button>
+                </div>
                 <p class="text-xs text-slate-500">
-                  {{ filteredProducts.length }} de {{ products().length }} productos del inventario
+                  @if (gridKind() === 'products') {
+                    {{ filteredProducts.length }} de {{ products().length }} productos del inventario
+                  } @else {
+                    {{ filteredMenus.length }} de {{ menus().length }} menús de la carta
+                  }
                 </p>
               </div>
-              @if (search.trim()) {
-                <button type="button" class="btn-ghost btn-sm" (click)="search = ''">
-                  <app-icon name="close" size="h-4 w-4" />
-                  Limpiar búsqueda
-                </button>
-              }
+              <div class="flex items-center gap-2">
+                @if (gridKind() === 'menus') {
+                  <select
+                    class="input w-44"
+                    aria-label="Filtrar menús por categoría"
+                    [ngModel]="menuCategoryId"
+                    (ngModelChange)="menuCategoryId = $event"
+                  >
+                    <option value="">Todas las categorías</option>
+                    @for (category of menuCategories(); track category.id) {
+                      <option [value]="category.id">{{ category.name }}</option>
+                    }
+                  </select>
+                }
+                @if (search.trim()) {
+                  <button type="button" class="btn-ghost btn-sm" (click)="search = ''">
+                    <app-icon name="close" size="h-4 w-4" />
+                    Limpiar búsqueda
+                  </button>
+                }
+              </div>
             </div>
 
+            @if (gridKind() === 'products') {
             @if (loading()) {
               <app-loader label="Cargando productos…" />
             } @else if (filteredProducts.length === 0) {
@@ -300,6 +382,11 @@ interface TableCell {
                             / {{ soldUnitLabel(product) }}
                           </span>
                         </span>
+                        @if (orderedUnitsOf(product.id); as ordered) {
+                          <span class="mt-0.5 text-[11px] font-semibold text-amber-700">
+                            Ya en la mesa: {{ ordered }}
+                          </span>
+                        }
                       </span>
                     </button>
                     @if (isBoxProduct(product)) {
@@ -323,6 +410,73 @@ interface TableCell {
                 }
               </div>
             }
+            } @else {
+              @if (filteredMenus.length === 0) {
+                <app-empty-state
+                  title="Sin menús"
+                  message="Crea menús con su receta en Catálogo → Menús para venderlos aquí."
+                  icon="menu"
+                />
+              } @else {
+                <div
+                  class="card-body grid min-h-0 flex-1 grid-cols-2 content-start gap-3 overflow-y-auto sm:grid-cols-3 2xl:grid-cols-4"
+                >
+                  @for (menu of filteredMenus; track menu.id) {
+                    <div
+                      class="group flex flex-col overflow-hidden rounded-xl border border-slate-200 bg-white transition hover:border-brand-400 hover:shadow-card"
+                    >
+                      <button
+                        type="button"
+                        class="flex flex-1 flex-col text-left"
+                        [title]="menu.available ? menu.name : menu.name + ' (agotado)'"
+                        (click)="addMenu(menu)"
+                      >
+                        <span class="relative flex h-24 w-full items-center justify-center overflow-hidden bg-slate-100">
+                          @if (menu.imageUrl) {
+                            <img class="h-full w-full object-cover" [src]="menu.imageUrl" [alt]="menu.name" />
+                          } @else {
+                            <app-icon name="menu" size="h-7 w-7" class="text-slate-300" />
+                          }
+                          <span
+                            class="absolute right-1.5 top-1.5 badge"
+                            [class]="menu.available ? 'bg-emerald-100 text-emerald-700' : 'bg-rose-100 text-rose-700'"
+                            [title]="
+                              menu.maxServings === null
+                                ? 'Sin tope de inventario'
+                                : menu.maxServings + ' porciones disponibles'
+                            "
+                          >
+                            @if (menu.maxServings === null) {
+                              Ilimitado
+                            } @else if (menu.maxServings > 0) {
+                              {{ menu.maxServings }} disp.
+                            } @else {
+                              Agotado
+                            }
+                          </span>
+                        </span>
+                        <span class="flex flex-1 flex-col gap-0.5 p-2.5">
+                          <span class="line-clamp-2 text-sm font-medium leading-tight text-slate-800">
+                            {{ menu.name }}
+                          </span>
+                          <span class="text-[11px] uppercase tracking-wide text-slate-400">
+                            {{ menu.code }} · {{ menu.ingredients.length }} ingrediente(s)
+                          </span>
+                          <span class="mt-1 text-sm font-semibold text-slate-900">
+                            {{ money(menu.price) }}
+                          </span>
+                          @if (orderedMenusOf(menu.id); as ordered) {
+                            <span class="mt-0.5 text-[11px] font-semibold text-amber-700">
+                              Ya en la mesa: {{ ordered }}
+                            </span>
+                          }
+                        </span>
+                      </button>
+                    </div>
+                  }
+                </div>
+              }
+            }
           </section>
           <!-- Carrito de la venta en curso -->
           <aside class="card flex min-h-0 flex-col overflow-hidden">
@@ -332,7 +486,12 @@ interface TableCell {
                   {{ targetOrder() ? 'Agregar a ' + targetOrder()!.code : 'Venta actual' }}
                 </h2>
                 <p class="text-xs text-slate-500">
-                  {{ lines().length }} ítems · {{ totalUnits }} unidades
+                  @if (targetOrder(); as order) {
+                    {{ itemCount(order) }} ya en la mesa · {{ lines().length }} por agregar ·
+                    {{ totalUnits }} unidades
+                  } @else {
+                    {{ lines().length }} ítems · {{ totalUnits }} unidades
+                  }
                 </p>
               </div>
               <div class="flex gap-1">
@@ -362,11 +521,14 @@ interface TableCell {
             <div class="card-body flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto">
               @if (targetOrder(); as order) {
                 <p class="rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-800">
-                  Los productos se agregan al pedido {{ order.code }}
+                  Agregando al pedido {{ order.code }}
                   @if (order.tableNumber) {
-                    (Mesa {{ order.tableNumber }})
+                    de la mesa {{ order.tableNumber }}
                   }
-                  · saldo pendiente {{ money(balance(order)) }}.
+                  · {{ itemCount(order) }} productos ya cargados
+                  @if (order.paidAmount > 0) {
+                    · ya pagado {{ money(order.paidAmount) }}
+                  }
                 </p>
               } @else {
                 <div class="grid grid-cols-2 gap-2">
@@ -422,7 +584,44 @@ interface TableCell {
               <div
                 class="min-h-32 max-h-72 flex-1 space-y-2 overflow-y-auto pr-0.5 xl:max-h-none"
               >
-                @for (line of lines(); track line.productId) {
+                @if (targetOrder(); as order) {
+                  @if (orderItems(order).length > 0) {
+                    <p class="text-xs font-semibold uppercase tracking-wide text-slate-400">
+                      Ya en la mesa
+                    </p>
+                    @for (item of orderItems(order); track item.id) {
+                      <div
+                        class="flex items-center gap-2 rounded-lg border border-amber-200 bg-amber-50/60 p-2"
+                      >
+                        <span
+                          class="flex h-10 w-10 flex-none items-center justify-center rounded-md bg-amber-100"
+                        >
+                          <app-icon name="box" size="h-4 w-4" class="text-amber-500" />
+                        </span>
+                        <span class="min-w-0 flex-1">
+                          <span class="block truncate text-sm font-medium text-slate-800">
+                            {{ item.name }}
+                          </span>
+                          <span class="block text-xs font-semibold text-amber-800">
+                            Cantidad: <span class="text-amber-900">{{ item.quantity }}</span> ·
+                            {{ money(item.unitPrice) }} c/u · ya en el pedido
+                          </span>
+                        </span>
+                        <span
+                          class="w-16 flex-none text-right text-sm font-semibold text-slate-900"
+                        >
+                          {{ money(item.total) }}
+                        </span>
+                      </div>
+                    }
+                    @if (lines().length > 0) {
+                      <p class="pt-1 text-xs font-semibold uppercase tracking-wide text-slate-400">
+                        Por agregar
+                      </p>
+                    }
+                  }
+                }
+                @for (line of lines(); track lineKey(line)) {
                   <div class="flex items-center gap-2 rounded-lg border border-slate-200 p-2">
                     <span
                       class="flex h-10 w-10 flex-none items-center justify-center overflow-hidden rounded-md bg-slate-100"
@@ -430,7 +629,7 @@ interface TableCell {
                       @if (line.imageUrl) {
                         <img class="h-full w-full object-cover" [src]="line.imageUrl" [alt]="line.name" />
                       } @else {
-                        <app-icon name="box" size="h-4 w-4" class="text-slate-400" />
+                        <app-icon [name]="line.menuId ? 'menu' : 'box'" size="h-4 w-4" class="text-slate-400" />
                       }
                     </span>
                     <span class="min-w-0 flex-1">
@@ -442,7 +641,15 @@ interface TableCell {
                         @if (isBoxProduct(line)) {
                           · caja de {{ boxUnitsOf(line) }}
                         }
+                        @if (line.menuId) {
+                          · menú de {{ line.ingredientCount ?? 0 }} ingrediente(s)
+                        }
                       </span>
+                      @if (orderedForLine(line); as ordered) {
+                        <span class="block text-xs font-semibold text-amber-700">
+                          Ya en la mesa: {{ ordered }}
+                        </span>
+                      }
                     </span>
                     <span class="flex items-center gap-1">
                       <button
@@ -469,7 +676,7 @@ interface TableCell {
                       type="button"
                       class="btn-ghost btn-sm text-rose-600"
                       title="Quitar del carrito"
-                      (click)="removeLine(line.productId)"
+                      (click)="removeLine(lineKey(line))"
                     >
                       <app-icon name="close" size="h-4 w-4" />
                     </button>
@@ -478,7 +685,11 @@ interface TableCell {
                   <p
                     class="rounded-lg border border-dashed border-slate-300 px-3 py-6 text-center text-sm text-slate-400"
                   >
-                    Toca un producto de la grilla para empezar la venta.
+                    @if (targetOrder()) {
+                      Toca un producto de la grilla para agregarlo al pedido.
+                    } @else {
+                      Toca un producto de la grilla para empezar la venta.
+                    }
                   </p>
                 }
               </div>
@@ -563,32 +774,42 @@ interface TableCell {
               <div class="space-y-1 text-sm">
                 <div class="flex items-center justify-between">
                   <span class="text-slate-500">Subtotal</span>
-                  <app-money [amount]="subtotal" alignEnd="true" />
+                  <app-money [amount]="bill.subtotal" alignEnd="true" />
                 </div>
-                @if (discountAmount > 0) {
+                @if (bill.discount > 0) {
                   <div class="flex items-center justify-between">
                     <span class="text-slate-500">Descuento</span>
-                    <span class="font-medium text-rose-600">− {{ money(discountAmount) }}</span>
+                    <span class="font-medium text-rose-600">− {{ money(bill.discount) }}</span>
                   </div>
                 }
-                @if (tax > 0) {
+                @if (bill.tax > 0) {
                   <div class="flex items-center justify-between">
                     <span class="text-slate-500">IGV</span>
-                    <app-money [amount]="tax" alignEnd="true" />
+                    <app-money [amount]="bill.tax" alignEnd="true" />
                   </div>
                 }
-                @if (tipAmount > 0) {
+                @if (bill.tip > 0) {
                   <div class="flex items-center justify-between">
                     <span class="text-slate-500">Propina</span>
-                    <app-money [amount]="tipAmount" alignEnd="true" />
+                    <app-money [amount]="bill.tip" alignEnd="true" />
                   </div>
                 }
                 <div
                   class="flex items-center justify-between border-t border-slate-200 pt-2 text-base font-semibold text-slate-900"
                 >
                   <span>Total</span>
-                  <app-money [amount]="total" alignEnd="true" strong />
+                  <app-money [amount]="bill.total" alignEnd="true" strong />
                 </div>
+                @if (targetOrder() && bill.paid > 0) {
+                  <div class="flex items-center justify-between">
+                    <span class="text-slate-500">Ya pagado</span>
+                    <app-money [amount]="bill.paid" alignEnd="true" />
+                  </div>
+                  <div class="flex items-center justify-between font-semibold text-slate-900">
+                    <span>Saldo pendiente</span>
+                    <app-money [amount]="bill.balance" alignEnd="true" strong />
+                  </div>
+                }
               </div>
 
 
@@ -875,6 +1096,8 @@ export class PosComponent implements OnInit, OnDestroy {
   private readonly cash = inject(CashService);
   private readonly rates = inject(RatesService);
   private readonly productsService = inject(ProductsService);
+  private readonly menusService = inject(MenusService);
+  private readonly menuCategoriesService = inject(MenuCategoriesService);
   private readonly categoriesService = inject(CategoriesService);
   private readonly customersService = inject(CustomersService);
   private readonly preferences = inject(PreferencesService);
@@ -913,6 +1136,8 @@ export class PosComponent implements OnInit, OnDestroy {
   readonly cashOpen = signal(false);
 
   readonly products = signal<ProductOption[]>([]);
+  readonly menus = signal<MenuOption[]>([]);
+  readonly menuCategories = signal<MenuCategoryRef[]>([]);
   readonly categories = signal<Category[]>([]);
   readonly customers = signal<Customer[]>([]);
   readonly activeOrders = signal<Order[]>([]);
@@ -920,10 +1145,15 @@ export class PosComponent implements OnInit, OnDestroy {
   readonly targetOrder = signal<Order | null>(null);
   readonly lines = signal<PosLine[]>([]);
 
+  /** Grilla visible: productos sueltos o menús (platos/combos). */
+  readonly gridKind = signal<'products' | 'menus'>('products');
+
   /** Filtros de la grilla de productos. */
   search = '';
   categoryId = '';
   onlyAvailable = true;
+  /** Filtro de la grilla de menús. */
+  menuCategoryId = '';
 
   /** Cabecera de la venta nueva (no se usa al agregar a un pedido existente). */
   form: {
@@ -979,6 +1209,7 @@ export class PosComponent implements OnInit, OnDestroy {
   /** Recarga catálogos, caja y pedidos activos (mesas). */
   reload(): void {
     this.loadProducts();
+    this.loadMenus();
     this.loadCategories();
     this.loadCustomers();
     this.loadCash();
@@ -1003,6 +1234,18 @@ export class PosComponent implements OnInit, OnDestroy {
     this.categoriesService.options().subscribe({
       next: (list) => this.categories.set(list),
       error: () => this.categories.set([]),
+    });
+  }
+
+  /** Menús activos con su receta y disponibilidad (grilla de la carta). */
+  private loadMenus(): void {
+    this.menusService.options().subscribe({
+      next: (list) => this.menus.set(list),
+      error: () => this.menus.set([]),
+    });
+    this.menuCategoriesService.options().subscribe({
+      next: (list) => this.menuCategories.set(list),
+      error: () => this.menuCategories.set([]),
     });
   }
 
@@ -1053,6 +1296,24 @@ export class PosComponent implements OnInit, OnDestroy {
           !term ||
           product.name.toLowerCase().includes(term) ||
           product.sku.toLowerCase().includes(term),
+      )
+      .sort((a, b) => a.name.localeCompare(b.name));
+  }
+
+  /**
+   * Menús de la carta que cumplen la búsqueda, la categoría y el filtro de stock.
+   * Un menú agotado solo se muestra si se desmarca "Con stock".
+   */
+  get filteredMenus(): MenuOption[] {
+    const term = this.search.trim().toLowerCase();
+    return this.menus()
+      .filter((menu) => (this.onlyAvailable ? menu.available : true))
+      .filter((menu) => !this.menuCategoryId || menu.categoryId === this.menuCategoryId)
+      .filter(
+        (menu) =>
+          !term ||
+          menu.name.toLowerCase().includes(term) ||
+          menu.code.toLowerCase().includes(term),
       )
       .sort((a, b) => a.name.localeCompare(b.name));
   }
@@ -1126,6 +1387,7 @@ export class PosComponent implements OnInit, OnDestroy {
   private newLine(product: ProductOption, quantity: number): PosLine {
     return {
       productId: product.id,
+      menuId: null,
       name: product.name,
       unitPrice: this.unitPriceOf(product),
       quantity,
@@ -1136,10 +1398,68 @@ export class PosComponent implements OnInit, OnDestroy {
     };
   }
 
-  /** Agrega por SKU exacto (lector de códigos) o por la primera coincidencia. */
+  /**
+   * Agrega un menú (plato/combo) al carrito. El menú se vende como una línea
+   * propia: al guardar el pedido, el backend descuenta los ingredientes de su
+   * receta. `stock` de la línea son las porciones que alcanzan con el inventario.
+   */
+  addMenu(menu: MenuOption): void {
+    if (!menu.available) {
+      this.formError.set(`"${menu.name}" no tiene stock suficiente para prepararse.`);
+      return;
+    }
+    const existing = this.lines().find((line) => line.menuId === menu.id);
+    if (existing) {
+      this.incLine(existing);
+      return;
+    }
+    this.lines.set([
+      ...this.lines(),
+      {
+        productId: null,
+        menuId: menu.id,
+        name: menu.name,
+        unitPrice: menu.price,
+        quantity: 1,
+        // `0` = sin tope de inventario: no se limita la cantidad en el carrito.
+        stock: menu.maxServings ?? 0,
+        unit: 'UND',
+        unitsPerBox: 1,
+        imageUrl: menu.imageUrl ?? null,
+        ingredientCount: menu.ingredients.length,
+      },
+    ]);
+    this.formError.set(
+      menu.price > 0
+        ? null
+        : `"${menu.name}" no tiene precio de venta: revísalo en Catálogo → Menús.`,
+    );
+  }
+
+  /** Clave única de una línea del carrito (producto o menú). */
+  lineKey(line: PosLine): string {
+    return line.menuId ? `m:${line.menuId}` : `p:${line.productId}`;
+  }
+
+  /** Agrega por SKU/código exacto (lector de códigos) o la primera coincidencia. */
   addBySearch(): void {
     const term = this.search.trim().toLowerCase();
     if (!term) return;
+
+    // En la carta de menús el código del menú hace de código de barras.
+    if (this.gridKind() === 'menus') {
+      const menu =
+        this.menus().find((option) => option.code.toLowerCase() === term) ??
+        this.filteredMenus[0];
+      if (!menu) {
+        this.formError.set(`No se encontró ningún menú para "${this.search}".`);
+        return;
+      }
+      this.addMenu(menu);
+      this.search = '';
+      return;
+    }
+
     const match =
       this.products().find((product) => product.sku.toLowerCase() === term) ??
       this.filteredProducts[0];
@@ -1181,8 +1501,8 @@ export class PosComponent implements OnInit, OnDestroy {
     this.lines.set([...this.lines()]);
   }
 
-  removeLine(productId: string): void {
-    this.lines.set(this.lines().filter((line) => line.productId !== productId));
+  removeLine(key: string): void {
+    this.lines.set(this.lines().filter((line) => this.lineKey(line) !== key));
   }
 
   clearLines(): void {
@@ -1235,6 +1555,49 @@ export class PosComponent implements OnInit, OnDestroy {
 
   get total(): number {
     return sumMoney([this.subtotal, -this.discountAmount, this.tax, this.tipAmount]);
+  }
+
+  /**
+   * Cuenta que se cobra en el carrito. En una venta nueva son las líneas del
+   * carrito tal cual. Al agregar/cobrar una mesa suma los productos ya cargados
+   * del pedido con las líneas nuevas, conservando el descuento, el IGV y la
+   * propina del pedido (misma matemática que usa el backend al recalcular).
+   */
+  get bill(): BillTotals {
+    const order = this.targetOrder();
+    const subtotal = sumMoney([order?.subtotal ?? 0, this.subtotal]);
+    if (!order) {
+      return {
+        subtotal,
+        discount: this.discountAmount,
+        tax: this.tax,
+        tip: this.tipAmount,
+        total: this.total,
+        paid: 0,
+        balance: this.total,
+      };
+    }
+
+    const discount = Math.min(order.discount, subtotal);
+    const taxable = sumMoney([subtotal, -discount]);
+    const tax = mulMoney(taxable, this.taxRateOf(order) / 100);
+    const tip = order.tip;
+    const total = sumMoney([taxable, tax, tip]);
+    return {
+      subtotal,
+      discount,
+      tax,
+      tip,
+      total,
+      paid: order.paidAmount,
+      balance: sumMoney([total, -order.paidAmount]),
+    };
+  }
+
+  /** IGV efectivo guardado en el pedido (el backend lo reusa al recalcular). */
+  private taxRateOf(order: Order): number {
+    const taxable = sumMoney([order.subtotal, -order.discount]);
+    return taxable > 0 ? (order.tax / taxable) * 100 : 0;
   }
 
   // ===========================================================================
@@ -1367,10 +1730,13 @@ export class PosComponent implements OnInit, OnDestroy {
   //  COBRO
   // ===========================================================================
 
-  /** Monto a cobrar en la moneda elegida (saldo del pedido o total del carrito). */
+  /**
+   * Monto a cobrar en la moneda elegida: la cuenta del carrito (que ya incluye
+   * los productos de la mesa) menos lo que el cliente ya pagó.
+   */
   get chargeAmount(): number {
-    const order = this.targetOrder();
-    const base = order ? this.balance(order) : this.total;
+    const bill = this.bill;
+    const base = sumMoney([bill.total, -bill.paid]);
     const currency = this.charge.currency || BASE_CURRENCY.code;
     if (currency === BASE_CURRENCY.code) return base;
     return this.rates.fromBase(base, currency) ?? base;
@@ -1508,9 +1874,11 @@ export class PosComponent implements OnInit, OnDestroy {
     return true;
   }
 
-  private itemsPayloadOf(line: PosLine) {
+  private itemsPayloadOf(line: PosLine): OrderItemPayload {
+    // La linea vende un producto O un menu: la referencia que no aplica no viaja.
     return {
-      productId: line.productId,
+      ...(line.productId ? { productId: line.productId } : {}),
+      ...(line.menuId ? { menuId: line.menuId } : {}),
       quantity: line.quantity,
       unitPrice: line.unitPrice,
     };
@@ -1603,6 +1971,43 @@ export class PosComponent implements OnInit, OnDestroy {
   /** Cantidad de líneas de un pedido (el listado solo trae `_count`). */
   itemCount(order: Order): number {
     return order._count?.items ?? order.items?.length ?? 0;
+  }
+
+  /**
+   * Productos ya cargados en un pedido. El mapa de mesas los recibe dentro del
+   * pedido activo (`items`); si el payload no los trae, queda la lista vacía.
+   */
+  orderItems(order: Order): OrderItem[] {
+    return order.items ?? [];
+  }
+
+  /**
+   * Unidades de un producto que el cliente ya pidió en la mesa (0 si no hay
+   * pedido en curso o el producto todavía no está en él). Se usa en la grilla y
+   * en las líneas del carrito para no perder de vista cuánto se pidió antes de
+   * agregar más.
+   */
+  orderedUnitsOf(productId: string): number {
+    const order = this.targetOrder();
+    if (!order) return 0;
+    return this.orderItems(order)
+      .filter((item) => item.productId === productId)
+      .reduce((acc, item) => acc + item.quantity, 0);
+  }
+
+  /** Menús del mismo plato que ya están cargados en el pedido de la mesa. */
+  orderedMenusOf(menuId: string): number {
+    const order = this.targetOrder();
+    if (!order) return 0;
+    return this.orderItems(order)
+      .filter((item) => item.menuId === menuId)
+      .reduce((acc, item) => acc + item.quantity, 0);
+  }
+
+  /** Unidades ya pedidas de una línea del carrito (producto o menú). */
+  orderedForLine(line: PosLine): number {
+    if (line.menuId) return this.orderedMenusOf(line.menuId);
+    return line.productId ? this.orderedUnitsOf(line.productId) : 0;
   }
 
   /** Nombre del cliente del pedido (o «Cliente general»). */

@@ -15,6 +15,7 @@ import { CustomersModule } from './modules/customers/customers.module';
 import { ExpensesModule } from './modules/expenses/expenses.module';
 import { HealthModule } from './modules/health/health.module';
 import { InventoryModule } from './modules/inventory/inventory.module';
+import { MenusModule } from './modules/menus/menus.module';
 import { OrdersModule } from './modules/orders/orders.module';
 import { PayablesModule } from './modules/payables/payables.module';
 import { ProductsModule } from './modules/products/products.module';
@@ -50,6 +51,7 @@ import { PrismaModule } from './prisma/prisma.module';
     CurrenciesModule,
     RatesModule,
     InventoryModule,
+    MenusModule,
     OrdersModule,
     CashModule,
     ExpensesModule,

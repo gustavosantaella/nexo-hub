@@ -7,11 +7,13 @@ import {
 } from '@angular/core';
 import { RatesService } from '../../core/services/rates.service';
 import type { RateConversion } from '../../core/models/rates.model';
-import { bsCompact, money, moneyCompact } from '../../core/utils/format';
+import { bsCompact, money, moneyCompact, moneyInCompact } from '../../core/utils/format';
 
 /**
  * Monto del sistema (moneda base, USD) con su equivalente "al cambio".
  *
+ * El monto se muestra en la moneda base elegida en Configuración → Tasas (USD
+ * por defecto) y debajo van las conversiones.
  * Muestra el monto y, debajo, una línea con cada tasa activa:
  *   - 2 tasas cuando el local no definió una personalizada (BCV $ y BCV €).
  *   - 3 tasas cuando existe la personalizada.
@@ -52,7 +54,7 @@ import { bsCompact, money, moneyCompact } from '../../core/utils/format';
 export class MoneyComponent {
   private readonly rates = inject(RatesService);
 
-  /** Monto en moneda base (USD). */
+  /** Monto guardado en la moneda base contable (USD). */
   @Input({ required: true }) amount: number | null | undefined = 0;
   /** Resalta el monto base (cabeceras de tabla, totales). */
   @Input({ transform: booleanAttribute }) strong = false;
@@ -74,10 +76,22 @@ export class MoneyComponent {
     return this.compact ? money(this.amount) : null;
   }
 
-  /** Conversiones "al cambio" (en modo compacto tambien se abrevian). */
+  /**
+   * Conversiones del monto: con la moneda base en dólares, el equivalente en
+   * bolívares de cada tasa activa; con otra moneda base, cada moneda aceptada.
+   * En modo compacto también se abrevian.
+   */
   get conversions(): RateConversion[] {
-    const items = this.rates.conversions(this.amount);
+    const byRate = !this.rates.convertsBase();
+    const items = byRate
+      ? this.rates.conversions(this.amount)
+      : this.rates.currencyConversions(this.amount);
     if (!this.compact) return items;
-    return items.map((item) => ({ ...item, text: bsCompact(item.amount) }));
+    return items.map((item) => ({
+      ...item,
+      text: byRate
+        ? bsCompact(item.amount)
+        : moneyInCompact(item.amount, item.code),
+    }));
   }
 }

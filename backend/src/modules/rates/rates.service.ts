@@ -10,6 +10,7 @@ import {
   BCV_SECONDARY_CURRENCY_CODE,
   CurrencySetting,
   LOCAL_CURRENCY_CODE,
+  currencyInfo,
   normalizeCurrencyCode,
 } from '../../common/constants/currencies';
 import {
@@ -107,9 +108,26 @@ export interface CurrencyRateOption {
   /** Bolivares por 1 unidad (null cuando no hay tasa configurada). */
   bsPerUnit: number | null;
   source: CurrencyRateSource;
-  /** `true` para la moneda base del sistema (USD). */
+  /** `true` para la moneda base CONTABLE del sistema (siempre USD). */
   isBase: boolean;
+  /** `true` para la moneda base con la que se muestran los montos. */
+  isDisplayBase: boolean;
   /** Bolivares por 1 USD: puente para convertir entre monedas. */
+  bsPerUsd: number;
+}
+
+/**
+ * Moneda base del sistema: la que el local eligio para mostrar los montos
+ * primero (tarjetas, listados, reportes). Los montos se siguen guardando en USD.
+ */
+export interface BaseCurrencyInfo {
+  code: string;
+  label: string;
+  symbol: string;
+  decimals: number;
+  /** Bolivares por 1 unidad de la moneda base elegida. */
+  bsPerUnit: number | null;
+  /** Bolivares por 1 USD (para pasar de la moneda guardada a la mostrada). */
   bsPerUsd: number;
 }
 
@@ -122,6 +140,8 @@ export interface RatesSnapshot {
   activeKey: RateKey;
   /** Monedas configurables con su tasa en bolivares (para cobrar/pagar). */
   currencies: CurrencyRateOption[];
+  /** Moneda con la que se muestran los montos del sistema (USD por defecto). */
+  baseCurrency: BaseCurrencyInfo;
   /**
    * Tasa USDT/VES de referencia (Binance P2P), solo para mostrar.
    * `null` cuando la fuente externa no respondio y no hay dato previo.
@@ -225,6 +245,15 @@ export class RatesService {
 
     const bsPerUsd = this.bsPerUsd(payload, custom);
     const configured = await this.currencies.list(companyId);
+    // Moneda base elegida por el local (la que se muestra primero). Si ya no
+    // esta configurada, el sistema vuelve a mostrar los montos en USD.
+    const requestedBase = await this.currencies.baseCurrencyCode(companyId);
+    const baseCode = configured.some((item) => item.code === requestedBase)
+      ? requestedBase
+      : BASE_CURRENCY_CODE;
+    const options = configured.map((item) =>
+      this.currencyOption(item, payload, bsPerUsd, custom !== null, baseCode),
+    );
 
     return {
       bcv: {
@@ -237,8 +266,10 @@ export class RatesService {
       custom,
       rates,
       activeKey: custom ? 'CUSTOM_USD' : 'BCV_USD',
-      currencies: configured.map((item) =>
-        this.currencyOption(item, payload, bsPerUsd, custom !== null),
+      currencies: options,
+      baseCurrency: this.baseCurrencyInfo(
+        options.find((item) => item.isDisplayBase),
+        bsPerUsd,
       ),
       reference,
     };
@@ -259,6 +290,7 @@ export class RatesService {
     payload: BcvPayload,
     bsPerUsd: number,
     hasCustom: boolean,
+    displayBase: string,
   ): CurrencyRateOption {
     const { rate, source } = this.resolveBsPerUnit(
       setting,
@@ -274,6 +306,27 @@ export class RatesService {
       bsPerUnit: rate,
       source,
       isBase: setting.code === BASE_CURRENCY_CODE,
+      isDisplayBase: setting.code === displayBase,
+      bsPerUsd,
+    };
+  }
+
+  /**
+   * Ficha de la moneda base (la que se muestra primero). Cuando el local no
+   * eligio ninguna o la elegida ya no existe, cae en el dolar.
+   */
+  private baseCurrencyInfo(
+    option: CurrencyRateOption | undefined,
+    bsPerUsd: number,
+  ): BaseCurrencyInfo {
+    const code = option?.code ?? BASE_CURRENCY_CODE;
+    const info = currencyInfo(code);
+    return {
+      code,
+      label: option?.label ?? info.label,
+      symbol: option?.symbol ?? info.symbol,
+      decimals: info.decimals,
+      bsPerUnit: option?.bsPerUnit ?? null,
       bsPerUsd,
     };
   }

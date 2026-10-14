@@ -37,7 +37,9 @@ export class CurrenciesController {
   @Put()
   @UseGuards(RolesGuard)
   @Roles(Role.ADMIN, Role.MANAGER)
-  @ApiOperation({ summary: 'Reemplazar la configuracion de monedas' })
+  @ApiOperation({
+    summary: 'Reemplazar la configuracion de monedas (y la moneda base)',
+  })
   async save(
     @CurrentUser() user: AuthenticatedUser,
     @Body() dto: UpdateCurrenciesDto,
@@ -47,6 +49,7 @@ export class CurrenciesController {
         user.companyId,
         dto.currencies,
         user.id,
+        dto.base,
       ),
     };
   }

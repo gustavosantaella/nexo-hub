@@ -15,7 +15,7 @@ import {
 import { AuthService } from '../../core/services/auth.service';
 import { InventoryService } from '../../core/services/inventory.service';
 import { ToastService } from '../../core/services/toast.service';
-import { apiErrorMessage, dateTime, number } from '../../core/utils/format';
+import { apiErrorMessage, dateTime, number, quantity } from '../../core/utils/format';
 import { EmptyStateComponent, LoaderComponent } from '../../shared/components/feedback.component';
 import { IconComponent } from '../../shared/components/icon.component';
 import { ModalComponent } from '../../shared/components/modal.component';
@@ -146,13 +146,13 @@ const EMPTY_META: PaginationMeta = {
                     <td>{{ item.category?.name || '—' }}</td>
                     <td>
                       <div class="flex items-center gap-2">
-                        <span>{{ number(item.stock) }} {{ unitLabels[item.unit] || item.unit }}</span>
+                        <span>{{ quantity(item.stock) }} {{ unitLabels[item.unit] || item.unit }}</span>
                         @if (item.isLowStock) {
                           <span class="badge bg-rose-100 text-rose-700">Bajo mínimo</span>
                         }
                       </div>
                     </td>
-                    <td class="text-right">{{ number(item.minStock) }}</td>
+                    <td class="text-right">{{ quantity(item.minStock) }}</td>
                     <td class="text-right"><app-money [amount]="item.cost" alignEnd="true" /></td>
                     <td class="text-right"><app-money [amount]="item.price" alignEnd="true" /></td>
                     <td class="text-right font-medium"><app-money [amount]="item.stockValue" alignEnd="true" /></td>
@@ -282,7 +282,7 @@ const EMPTY_META: PaginationMeta = {
             <option value="">Selecciona un producto…</option>
             @for (item of stockItems(); track item.id) {
               <option [value]="item.id">
-                {{ item.name }} · stock {{ number(item.stock) }}
+                {{ item.name }} · stock {{ quantity(item.stock) }}
               </option>
             }
           </select>
@@ -297,7 +297,7 @@ const EMPTY_META: PaginationMeta = {
         </div>
         <div>
           <label class="label">{{ quantityLabel }}</label>
-          <input type="number" class="input" min="1" [(ngModel)]="movForm.quantity" />
+          <input type="number" class="input" min="0" step="0.001" [(ngModel)]="movForm.quantity" />
         </div>
         @if (showUnitCost) {
           <div>
@@ -329,12 +329,12 @@ const EMPTY_META: PaginationMeta = {
             </div>
             <div class="flex justify-between">
               <span class="text-slate-500">Stock actual</span>
-              <span class="font-medium">{{ number(product.stock) }} {{ unitLabels[product.unit] || product.unit }}</span>
+              <span class="font-medium">{{ quantity(product.stock) }} {{ unitLabels[product.unit] || product.unit }}</span>
             </div>
           </div>
           <div>
             <label class="label">Stock final</label>
-            <input type="number" class="input" min="0" [(ngModel)]="adjForm.newStock" />
+            <input type="number" class="input" min="0" step="0.001" [(ngModel)]="adjForm.newStock" />
           </div>
           <div>
             <label class="label">Motivo</label>
@@ -359,6 +359,8 @@ export class InventoryPage implements OnInit {
 
   readonly dateTime = dateTime;
   readonly number = number;
+  /** Cantidades/existencias: hasta 3 decimales, sin ceros de relleno. */
+  readonly quantity = quantity;
   readonly movementOptions = STOCK_MOVEMENT_OPTIONS;
   readonly movementLabels = STOCK_MOVEMENT_LABELS;
   readonly unitLabels = PRODUCT_UNIT_LABELS;

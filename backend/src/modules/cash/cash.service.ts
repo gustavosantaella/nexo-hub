@@ -39,6 +39,8 @@ import { OpenSessionDto } from './dto/open-session.dto';
 
 /** Datos minimos de un movimiento para calcular el arqueo. */
 export interface MovementLike {
+  /** Identificador del movimiento (permite cruzar la propina con su cobro). */
+  id?: string;
   type: string;
   category: string;
   paymentMethod: string;
@@ -48,6 +50,15 @@ export interface MovementLike {
   currency?: string | null;
   /** Equivalente en USD (moneda base); 0 en registros anteriores. */
   baseAmount?: number | null;
+  /**
+   * Propina incluida en el movimiento, en la moneda base. El movimiento guarda
+   * el cobro completo (consumo + propina), asi que este monto lo calcula
+   * `withTips` a partir del pedido cobrado.
+   */
+  tipAmount?: number | null;
+  /** Origen del movimiento (`ORDER` cuando es el cobro de un pedido). */
+  referenceType?: string | null;
+  referenceId?: string | null;
 }
 
 /** Totales de un movimiento, en la moneda original y en la moneda base. */
@@ -110,7 +121,10 @@ export interface CashBreakdown {
   totalIn: number;
   totalOut: number;
   net: number;
+  /** Ventas cobradas (categoria SALE) en moneda base, SIN propinas. */
   salesTotal: number;
+  /** Propinas cobradas en el turno (ya vienen dentro de los cobros por venta). */
+  tipsTotal: number;
   movementCount: number;
   byMethod: { method: string; in: number; out: number; net: number }[];
   byCategory: { category: string; in: number; out: number; net: number }[];
@@ -354,7 +368,10 @@ export class CashService {
     let cashOut = 0;
     let totalIn = 0;
     let totalOut = 0;
+    // Ventas y propinas se acumulan por separado: el movimiento guarda el cobro
+    // completo, asi que las ventas quedan netas de propina.
     let salesTotal = 0;
+    let tipsTotal = 0;
 
     const methods = new Map<string, { in: number; out: number }>();
     const categories = new Map<string, { in: number; out: number }>();
@@ -379,6 +396,8 @@ export class CashService {
 
       if (isIn && m.category === CashMovementCategory.SALE) {
         salesTotal = money.add(salesTotal, base);
+        // La propina entra dentro del cobro: se separa de la venta.
+        tipsTotal = money.add(tipsTotal, this.tipOf(m));
       }
 
       const methodEntry = methods.get(m.paymentMethod) ?? { in: 0, out: 0 };
@@ -418,7 +437,9 @@ export class CashService {
       totalIn,
       totalOut,
       net,
-      salesTotal,
+      // Ventas netas: `salesTotal` acumulo el cobro completo (consumo + propina).
+      salesTotal: money.sub(salesTotal, tipsTotal),
+      tipsTotal,
       movementCount: movements.length,
       byMethod: [...methods.entries()].map(([method, v]) => ({
         method,
@@ -438,6 +459,137 @@ export class CashService {
     };
   }
 
+  // =========================================================================
+  //  PROPINAS
+  // =========================================================================
+
+  /**
+   * Propina incluida en un movimiento de venta, en la moneda base.
+   * Es 0 en los movimientos propios (manuales) y en los cobros anteriores al
+   * reparto de propinas. Nunca puede superar el monto cobrado.
+   */
+  private tipOf(row: MovementLike): number {
+    const tip = toMoney(row.tipAmount ?? 0);
+    if (tip <= 0) return 0;
+    const base = this.baseOf(row);
+    return compareMoney(tip, base) > 0 ? base : tip;
+  }
+
+  /**
+   * Reparte la propina de un pedido entre sus cobros (en moneda base).
+   *
+   * El movimiento de caja guarda el cobro completo (consumo + propina) y la
+   * propina vive en el pedido (`Order.tip`), por lo que hay que deducirla: se
+   * considera que el cliente paga primero el consumo (`total - propina`) y que
+   * la propina entra con el dinero que completa ese consumo. Asi un abono
+   * parcial no adelanta propina y un pedido pagado completo reparte exactamente
+   * su propina (la suma de las partes siempre da la propina del pedido).
+   *
+   * @param total Suma del pedido (consumo + propina) en moneda base.
+   * @param tip Propina del pedido en moneda base.
+   * @param payments Cobros del pedido en orden cronologico.
+   * @returns Propina que le corresponde a cada cobro, por id de cobro.
+   */
+  tipPortionsOfOrder(
+    total: number,
+    tip: number,
+    payments: readonly {
+      id: string;
+      amount?: number | null;
+      baseAmount?: number | null;
+    }[],
+  ): Map<string, number> {
+    const portions = new Map<string, number>();
+    const tipTotal = toMoney(tip);
+    const nonTipTotal = money.sub(toMoney(total), tipTotal);
+    let paid = 0;
+
+    for (const payment of payments) {
+      // Equivalente en USD del cobro (registros antiguos sin `baseAmount`).
+      const base = toMoney(payment.baseAmount ?? 0);
+      const amount = base > 0 ? base : toMoney(payment.amount);
+      // Consumo que aun quedaba por pagar antes de este cobro.
+      const nonTipPending = money.sub(nonTipTotal, Math.min(paid, nonTipTotal));
+      portions.set(
+        payment.id,
+        compareMoney(amount, nonTipPending) > 0
+          ? money.sub(amount, nonTipPending)
+          : 0,
+      );
+      paid = money.add(paid, amount);
+    }
+
+    return portions;
+  }
+
+  /**
+   * Añade a cada cobro por venta la propina que lleva dentro (moneda base).
+   *
+   * Solo consulta los pedidos con propina referenciados por los movimientos
+   * recibidos; los movimientos que no son cobros de pedido se devuelven tal
+   * cual. Lo usan el arqueo (`serializeSession`) y el panel para que las ventas
+   * que muestra el sistema queden siempre netas de propina.
+   */
+  async withTips(
+    companyId: string,
+    movements: readonly MovementLike[],
+  ): Promise<MovementLike[]> {
+    const orderIds = [
+      ...new Set(
+        movements
+          .filter(
+            (m) =>
+              m.category === CashMovementCategory.SALE &&
+              m.referenceType === 'ORDER' &&
+              !!m.referenceId,
+          )
+          .map((m) => m.referenceId as string),
+      ),
+    ];
+    if (orderIds.length === 0) return [...movements];
+
+    const orders = await this.prisma.order.findMany({
+      where: {
+        id: { in: orderIds },
+        // Sin propina no hay nada que separar.
+        tip: { gt: 0 },
+        ...tenantWhere(companyId),
+      },
+      select: {
+        id: true,
+        total: true,
+        tip: true,
+        payments: {
+          select: {
+            id: true,
+            amount: true,
+            baseAmount: true,
+            cashMovementId: true,
+          },
+          orderBy: { createdAt: 'asc' },
+        },
+      },
+    });
+
+    const tipsByMovement = new Map<string, number>();
+    for (const order of orders) {
+      const portions = this.tipPortionsOfOrder(
+        order.total,
+        order.tip,
+        order.payments,
+      );
+      for (const payment of order.payments) {
+        if (!payment.cashMovementId) continue;
+        tipsByMovement.set(payment.cashMovementId, portions.get(payment.id) ?? 0);
+      }
+    }
+
+    return movements.map((movement) => ({
+      ...movement,
+      tipAmount: movement.id ? (tipsByMovement.get(movement.id) ?? 0) : 0,
+    }));
+  }
+
   /** Etiqueta legible del resultado del arqueo. */
   private differenceLabel(difference: number | null | undefined): string {
     if (difference == null) return 'PENDING';
@@ -447,14 +599,19 @@ export class CashService {
     return 'BALANCED';
   }
 
-  /** Anexa el resumen de arqueo a una sesion. */
-  private serializeSession(session: SessionWithRelations) {
+  /**
+   * Anexa el resumen de arqueo a una sesion.
+   * Antes de sumar se reparte la propina de cada cobro (`withTips`) para que
+   * `salesTotal` quede neto de propinas y `tipsTotal` traiga lo recaudado.
+   */
+  private async serializeSession(session: SessionWithRelations) {
     // El desglose del fondo viaja siempre parseado (y como lista vacia cuando la
     // apertura fue de una sola moneda antes del soporte multimoneda).
     const openingLines = this.openingLinesOf(session.openingLines);
+    const movements = await this.withTips(session.companyId, session.movements);
     const summary = this.buildBreakdown(
       session.openingAmount,
-      session.movements,
+      movements,
       session.openingLines,
     );
     const reconciliation =
@@ -671,7 +828,7 @@ export class CashService {
       countedCurrency = conversion.currency;
     }
 
-    return this.prisma.$transaction(async (tx) => {
+    const closed = await this.prisma.$transaction(async (tx) => {
       const session = await tx.cashSession.findFirst({
         where: { status: CashSessionStatus.OPEN, ...tenantWhere(companyId) },
         include: { movements: true },
@@ -682,6 +839,7 @@ export class CashService {
         throw new BadRequestException('No hay ninguna caja abierta para cerrar');
       }
 
+      // La propina no cambia el efectivo: el arqueo solo necesita el total.
       const breakdown = this.buildBreakdown(
         session.openingAmount,
         session.movements,
@@ -715,13 +873,14 @@ export class CashService {
         );
       }
 
-      const closed = await tx.cashSession.findUniqueOrThrow({
+      return tx.cashSession.findUniqueOrThrow({
         where: { id: session.id, ...tenantWhere(companyId) },
         include: SESSION_INCLUDE,
       });
-
-      return this.serializeSession(closed);
     });
+
+    // Fuera de la transaccion: el reparto de propinas solo lee del pedido.
+    return this.serializeSession(closed);
   }
 
 

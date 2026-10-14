@@ -67,6 +67,12 @@ export const routes: Routes = [
           ),
       },
       {
+        path: 'menus',
+        title: 'Menús · Nexo Hub',
+        loadComponent: () =>
+          import('./features/catalog/menus.page').then((m) => m.MenusPage),
+      },
+      {
         path: 'categorias',
         title: 'Categorías · Nexo Hub',
         loadComponent: () =>

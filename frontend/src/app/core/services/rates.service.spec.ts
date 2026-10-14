@@ -6,6 +6,7 @@ import {
 import { TestBed } from '@angular/core/testing';
 import { environment } from '../../../environments/environment';
 import type { RatesSnapshot } from '../models/rates.model';
+import { money, setDisplayCurrency } from '../utils/format';
 import { RatesService } from './rates.service';
 
 const API = environment.apiUrl;
@@ -43,6 +44,7 @@ const SNAPSHOT: RatesSnapshot = {
       bsPerUnit: 876.7976,
       source: 'BASE',
       isBase: true,
+      isDisplayBase: true,
       bsPerUsd: 876.7976,
     },
     {
@@ -53,6 +55,7 @@ const SNAPSHOT: RatesSnapshot = {
       bsPerUnit: 1,
       source: 'BASE',
       isBase: false,
+      isDisplayBase: false,
       bsPerUsd: 876.7976,
     },
     {
@@ -63,6 +66,7 @@ const SNAPSHOT: RatesSnapshot = {
       bsPerUnit: 0.22,
       source: 'MANUAL',
       isBase: false,
+      isDisplayBase: false,
       bsPerUsd: 876.7976,
     },
     {
@@ -73,9 +77,18 @@ const SNAPSHOT: RatesSnapshot = {
       bsPerUnit: 982.00454402,
       source: 'BCV',
       isBase: false,
+      isDisplayBase: false,
       bsPerUsd: 876.7976,
     },
   ],
+  baseCurrency: {
+    code: 'USD',
+    label: 'Dólares',
+    symbol: '$',
+    decimals: 2,
+    bsPerUnit: 876.7976,
+    bsPerUsd: 876.7976,
+  },
   reference: {
     pair: 'USDT/VES',
     label: 'Binance · P2P piso',
@@ -109,7 +122,11 @@ describe('RatesService (conversión de monedas)', () => {
     http.expectOne(`${API}/rates`).flush(SNAPSHOT);
   });
 
-  afterEach(() => http.verify());
+  afterEach(() => {
+    // La moneda base es estado global de `format.ts`: se devuelve a dólares.
+    setDisplayCurrency(null);
+    http.verify();
+  });
 
   it('solo ofrece las monedas habilitadas', () => {
     expect(rates.enabledCurrencies().map((item) => item.code)).toEqual([
@@ -163,5 +180,60 @@ describe('RatesService (conversión de monedas)', () => {
     // Manda el BCV (876.7976 Bs por USD), no los 1005.8 Bs del USDT.
     expect(rates.bsPerUsd()).toBe(876.7976);
     expect(rates.toBs(1)).toBe(876.7976);
+  });
+
+  it('usa el dólar como moneda base mientras el local no elija otra', () => {
+    expect(rates.baseCurrency().code).toBe('USD');
+    expect(rates.baseCurrency().symbol).toBe('$');
+    expect(rates.baseCurrency().bsPerUsd).toBe(876.7976);
+    expect(rates.baseCode()).toBe('USD');
+    expect(rates.convertsBase()).toBe(false);
+    // Los montos se formatean en la moneda base guardada.
+    expect(money(10)).toBe('$ 10.00');
+  });
+
+  it('muestra los montos en la moneda base elegida por el local', () => {
+    rates.load(true);
+    http.expectOne(`${API}/rates?refresh=true`).flush({
+      ...SNAPSHOT,
+      baseCurrency: {
+        code: 'VES',
+        label: 'Bolívares',
+        symbol: 'Bs',
+        decimals: 2,
+        bsPerUnit: 1,
+        bsPerUsd: 876.7976,
+      },
+    });
+
+    expect(rates.baseCode()).toBe('VES');
+    expect(rates.convertsBase()).toBe(true);
+    // 10 USD -> 8 767,98 Bs.
+    expect(money(10)).toBe('Bs 8,767.98');
+  });
+
+  it('convierte el monto a las demás monedas configuradas', () => {
+    // Con la moneda base en bolívares, la conversión que se muestra es el dólar.
+    rates.load(true);
+    http.expectOne(`${API}/rates?refresh=true`).flush({
+      ...SNAPSHOT,
+      baseCurrency: {
+        code: 'VES',
+        label: 'Bolívares',
+        symbol: 'Bs',
+        decimals: 2,
+        bsPerUnit: 1,
+        bsPerUsd: 876.7976,
+      },
+    });
+
+    const conversions = rates.currencyConversions(10);
+
+    expect(conversions.map((item) => item.key)).toEqual(['USD', 'COP']);
+    expect(conversions[0].code).toBe('USD');
+    expect(conversions[0].amount).toBe(10);
+    expect(conversions[0].text).toBe('$ 10.00');
+    // 10 USD * 876.7976 = 8 767,98 Bs / 0,22 = 39 854,44 COP.
+    expect(conversions[1].text).toBe('COL$ 39,854.44');
   });
 });

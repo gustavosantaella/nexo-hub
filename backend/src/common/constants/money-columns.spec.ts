@@ -3,6 +3,7 @@ import { resolve } from 'path';
 import {
   MONEY_COLUMNS,
   NON_MONEY_INT_COLUMNS,
+  QUANTITY_COLUMNS,
   RATE_COLUMNS,
   clientKeyOf,
   isMoneyField,
@@ -49,6 +50,14 @@ function isCountedColumn(model: string, field: string): boolean {
   return counted?.includes(field) ?? false;
 }
 
+/** `true` cuando la columna decimal es una cantidad (no una tasa ni dinero). */
+function isQuantityColumn(model: string, field: string): boolean {
+  const quantities = (QUANTITY_COLUMNS as Record<string, readonly string[]>)[
+    model
+  ];
+  return quantities?.includes(field) ?? false;
+}
+
 describe('money-columns (inventario vs esquema de Prisma)', () => {
   const ints = columnsOfType('Int');
   const floats = columnsOfType('Float');
@@ -63,12 +72,20 @@ describe('money-columns (inventario vs esquema de Prisma)', () => {
     fields.map((field) => `${model}.${field}`),
   );
   const actualRates = [...floats.entries()].flatMap(([model, fields]) =>
-    fields.map((field) => `${model}.${field}`),
+    fields
+      .filter((field) => !isQuantityColumn(model, field))
+      .map((f) => `${model}.${f}`),
+  );
+  const declaredQuantities = Object.entries(QUANTITY_COLUMNS).flatMap(
+    ([model, fields]) => fields.map((field) => `${model}.${field}`),
+  );
+  const actualQuantities = [...floats.entries()].flatMap(([model, fields]) =>
+    fields.filter((field) => isQuantityColumn(model, field)).map((f) => `${model}.${f}`),
   );
 
   it('el esquema se lee correctamente', () => {
     expect(ints.size).toBeGreaterThanOrEqual(12);
-    expect(declaredMoney.length).toBe(31);
+    expect(declaredMoney.length).toBe(33);
   });
 
   it('toda columna entera es dinero declarado o un conteo declarado', () => {
@@ -89,9 +106,24 @@ describe('money-columns (inventario vs esquema de Prisma)', () => {
     expect([...actualRates].sort()).toEqual([...declaredRates].sort());
   });
 
-  it('las tasas y el dinero no comparten columnas', () => {
-    const shared = declaredMoney.filter((column) => declaredRates.includes(column));
-    expect(shared).toEqual([]);
+  it('el inventario de cantidades coincide con las columnas Float de cantidad', () => {
+    expect([...declaredQuantities].sort()).toEqual([...actualQuantities].sort());
+    expect(declaredQuantities.length).toBeGreaterThan(0);
+  });
+
+  it('dinero, tasas y cantidades no comparten columnas', () => {
+    const sharedRates = declaredMoney.filter((column) =>
+      declaredRates.includes(column),
+    );
+    const sharedQuantities = declaredMoney.filter((column) =>
+      declaredQuantities.includes(column),
+    );
+    const mixedRates = declaredRates.filter((column) =>
+      declaredQuantities.includes(column),
+    );
+    expect(sharedRates).toEqual([]);
+    expect(sharedQuantities).toEqual([]);
+    expect(mixedRates).toEqual([]);
   });
 
   it('la clave del cliente es el nombre del modelo en camelCase', () => {

@@ -93,6 +93,7 @@ function buildService(options: {
   fetchImpl?: jest.Mock;
   cacheTtlSeconds?: number;
   currencies?: CurrencySetting[];
+  baseCurrency?: string;
 }): { service: RatesService; prisma: Record<string, jest.Mock> } {
   const setting = options.setting ?? null;
   const prisma = {
@@ -119,6 +120,7 @@ function buildService(options: {
 
   const currencies = {
     list: jest.fn().mockResolvedValue(options.currencies ?? DEFAULT_CURRENCIES),
+    baseCurrencyCode: jest.fn().mockResolvedValue(options.baseCurrency ?? 'USD'),
   };
 
   const service = new RatesService(
@@ -501,6 +503,60 @@ describe('RatesService', () => {
       const { service } = buildService({ fetchImpl: fetchMock });
 
       await expect(service.toCurrencyAmount(COMPANY_ID, 2, 'VES')).resolves.toBe(1753.6);
+    });
+  });
+
+  describe('moneda base (lo que se muestra primero)', () => {
+    it('usa el dolar cuando el local no ha elegido otra moneda', async () => {
+      const { service } = buildService({ fetchImpl: fetchMock });
+
+      const snapshot = await service.snapshot(COMPANY_ID);
+
+      expect(snapshot.baseCurrency).toMatchObject({
+        code: 'USD',
+        symbol: '$',
+        decimals: 2,
+        bsPerUnit: 876.7976,
+        bsPerUsd: 876.7976,
+      });
+      expect(snapshot.currencies[0].isDisplayBase).toBe(true);
+      expect(snapshot.currencies[0].isBase).toBe(true);
+    });
+
+    it('publica la moneda elegida con su tasa y marca la ficha correspondiente', async () => {
+      const { service } = buildService({
+        fetchImpl: fetchMock,
+        baseCurrency: 'VES',
+      });
+
+      const snapshot = await service.snapshot(COMPANY_ID);
+      const ves = snapshot.currencies.find((item) => item.code === 'VES');
+      const usd = snapshot.currencies.find((item) => item.code === 'USD');
+
+      expect(snapshot.baseCurrency).toMatchObject({
+        code: 'VES',
+        label: 'Bolivares',
+        symbol: 'Bs',
+        bsPerUnit: 1,
+        bsPerUsd: 876.7976,
+      });
+      expect(ves?.isDisplayBase).toBe(true);
+      expect(ves?.isBase).toBe(false);
+      // El dolar sigue siendo la moneda base contable (puente de conversion).
+      expect(usd?.isBase).toBe(true);
+      expect(usd?.isDisplayBase).toBe(false);
+    });
+
+    it('vuelve al dolar cuando la moneda base guardada ya no esta configurada', async () => {
+      const { service } = buildService({
+        fetchImpl: fetchMock,
+        baseCurrency: 'COP',
+      });
+
+      const snapshot = await service.snapshot(COMPANY_ID);
+
+      expect(snapshot.baseCurrency.code).toBe('USD');
+      expect(snapshot.currencies.some((item) => item.isDisplayBase)).toBe(true);
     });
   });
 });
