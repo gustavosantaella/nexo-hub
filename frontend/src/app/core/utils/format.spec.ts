@@ -2,6 +2,7 @@ import {
   COMPACT_FROM,
   bsCompact,
   compact,
+  divMoney,
   isCompact,
   money,
   moneyCompact,
@@ -72,6 +73,15 @@ describe('format (valores abreviados)', () => {
     it('mantiene el monto exacto disponible para el tooltip', () => {
       expect(money(1_250_000)).toBe('$ 1,250,000.00');
       expect(number(1_250_000)).toBe('1,250,000');
+    });
+  });
+
+  describe('aritmetica de montos', () => {
+    it('divide redondeando a centavos (0 cuando el divisor es 0)', () => {
+      expect(divMoney(24, 24)).toBe(1);
+      expect(divMoney(10, 4)).toBe(2.5);
+      expect(divMoney(10, 3)).toBe(3.33);
+      expect(divMoney(10, 0)).toBe(0);
     });
   });
 });

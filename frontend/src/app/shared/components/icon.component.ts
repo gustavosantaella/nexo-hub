@@ -21,6 +21,7 @@ const ICONS: Record<string, string> = {
     '<circle cx="10" cy="8" r="3.2"/><path d="M4 19.5c0-3 2.7-5.2 6-5.2s6 2.2 6 5.2"/><circle cx="18" cy="15" r="2"/><path d="M18 11.6v1.2M18 17.2v1.2M14.9 13.2l1 .8M20.1 16l1 .8M14.9 16.8l1-.8M20.1 14l1-.8"/>',
   search: '<circle cx="11" cy="11" r="6"/><path d="m15.5 15.5 4 4"/>',
   plus: '<path d="M12 5v14M5 12h14"/>',
+  minus: '<path d="M5 12h14"/>',
   edit: '<path d="M4 20h4l10-10-4-4L4 16v4Z"/><path d="m14.5 5.5 4 4"/>',
   trash: '<path d="M4 7h16M9 7V5h6v2M6 7l1 13h10l1-13"/><path d="M10 11v6M14 11v6"/>',
   close: '<path d="M6 6l12 12M18 6 6 18"/>',
@@ -42,6 +43,10 @@ const ICONS: Record<string, string> = {
     '<rect x="5" y="3.5" width="14" height="17" rx="1.6"/><path d="M9 7.5h.01M15 7.5h.01M9 11h.01M15 11h.01M9 14.5h.01M15 14.5h.01M10.5 20.5v-3h3v3"/>',
   keypad:
     '<rect x="4" y="3.5" width="16" height="17" rx="2"/><path d="M8 8h.01M12 8h.01M16 8h.01M8 12h.01M12 12h.01M16 12h.01M8 16h8"/>',
+  'shopping-cart':
+    '<path d="M3 4.5h2.2l2.4 10.4a1.5 1.5 0 0 0 1.5 1.2h7.6a1.5 1.5 0 0 0 1.5-1.15L20 8H6"/><circle cx="10" cy="19" r="1.4"/><circle cx="17" cy="19" r="1.4"/>',
+  table:
+    '<path d="M3.5 8.5h17"/><path d="M12 8.5V15"/><path d="M7 15v4M17 15v4"/><path d="M5 5.5h14a1.5 1.5 0 0 1 1.5 1.5v6A1.5 1.5 0 0 1 19 14.5H5A1.5 1.5 0 0 1 3.5 13V7A1.5 1.5 0 0 1 5 5.5Z"/>',
   settings:
     '<path d="M4 7h9M18.5 7H20M4 12h3M12.5 12H20M4 17h6M15.5 17H20"/><circle cx="15.5" cy="7" r="2.2"/><circle cx="9.5" cy="12" r="2.2"/><circle cx="12.5" cy="17" r="2.2"/>',
   download: '<path d="M12 4v10"/><path d="m8 11 4 4 4-4"/><path d="M5 19h14"/>',

@@ -68,7 +68,7 @@ describe('money-columns (inventario vs esquema de Prisma)', () => {
 
   it('el esquema se lee correctamente', () => {
     expect(ints.size).toBeGreaterThanOrEqual(12);
-    expect(declaredMoney.length).toBe(30);
+    expect(declaredMoney.length).toBe(31);
   });
 
   it('toda columna entera es dinero declarado o un conteo declarado', () => {

@@ -27,11 +27,15 @@ import type {
 import { AuthService } from '../../core/services/auth.service';
 import { CompaniesService } from '../../core/services/companies.service';
 import { CurrenciesService } from '../../core/services/currencies.service';
-import { PreferencesService, type DialogView } from '../../core/services/preferences.service';
+import {
+  PreferencesService,
+  TIP_PERCENT_PRESETS,
+  type DialogView,
+} from '../../core/services/preferences.service';
 import { ThemeService, type Theme } from '../../core/services/theme.service';
 import { RatesService } from '../../core/services/rates.service';
 import { ToastService } from '../../core/services/toast.service';
-import { bs, dateTime, rate, signedPercent, apiErrorMessage } from '../../core/utils/format';
+import { bs, dateTime, money, rate, signedPercent, apiErrorMessage } from '../../core/utils/format';
 import { toLogoDataUrl } from '../../core/utils/image';
 import { EmptyStateComponent, LoaderComponent } from '../../shared/components/feedback.component';
 import { IconComponent } from '../../shared/components/icon.component';
@@ -44,9 +48,10 @@ import { ConfirmService } from '../../shared/services/confirm.service';
  * Pestañas de Configuración: cada una agrupa una de las secciones de la pantalla.
  *
  * `rates` muestra el estado de las tasas, `appearance` las preferencias de
- * interfaz, `company` los datos de la empresa activa y `profile` los del usuario.
+ * interfaz, `pos` las del punto de venta (propina sugerida), `company` los datos
+ * de la empresa activa y `profile` los del usuario.
  */
-export type SettingsSection = 'rates' | 'appearance' | 'company' | 'profile';
+export type SettingsSection = 'rates' | 'appearance' | 'pos' | 'company' | 'profile';
 
 /**
  * Configuración del sistema, dividida en pestañas (Tasas, Apariencia, Empresa y
@@ -224,6 +229,63 @@ interface CurrencyRow {
                 </span>
               </button>
             }
+          </div>
+        </section>
+
+      }
+
+      <!-- Sección: Cajero -->
+      @if (section() === 'pos') {
+
+        <!-- Propina sugerida: el POS la propone en cada venta y es opcional. -->
+        <section class="card mb-4">
+          <div class="card-header">
+            <div>
+              <h2 class="text-sm font-semibold text-slate-900">Propina sugerida</h2>
+              <p class="mt-0.5 text-xs text-slate-500">
+                Porcentaje que el punto de venta propone al cobrar. La propina siempre es
+                opcional: en el cajero se puede cambiar, escribir otro monto o dejarla en
+                cero. Se guarda en este navegador.
+              </p>
+            </div>
+            <span class="badge bg-slate-100 text-slate-600">{{ tipPercentLabel() }}</span>
+          </div>
+
+          <div class="card-body space-y-4">
+            <div class="flex flex-wrap items-center gap-2">
+              @for (option of tipPercentPresets; track option) {
+                <button
+                  type="button"
+                  [class]="
+                    tipPercent() === option ? 'btn-primary btn-sm' : 'btn-secondary btn-sm'
+                  "
+                  [attr.aria-pressed]="tipPercent() === option"
+                  (click)="setTipPercent(option)"
+                >
+                  {{ option === 0 ? 'Sin propina' : option + ' %' }}
+                </button>
+              }
+              <div class="flex items-center gap-2">
+                <label class="label mb-0" for="tip-percent">Otro</label>
+                <input
+                  id="tip-percent"
+                  class="input w-24"
+                  type="number"
+                  min="0"
+                  max="100"
+                  step="1"
+                  [(ngModel)]="tipInput"
+                  (change)="applyTipInput()"
+                />
+                <span class="text-sm text-slate-500">%</span>
+              </div>
+            </div>
+
+            <p class="text-xs text-slate-500">
+              En una venta de <span class="font-semibold">{{ money(100) }}</span> el cajero
+              propondría una propina de
+              <span class="font-semibold">{{ money(tipPercent()) }}</span>.
+            </p>
           </div>
         </section>
 
@@ -1107,6 +1169,7 @@ export class SettingsPage implements OnInit {
   readonly localCurrency = currencyMeta(LOCAL_CURRENCY_CODE);
   readonly rate = rate;
   readonly bs = bs;
+  readonly money = money;
   readonly signedPercent = signedPercent;
   readonly canManage = this.auth.canManage;
 
@@ -1127,6 +1190,12 @@ export class SettingsPage implements OnInit {
       label: 'Apariencia',
       icon: 'sun',
       hint: 'Modo claro u oscuro y cómo se abren los formularios.',
+    },
+    {
+      value: 'pos',
+      label: 'Cajero',
+      icon: 'shopping-cart',
+      hint: 'Propina sugerida y atajos del punto de venta.',
     },
     {
       value: 'company',
@@ -1217,6 +1286,21 @@ export class SettingsPage implements OnInit {
   /** Nombre de la presentación elegida (chip de la cabecera). */
   readonly dialogViewLabel = computed(
     () => this.dialogViewOptions.find((option) => option.value === this.dialogView())?.label ?? '',
+  );
+
+  // ------------------------------- Cajero (POS) ------------------------------
+  /** Propina sugerida en porcentaje: el POS la propone en cada venta nueva. */
+  readonly tipPercent = this.preferences.tipPercent;
+
+  /** Propinas de atajo que ofrece la pantalla (0 % = sin propina). */
+  readonly tipPercentPresets = TIP_PERCENT_PRESETS;
+
+  /** Texto editable del porcentaje (se normaliza al salir del campo). */
+  tipInput = String(this.preferences.tipPercent());
+
+  /** Nombre de la propina elegida (chip de la cabecera). */
+  readonly tipPercentLabel = computed(() =>
+    this.tipPercent() === 0 ? 'Sin propina' : `${this.tipPercent()} %`,
   );
 
   // ----------------------------- Monedas aceptadas ---------------------------
@@ -1493,6 +1577,19 @@ export class SettingsPage implements OnInit {
   setDialogView(view: DialogView): void {
     if (this.dialogView() === view) return;
     this.preferences.setDialogView(view);
+  }
+
+  // --------------------------------- Cajero ----------------------------------
+
+  /** Cambia la propina sugerida del punto de venta (se guarda en este navegador). */
+  setTipPercent(percent: number): void {
+    this.preferences.setTipPercent(percent);
+    this.tipInput = String(this.tipPercent());
+  }
+
+  /** Normaliza el porcentaje escrito a mano (0-100) y refleja el valor guardado. */
+  applyTipInput(): void {
+    this.setTipPercent(Number(this.tipInput));
   }
 
   /**

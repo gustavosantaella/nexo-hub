@@ -223,6 +223,16 @@ export function mulMoney(a: number, b: number): number {
   return Math.round(Number(a || 0) * Number(b || 0) * 100) / 100;
 }
 
+/**
+ * Divide montos redondeando a 2 decimales (reparte el precio de una caja entre
+ * sus unidades). Devuelve 0 cuando el divisor es 0 para no pintar `NaN`.
+ */
+export function divMoney(a: number, b: number): number {
+  const divisor = Number(b || 0);
+  if (!divisor) return 0;
+  return Math.round((Number(a || 0) / divisor) * 100) / 100;
+}
+
 export function trackById<T extends { id: string }>(_index: number, item: T): string {
   return item.id;
 }

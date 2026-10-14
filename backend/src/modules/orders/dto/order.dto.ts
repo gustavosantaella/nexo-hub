@@ -72,6 +72,16 @@ export class CreateOrderDto {
   @Min(0)
   taxRate?: number;
 
+  @ApiPropertyOptional({
+    description: 'Propina del cliente en monto absoluto (no se le aplica IGV)',
+    default: 0,
+  })
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  @Min(0)
+  tip?: number;
+
   @ApiProperty({ type: [OrderItemDto] })
   @IsArray()
   @ArrayMinSize(1, { message: 'El pedido debe tener al menos un item' })
@@ -109,6 +119,15 @@ export class UpdateOrderDto {
   @IsNumber()
   @Min(0)
   taxRate?: number;
+
+  @ApiPropertyOptional({
+    description: 'Propina del cliente en monto absoluto (no se le aplica IGV)',
+  })
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  @Min(0)
+  tip?: number;
 }
 
 export class AddOrderItemsDto {

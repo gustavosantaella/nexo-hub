@@ -32,26 +32,39 @@ import { CurrencySelectComponent } from '../../shared/components/currency-select
 import {
   apiErrorMessage,
   dateTime,
+  money,
   moneyIn,
   mulMoney,
   sumMoney,
 } from '../../core/utils/format';
+import {
+  boxUnitsOf,
+  isBoxProduct,
+  soldUnitLabel,
+  unitPriceOf,
+} from '../../core/utils/product-pricing';
 import { DialogComponent } from '../../shared/components/dialog.component';
 import { EmptyStateComponent, LoaderComponent } from '../../shared/components/feedback.component';
 import { IconComponent } from '../../shared/components/icon.component';
 import { MoneyComponent } from '../../shared/components/money.component';
 import { PageHeaderComponent } from '../../shared/components/page-header.component';
 import { PaginationComponent } from '../../shared/components/pagination.component';
-import { PreferencesService } from '../../core/services/preferences.service';
+import { PreferencesService, TIP_PERCENT_PRESETS } from '../../core/services/preferences.service';
 import { ConfirmService } from '../../shared/services/confirm.service';
 import type { CashSession } from '../../core/models/operations.model';
 
 interface OrderLine {
   productId: string;
   name: string;
+  /** Precio de UNA unidad (en productos por caja ya viene `price / unitsPerBox`). */
   unitPrice: number;
+  /** Cantidad en unidades individuales del inventario. */
   quantity: number;
   stock: number;
+  /** Unidad que se cobra (`UND` en productos por caja). */
+  unit: string;
+  /** Unidades que trae la presentación (1 = producto suelto). */
+  unitsPerBox: number;
 }
 
 const EMPTY_META: PaginationMeta = {
@@ -418,36 +431,64 @@ const NEXT_STATUS: Partial<Record<OrderStatus, OrderStatus>> = {
             } @else {
               <div class="grid max-h-56 gap-2 overflow-y-auto pr-1 sm:grid-cols-2 xl:grid-cols-3">
                 @for (product of filteredProducts; track product.id) {
-                  <button
-                    type="button"
-                    class="flex items-center justify-between gap-2 rounded-lg border border-slate-200 bg-white px-3 py-2 text-left transition hover:border-brand-300 hover:bg-brand-50 disabled:cursor-not-allowed disabled:opacity-50"
-                    [disabled]="product.stock <= 0"
-                    (click)="addProduct(product)"
+                  <div
+                    class="flex items-center gap-2 rounded-lg border border-slate-200 bg-white px-3 py-2 transition hover:border-brand-300 hover:bg-brand-50"
                   >
-                    <span class="min-w-0">
-                      <span class="block truncate text-sm font-medium text-slate-800">
-                        {{ product.name }}
+                    <button
+                      type="button"
+                      class="flex min-w-0 flex-1 items-center justify-between gap-2 text-left disabled:cursor-not-allowed disabled:opacity-50"
+                      [disabled]="product.stock <= 0"
+                      [title]="
+                        isBoxProduct(product)
+                          ? 'Agregar 1 unidad suelta (' + money(unitPriceOf(product)) + ')'
+                          : 'Agregar al pedido'
+                      "
+                      (click)="addProduct(product)"
+                    >
+                      <span class="min-w-0">
+                        <span class="block truncate text-sm font-medium text-slate-800">
+                          {{ product.name }}
+                        </span>
+                        <span class="block text-xs text-slate-400">
+                          {{ product.sku }}
+                        </span>
+                        <span class="flex items-center gap-1 text-xs text-slate-500">
+                          <app-money [amount]="unitPriceOf(product)" />
+                          <span>/ {{ soldUnitLabel(product) }}</span>
+                        </span>
+                        @if (isBoxProduct(product)) {
+                          <span class="block text-[11px] text-slate-400">
+                            Caja de {{ boxUnitsOf(product) }} = {{ money(product.price) }}
+                          </span>
+                        }
                       </span>
-                      <span class="block text-xs text-slate-400">
-                        {{ product.sku }}
-                      </span>
-                      <app-money class="block text-xs text-slate-500" [amount]="product.price" />
-                    </span>
-                    @if (product.price > 0) {
-                      <span
-                        class="badge"
-                        [class]="
-                          product.stock <= 0
-                            ? 'bg-rose-100 text-rose-700'
-                            : 'bg-emerald-100 text-emerald-700'
-                        "
+                      @if (product.price > 0) {
+                        <span
+                          class="badge shrink-0"
+                          [class]="
+                            product.stock <= 0
+                              ? 'bg-rose-100 text-rose-700'
+                              : 'bg-emerald-100 text-emerald-700'
+                          "
+                        >
+                          {{ product.stock }} {{ soldUnitLabel(product) }}
+                        </span>
+                      } @else {
+                        <span class="badge shrink-0 bg-amber-100 text-amber-700">Sin precio</span>
+                      }
+                    </button>
+                    @if (isBoxProduct(product)) {
+                      <button
+                        type="button"
+                        class="btn-secondary btn-sm shrink-0"
+                        [disabled]="product.stock < boxUnitsOf(product)"
+                        [title]="'Agregar una caja completa (' + boxUnitsOf(product) + ') por ' + money(product.price)"
+                        (click)="addBox(product)"
                       >
-                        {{ product.stock }} {{ product.unit }}
-                      </span>
-                    } @else {
-                      <span class="badge bg-amber-100 text-amber-700">Sin precio</span>
+                        Caja
+                      </button>
                     }
-                  </button>
+                  </div>
                 }
               </div>
             }
@@ -482,7 +523,14 @@ const NEXT_STATUS: Partial<Record<OrderStatus, OrderStatus>> = {
               <tbody>
                 @for (line of lines(); track line.productId) {
                   <tr>
-                    <td>{{ line.name }}</td>
+                    <td>
+                      {{ line.name }}
+                      @if (isBoxProduct(line)) {
+                        <span class="block text-[11px] text-slate-400">
+                          Precio por unidad (caja de {{ boxUnitsOf(line) }})
+                        </span>
+                      }
+                    </td>
                     <td>
                       <div class="flex items-center justify-center gap-1">
                         <button type="button" class="btn-ghost btn-sm" (click)="decLine(line)">
@@ -577,6 +625,33 @@ const NEXT_STATUS: Partial<Record<OrderStatus, OrderStatus>> = {
             <span class="text-slate-500">IGV</span>
             <app-money [amount]="tax" alignEnd="true" />
           </div>
+          <div>
+            <label class="label">Propina (%) — opcional</label>
+            <div class="flex flex-wrap gap-2">
+              <input
+                type="number"
+                class="input w-20"
+                min="0"
+                max="100"
+                [(ngModel)]="form.tipRate"
+              />
+              @for (preset of tipRatePresets; track preset) {
+                <button
+                  type="button"
+                  class="btn-secondary btn-sm"
+                  (click)="setTipRate(preset)"
+                >
+                  {{ preset === 0 ? 'Sin propina' : preset + '%' }}
+                </button>
+              }
+            </div>
+          </div>
+          @if (tipAmount > 0) {
+            <div class="flex justify-between text-sm">
+              <span class="text-slate-500">Propina</span>
+              <app-money [amount]="tipAmount" alignEnd="true" />
+            </div>
+          }
           <div class="flex justify-between border-t border-slate-200 pt-2 text-base font-semibold">
             <span>Total</span>
             <app-money [amount]="total" alignEnd="true" strong />
@@ -832,6 +907,9 @@ const NEXT_STATUS: Partial<Record<OrderStatus, OrderStatus>> = {
             <div class="flex justify-between"><span class="text-slate-500">Subtotal</span><app-money [amount]="order.subtotal" alignEnd="true" /></div>
             <div class="flex justify-between"><span class="text-slate-500">Descuento</span><app-money [amount]="-order.discount" alignEnd="true" /></div>
             <div class="flex justify-between"><span class="text-slate-500">IGV</span><app-money [amount]="order.tax" alignEnd="true" /></div>
+            @if (order.tip > 0) {
+              <div class="flex justify-between"><span class="text-slate-500">Propina</span><app-money [amount]="order.tip" alignEnd="true" /></div>
+            }
             <div class="flex justify-between border-t border-slate-200 pt-1 text-base font-semibold"><span>Total</span><app-money [amount]="order.total" alignEnd="true" strong /></div>
             <div class="flex justify-between"><span class="text-slate-500">Pagado</span><app-money [amount]="order.paidAmount" alignEnd="true" /></div>
             <div class="flex justify-between font-semibold text-brand-700"><span>Saldo</span><app-money [amount]="balance(order)" alignEnd="true" strong /></div>
@@ -908,34 +986,62 @@ const NEXT_STATUS: Partial<Record<OrderStatus, OrderStatus>> = {
           } @else {
             <div class="grid max-h-56 gap-2 overflow-y-auto pr-1 sm:grid-cols-2 xl:grid-cols-3">
               @for (product of filteredProducts; track product.id) {
-                <button
-                  type="button"
-                  class="flex items-center justify-between gap-2 rounded-lg border border-slate-200 bg-white px-3 py-2 text-left transition hover:border-brand-300 hover:bg-brand-50 disabled:cursor-not-allowed disabled:opacity-50"
-                  [disabled]="product.stock <= 0"
-                  (click)="addProduct(product)"
+                <div
+                  class="flex items-center gap-2 rounded-lg border border-slate-200 bg-white px-3 py-2 transition hover:border-brand-300 hover:bg-brand-50"
                 >
-                  <span class="min-w-0">
-                    <span class="block truncate text-sm font-medium text-slate-800">
-                      {{ product.name }}
+                  <button
+                    type="button"
+                    class="flex min-w-0 flex-1 items-center justify-between gap-2 text-left disabled:cursor-not-allowed disabled:opacity-50"
+                    [disabled]="product.stock <= 0"
+                    [title]="
+                      isBoxProduct(product)
+                        ? 'Agregar 1 unidad suelta (' + money(unitPriceOf(product)) + ')'
+                        : 'Agregar al pedido'
+                    "
+                    (click)="addProduct(product)"
+                  >
+                    <span class="min-w-0">
+                      <span class="block truncate text-sm font-medium text-slate-800">
+                        {{ product.name }}
+                      </span>
+                      <span class="block text-xs text-slate-400">{{ product.sku }}</span>
+                      <span class="flex items-center gap-1 text-xs text-slate-500">
+                        <app-money [amount]="unitPriceOf(product)" />
+                        <span>/ {{ soldUnitLabel(product) }}</span>
+                      </span>
+                      @if (isBoxProduct(product)) {
+                        <span class="block text-[11px] text-slate-400">
+                          Caja de {{ boxUnitsOf(product) }} = {{ money(product.price) }}
+                        </span>
+                      }
                     </span>
-                    <span class="block text-xs text-slate-400">{{ product.sku }}</span>
-                    <app-money class="block text-xs text-slate-500" [amount]="product.price" />
-                  </span>
-                  @if (product.price > 0) {
-                    <span
-                      class="badge"
-                      [class]="
-                        product.stock <= 0
-                          ? 'bg-rose-100 text-rose-700'
-                          : 'bg-emerald-100 text-emerald-700'
-                      "
+                    @if (product.price > 0) {
+                      <span
+                        class="badge shrink-0"
+                        [class]="
+                          product.stock <= 0
+                            ? 'bg-rose-100 text-rose-700'
+                            : 'bg-emerald-100 text-emerald-700'
+                        "
+                      >
+                        {{ product.stock }} {{ soldUnitLabel(product) }}
+                      </span>
+                    } @else {
+                      <span class="badge shrink-0 bg-amber-100 text-amber-700">Sin precio</span>
+                    }
+                  </button>
+                  @if (isBoxProduct(product)) {
+                    <button
+                      type="button"
+                      class="btn-secondary btn-sm shrink-0"
+                      [disabled]="product.stock < boxUnitsOf(product)"
+                      [title]="'Agregar una caja completa (' + boxUnitsOf(product) + ') por ' + money(product.price)"
+                      (click)="addBox(product)"
                     >
-                      {{ product.stock }} {{ product.unit }}
-                    </span>
-                  } @else {
-                    <span class="badge bg-amber-100 text-amber-700">Sin precio</span>
+                      Caja
+                    </button>
                   }
-                </button>
+                </div>
               }
             </div>
           }
@@ -970,7 +1076,14 @@ const NEXT_STATUS: Partial<Record<OrderStatus, OrderStatus>> = {
               <tbody>
                 @for (line of lines(); track line.productId) {
                   <tr>
-                    <td>{{ line.name }}</td>
+                    <td>
+                      {{ line.name }}
+                      @if (isBoxProduct(line)) {
+                        <span class="block text-[11px] text-slate-400">
+                          Precio por unidad (caja de {{ boxUnitsOf(line) }})
+                        </span>
+                      }
+                    </td>
                     <td>
                       <div class="flex items-center justify-center gap-1">
                         <button type="button" class="btn-ghost btn-sm" (click)="decLine(line)">
@@ -1188,6 +1301,13 @@ export class OrdersPage implements OnInit {
   readonly dialogView = this.preferences.dialogView;
 
   readonly dateTime = dateTime;
+  /** Formato de montos para los textos del catalogo de productos (tooltips). */
+  readonly money = money;
+  /** Presentación del producto: precio por unidad suelta y unidad que se cobra. */
+  readonly unitPriceOf = unitPriceOf;
+  readonly soldUnitLabel = soldUnitLabel;
+  readonly boxUnitsOf = boxUnitsOf;
+  readonly isBoxProduct = isBoxProduct;
   readonly baseCurrency = BASE_CURRENCY;
   readonly statusLabels = ORDER_STATUS_LABELS;
   readonly statusClasses = ORDER_STATUS_CLASSES;
@@ -1242,6 +1362,8 @@ export class OrdersPage implements OnInit {
   /** Efectivo entregado por el cliente (en `chargeCurrency`). */
   receivedAmount = 0;
   readonly taxRatePresets = [0, 10, 18];
+  /** Propinas de atajo del formulario (0 % = sin propina). */
+  readonly tipRatePresets = TIP_PERCENT_PRESETS;
   form = {
     customerId: '',
     type: 'DINE_IN' as OrderType,
@@ -1249,6 +1371,8 @@ export class OrdersPage implements OnInit {
     notes: '',
     discount: 0,
     taxRate: 0,
+    /** Propina en porcentaje sobre el neto (opcional). */
+    tipRate: 0,
   };
 
   readonly detailOpen = signal(false);
@@ -1652,6 +1776,8 @@ export class OrdersPage implements OnInit {
       notes: '',
       discount: 0,
       taxRate: 0,
+      // La propina arranca con la sugerencia configurada en Configuración → Cajero.
+      tipRate: this.preferences.tipPercent(),
     };
     this.lines.set([]);
     this.productSearch = '';
@@ -1690,8 +1816,16 @@ export class OrdersPage implements OnInit {
     return mulMoney(this.subtotal - this.discountAmount, (Number(this.form.taxRate) || 0) / 100);
   }
 
+  /** Propina de la venta: porcentaje sobre el neto (no paga IGV). */
+  get tipAmount(): number {
+    return mulMoney(
+      this.subtotal - this.discountAmount,
+      (Number(this.form.tipRate) || 0) / 100,
+    );
+  }
+
   get total(): number {
-    return sumMoney([this.subtotal, -this.discountAmount, this.tax]);
+    return sumMoney([this.subtotal, -this.discountAmount, this.tax, this.tipAmount]);
   }
 
   lineTotal(line: OrderLine): number {
@@ -1750,7 +1884,12 @@ export class OrdersPage implements OnInit {
     this.form.taxRate = rate;
   }
 
-  /** Agrega un producto del inventario al pedido (o incrementa su cantidad). */
+  /** Atajo de propina del formulario (0 % deja la venta sin propina). */
+  setTipRate(rate: number): void {
+    this.form.tipRate = rate;
+  }
+
+  /** Agrega una unidad suelta del inventario al pedido (o incrementa su cantidad). */
   addProduct(product: ProductOption): void {
     if (product.stock <= 0) {
       this.formError.set(`"${product.name}" no tiene stock disponible.`);
@@ -1761,21 +1900,57 @@ export class OrdersPage implements OnInit {
       this.incLine(existing);
       return;
     }
-    this.lines.set([
-      ...this.lines(),
-      {
-        productId: product.id,
-        name: product.name,
-        unitPrice: product.price,
-        quantity: 1,
-        stock: product.stock,
-      },
-    ]);
+    this.lines.set([...this.lines(), this.newLine(product, 1)]);
     this.formError.set(
       product.price > 0
         ? null
         : `"${product.name}" no tiene precio de venta: edita el precio de la línea.`,
     );
+  }
+
+  /**
+   * Agrega una caja completa: tantas unidades como trae la presentación
+   * (los productos sueltos caen en `addProduct`).
+   */
+  addBox(product: ProductOption): void {
+    const units = this.boxUnitsOf(product);
+    if (!this.isBoxProduct(product)) {
+      this.addProduct(product);
+      return;
+    }
+    if (product.stock < units) {
+      this.formError.set(
+        `No alcanza el stock para una caja completa de "${product.name}" (quedan ${product.stock} unidades).`,
+      );
+      return;
+    }
+    const existing = this.lines().find((line) => line.productId === product.id);
+    if (existing) {
+      if (existing.stock > 0 && existing.quantity + units > existing.stock) {
+        this.formError.set(
+          `Stock insuficiente para "${product.name}" (disponible ${existing.stock}).`,
+        );
+        return;
+      }
+      existing.quantity += units;
+      this.lines.set([...this.lines()]);
+    } else {
+      this.lines.set([...this.lines(), this.newLine(product, units)]);
+    }
+    this.formError.set(null);
+  }
+
+  /** Línea del pedido con el precio por unidad y la presentación del producto. */
+  private newLine(product: ProductOption, quantity: number): OrderLine {
+    return {
+      productId: product.id,
+      name: product.name,
+      unitPrice: this.unitPriceOf(product),
+      quantity,
+      stock: product.stock,
+      unit: product.unit,
+      unitsPerBox: this.boxUnitsOf(product),
+    };
   }
 
   /** Agrega por SKU exacto (lector de codigos) o por la primera coincidencia. */
@@ -1879,6 +2054,7 @@ export class OrdersPage implements OnInit {
         notes: this.form.notes || undefined,
         discount: Number(this.form.discount) || undefined,
         taxRate: Number(this.form.taxRate) || 0,
+        tip: this.tipAmount || undefined,
         items: this.lines().map((line) => ({
           productId: line.productId,
           quantity: line.quantity,

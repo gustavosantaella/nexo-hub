@@ -17,7 +17,7 @@
 export const MONEY_COLUMNS = {
   Product: ['price', 'cost'],
   StockMovement: ['unitCost'],
-  Order: ['subtotal', 'discount', 'tax', 'total', 'paidAmount'],
+  Order: ['subtotal', 'discount', 'tax', 'tip', 'total', 'paidAmount'],
   OrderItem: ['unitPrice', 'total'],
   OrderPayment: ['amount', 'baseAmount'],
   Expense: ['amount', 'baseAmount'],
@@ -46,7 +46,7 @@ export const RATE_COLUMNS = {
 
 /** Columnas `Int` que no son dinero (conteos y existencias). */
 export const NON_MONEY_INT_COLUMNS = {
-  Product: ['stock', 'minStock'],
+  Product: ['stock', 'minStock', 'unitsPerBox'],
   StockMovement: ['quantity', 'stockBefore', 'stockAfter'],
   OrderItem: ['quantity'],
 } as const;

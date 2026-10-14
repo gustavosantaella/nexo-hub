@@ -22,10 +22,52 @@ const META: PaginationMeta = {
 };
 
 const PRODUCTS: ProductOption[] = [
-  { id: 'p1', sku: 'PIZZA-01', name: 'Pizza Familiar', price: 30, stock: 5, unit: 'UND' },
-  { id: 'p2', sku: 'GASEOSA-01', name: 'Gaseosa 1.5L', price: 8, stock: 0, unit: 'UND' },
-  { id: 'p3', sku: 'CAFE-01', name: 'Cafe pasado', price: 5, stock: 20, unit: 'UND' },
-  { id: 'p4', sku: 'INS-001', name: 'Arroz extra', price: 0, stock: 3, unit: 'KG' },
+  {
+    id: 'p1',
+    sku: 'PIZZA-01',
+    name: 'Pizza Familiar',
+    price: 30,
+    stock: 5,
+    unit: 'UND',
+    unitsPerBox: 1,
+  },
+  {
+    id: 'p2',
+    sku: 'GASEOSA-01',
+    name: 'Gaseosa 1.5L',
+    price: 8,
+    stock: 0,
+    unit: 'UND',
+    unitsPerBox: 1,
+  },
+  {
+    id: 'p3',
+    sku: 'CAFE-01',
+    name: 'Cafe pasado',
+    price: 5,
+    stock: 20,
+    unit: 'UND',
+    unitsPerBox: 1,
+  },
+  {
+    id: 'p4',
+    sku: 'INS-001',
+    name: 'Arroz extra',
+    price: 0,
+    stock: 3,
+    unit: 'KG',
+    unitsPerBox: 1,
+  },
+  /** Caja de 24 unidades a $ 24: la unidad suelta se vende a $ 1. */
+  {
+    id: 'p5',
+    sku: 'MALTIN-24',
+    name: 'Malta (caja 24)',
+    price: 24,
+    stock: 50,
+    unit: 'CAJA',
+    unitsPerBox: 24,
+  },
 ];
 
 function order(partial: Partial<Order> = {}): Order {
@@ -38,6 +80,7 @@ function order(partial: Partial<Order> = {}): Order {
     subtotal: 30,
     discount: 0,
     tax: 0,
+    tip: 0,
     total: 30,
     paidAmount: 0,
     createdAt: '2026-10-13T10:00:00.000Z',
@@ -154,12 +197,13 @@ describe('OrdersPage (formulario del cajero)', () => {
     expect(page.filteredProducts.map((product) => product.sku)).toEqual([
       'INS-001',
       'CAFE-01',
+      'MALTIN-24',
       'PIZZA-01',
     ]);
 
     page.onlyAvailable = false;
     fixture.detectChanges();
-    expect(page.filteredProducts.length).toBe(4);
+    expect(page.filteredProducts.length).toBe(5);
 
     page.productSearch = 'gase';
     fixture.detectChanges();
@@ -195,8 +239,66 @@ describe('OrdersPage (formulario del cajero)', () => {
       unitPrice: 30,
       quantity: 2,
       stock: 5,
+      unit: 'UND',
+      unitsPerBox: 1,
     });
     expect(page.subtotal).toBe(65);
+  });
+
+  it('vende la unidad suelta de un producto por caja al precio de la caja repartido', () => {
+    const { fixture, page } = mount();
+    openCreate(fixture, page);
+
+    page.addProduct(PRODUCTS[4]);
+
+    expect(page.lines()).toEqual([
+      {
+        productId: 'p5',
+        name: 'Malta (caja 24)',
+        unitPrice: 1,
+        quantity: 1,
+        stock: 50,
+        unit: 'CAJA',
+        unitsPerBox: 24,
+      },
+    ]);
+    expect(page.subtotal).toBe(1);
+  });
+
+  it('agrega una caja completa como sus unidades individuales', () => {
+    const { fixture, page } = mount();
+    openCreate(fixture, page);
+
+    page.addBox(PRODUCTS[4]);
+
+    expect(page.lines()[0].quantity).toBe(24);
+    expect(page.lines()[0].unitPrice).toBe(1);
+    expect(page.subtotal).toBe(24);
+  });
+
+  it('acumula unidades y cajas del mismo producto en una sola linea', () => {
+    const { fixture, page } = mount();
+    openCreate(fixture, page);
+
+    page.addProduct(PRODUCTS[4]);
+    page.addBox(PRODUCTS[4]);
+    page.addProduct(PRODUCTS[4]);
+
+    expect(page.lines().length).toBe(1);
+    expect(page.lines()[0].quantity).toBe(26);
+    expect(page.subtotal).toBe(26);
+  });
+
+  it('no permite agregar una caja completa cuando no alcanza el stock en unidades', () => {
+    const { fixture, page } = mount();
+    openCreate(fixture, page);
+
+    // La caja trae 24 unidades y solo quedan 10 en inventario.
+    const casiSinStock: ProductOption = { ...PRODUCTS[4], stock: 10 };
+    page.addBox(casiSinStock);
+
+    expect(page.lines().length).toBe(0);
+    expect(page.formError()).toContain('No alcanza el stock para una caja completa');
   });
 
   it('normaliza la cantidad escrita a mano y limita al stock disponible', () => {
@@ -217,7 +319,7 @@ describe('OrdersPage (formulario del cajero)', () => {
     expect(page.formError()).toBeNull();
   });
 
-  it('calcula subtotal, IGV, total y el vuelto del cobro en efectivo', () => {
+  it('calcula subtotal, IGV, propina y el vuelto del cobro en efectivo', () => {
     const { fixture, page } = mount();
     openCreate(fixture, page);
 
@@ -228,14 +330,44 @@ describe('OrdersPage (formulario del cajero)', () => {
     expect(page.subtotal).toBe(30);
     expect(page.discountAmount).toBe(5);
     expect(page.tax).toBe(4.5);
-    expect(page.total).toBe(29.5);
+    // La propina arranca con la sugerencia configurada (10 % del neto: 25 → 2.5).
+    expect(page.form.tipRate).toBe(10);
+    expect(page.tipAmount).toBe(2.5);
+    expect(page.total).toBe(32);
 
     page.receivedAmount = 0;
     page.setReceived(20);
-    expect(page.receivedAmount).toBe(49.5);
+    expect(page.receivedAmount).toBe(52);
     expect(page.change).toBe(20);
 
+    // La propina es opcional: quitarla devuelve el total de la venta.
+    page.setTipRate(0);
+    expect(page.tipAmount).toBe(0);
+    expect(page.total).toBe(29.5);
+
     expect(page.createButtonLabel).toBe('Crear y cobrar');
+  });
+
+  it('envía la propina sugerida al crear la venta', () => {
+    const { fixture, page } = mount();
+    openCreate(fixture, page);
+
+    page.addProduct(PRODUCTS[0]);
+    page.submitCreate();
+
+    // 10 % de 30 = 3 de propina.
+    const createRequest = http.expectOne(
+      (request) => request.method === 'POST' && request.url === `${API}/orders`,
+    );
+    expect(createRequest.request.body.tip).toBe(3);
+
+    createRequest.flush(order({ tip: 3, total: 33 }));
+
+    const payRequest = http.expectOne(`${API}/orders/o1/payments`);
+    expect(payRequest.request.body.amount).toBe(33);
+    payRequest.flush(order({ tip: 3, total: 33, paymentStatus: 'PAID', status: 'COMPLETED' }));
+
+    flushReload();
   });
 
   it('crea el pedido y registra el cobro en una sola acción', () => {
@@ -513,22 +645,24 @@ describe('OrdersPage (formulario del cajero)', () => {
 
     page.addProduct(PRODUCTS[0]);
     page.onChargeCurrencyChange('VES');
-    expect(page.chargeTotal).toBe(26303.93); // 30 USD * 876.7976
+    // El cobro incluye la propina sugerida: 30 + 3 de propina = 33 USD * 876.7976.
+    expect(page.tipAmount).toBe(3);
+    expect(page.chargeTotal).toBe(28934.32);
 
     page.submitCreate();
 
     const createRequest = http.expectOne(
       (request) => request.method === 'POST' && request.url === `${API}/orders`,
     );
-    createRequest.flush(order({ total: 30 }));
+    createRequest.flush(order({ tip: 3, total: 33 }));
 
     const payRequest = http.expectOne(`${API}/orders/o1/payments`);
     expect(payRequest.request.body).toEqual({
-      amount: 26303.93,
+      amount: 28934.32,
       method: 'CASH',
       currency: 'VES',
     });
-    payRequest.flush(order({ total: 30, paymentStatus: 'PAID' }));
+    payRequest.flush(order({ tip: 3, total: 33, paymentStatus: 'PAID' }));
 
     flushReload();
   });

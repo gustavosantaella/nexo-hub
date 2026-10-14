@@ -22,6 +22,12 @@ const PRODUCT_INCLUDE = {
   supplier: { select: { id: true, name: true } },
 } satisfies Prisma.ProductInclude;
 
+/** La foto vacia se guarda como `null` (asi el formulario puede quitarla). */
+function normalizeImageUrl(value: string | null | undefined): string | null {
+  const trimmed = value?.trim();
+  return trimmed ? trimmed : null;
+}
+
 @Injectable()
 export class ProductsService {
   constructor(
@@ -30,7 +36,7 @@ export class ProductsService {
   ) {}
 
   async create(companyId: string, dto: CreateProductDto, userId?: string) {
-    const { stock, cost, categoryId, supplierId, sku, ...rest } = dto;
+    const { stock, cost, categoryId, supplierId, sku, imageUrl, ...rest } = dto;
 
     const finalSku = sku?.trim() || (await this.generateSku(companyId, dto.name));
     await this.assertSkuAvailable(companyId, finalSku);
@@ -46,8 +52,10 @@ export class ProductsService {
         stock: 0,
         minStock: dto.minStock ?? 0,
         unit: dto.unit ?? 'UND',
+        unitsPerBox: dto.unitsPerBox ?? 1,
         trackStock: dto.trackStock ?? true,
         active: dto.active ?? true,
+        imageUrl: normalizeImageUrl(imageUrl),
         categoryId: normalizeNullableId(categoryId),
         supplierId: normalizeNullableId(supplierId),
       },
@@ -103,7 +111,7 @@ export class ProductsService {
     return buildPaginatedResult(items, total, query.page, query.limit);
   }
 
-  /** Productos activos para selects (POS / pedidos). */
+  /** Productos activos para selects y para la grilla del POS (punto de venta). */
   findOptions(companyId: string) {
     return this.prisma.product.findMany({
       where: { active: true, ...tenantWhere(companyId) },
@@ -114,6 +122,9 @@ export class ProductsService {
         price: true,
         stock: true,
         unit: true,
+        unitsPerBox: true,
+        imageUrl: true,
+        categoryId: true,
       },
       orderBy: { name: 'asc' },
     });
@@ -130,7 +141,7 @@ export class ProductsService {
 
   async update(companyId: string, id: string, dto: UpdateProductDto) {
     await this.findOne(companyId, id);
-    const { cost, categoryId, supplierId, sku, ...rest } = dto;
+    const { cost, categoryId, supplierId, sku, imageUrl, ...rest } = dto;
 
     if (sku !== undefined && sku.trim()) {
       await this.assertSkuAvailable(companyId, sku.trim(), id);
@@ -140,6 +151,7 @@ export class ProductsService {
     const data: Prisma.ProductUpdateInput = {
       ...rest,
       ...(cost !== undefined ? { cost: toMoney(cost) } : {}),
+      ...(imageUrl !== undefined ? { imageUrl: normalizeImageUrl(imageUrl) } : {}),
       ...(rest.price !== undefined ? { price: toMoney(rest.price) } : {}),
       ...(sku !== undefined ? { sku: sku.trim() } : {}),
       ...(categoryId !== undefined
@@ -150,8 +162,10 @@ export class ProductsService {
         : {}),
     };
 
-    // updateMany + filtro por empresa: nunca se toca un producto de otra.
-    await this.prisma.product.updateMany({
+    // `update` con filtro por empresa: nunca se toca un producto de otra. Se usa
+    // `update` (y no `updateMany`) porque los enlaces `category`/`supplier` son
+    // escrituras de relacion y `updateMany` solo admite campos escalares.
+    await this.prisma.product.update({
       where: { id, ...tenantWhere(companyId) },
       data,
     });

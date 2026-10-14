@@ -12,6 +12,9 @@ import { SettingsPage } from './settings.page';
 /** Tema guardado por otra prueba: se limpia antes de montar la pantalla. */
 const THEME_KEY = 'nexo-hub.theme';
 
+/** Propina sugerida guardada en el navegador (preferencia del cajero). */
+const TIP_PERCENT_KEY = 'nexo-hub.tip-percent';
+
 /** Doble mínimo de `RatesService`: aquí solo importa la navegación por pestañas. */
 const ratesStub = {
   loading: signal(false),
@@ -57,6 +60,7 @@ describe('SettingsPage (pestañas de configuración)', () => {
 
   beforeEach(async () => {
     localStorage.removeItem(THEME_KEY);
+    localStorage.removeItem(TIP_PERCENT_KEY);
 
     await TestBed.configureTestingModule({
       imports: [SettingsPage],
@@ -76,6 +80,7 @@ describe('SettingsPage (pestañas de configuración)', () => {
   afterEach(() => {
     document.documentElement.classList.remove('dark');
     localStorage.removeItem(THEME_KEY);
+    localStorage.removeItem(TIP_PERCENT_KEY);
   });
 
   function tabs(): HTMLButtonElement[] {
@@ -114,10 +119,11 @@ describe('SettingsPage (pestañas de configuración)', () => {
     fixture.detectChanges();
   }
 
-  it('divide la configuración en cuatro pestañas y abre en Tasas', () => {
+  it('divide la configuración en cinco pestañas y abre en Tasas', () => {
     expect(tabs().map((button) => button.textContent?.trim())).toEqual([
       'Tasas',
       'Apariencia',
+      'Cajero',
       'Empresa',
       'Mis datos',
     ]);
@@ -176,6 +182,31 @@ describe('SettingsPage (pestañas de configuración)', () => {
     fixture.detectChanges();
 
     expect(panelButton('Panel lateral').getAttribute('aria-pressed')).toBe('true');
+  });
+
+  it('configura la propina sugerida del cajero y la guarda en el navegador', () => {
+    tab('Cajero').click();
+    fixture.detectChanges();
+
+    expect(panel().id).toBe('pos-panel');
+    expect(panel().textContent).toContain('Propina sugerida');
+
+    // El 10 % viene de fábrica y es la propina que el POS propone.
+    expect(panelButton('10 %').getAttribute('aria-pressed')).toBe('true');
+
+    panelButton('15 %').click();
+    fixture.detectChanges();
+
+    expect(panelButton('15 %').getAttribute('aria-pressed')).toBe('true');
+    expect(panelButton('10 %').getAttribute('aria-pressed')).toBe('false');
+    expect(localStorage.getItem(TIP_PERCENT_KEY)).toBe('15');
+
+    // La propina es opcional: cero también es una opción válida.
+    panelButton('Sin propina').click();
+    fixture.detectChanges();
+
+    expect(panelButton('Sin propina').getAttribute('aria-pressed')).toBe('true');
+    expect(localStorage.getItem(TIP_PERCENT_KEY)).toBe('0');
   });
 
   it('recorre las pestañas con las flechas, Inicio y Fin', () => {

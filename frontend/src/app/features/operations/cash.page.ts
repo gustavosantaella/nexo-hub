@@ -34,6 +34,7 @@ import {
 } from '../../core/utils/format';
 import { EmptyStateComponent, LoaderComponent } from '../../shared/components/feedback.component';
 import { IconComponent } from '../../shared/components/icon.component';
+import { PosComponent } from './pos.component';
 import { DialogComponent } from '../../shared/components/dialog.component';
 import { MoneyComponent } from '../../shared/components/money.component';
 import { PageHeaderComponent } from '../../shared/components/page-header.component';
@@ -62,6 +63,7 @@ const EMPTY_META: PaginationMeta = {
     PaginationComponent,
     DialogComponent,
     StatCardComponent,
+    PosComponent,
     MoneyComponent,
     CurrencySelectComponent,
     EmptyStateComponent,
@@ -69,22 +71,32 @@ const EMPTY_META: PaginationMeta = {
   ],
   changeDetection: ChangeDetectionStrategy.OnPush,
   template: `
-    <app-page-header
-      title="Caja"
-      subtitle="Control de la sesión de caja y arqueo en vivo"
-      icon="wallet"
-    >
-      @if (session()) {
-        <button type="button" class="btn-secondary" (click)="openMovement()">
-          <app-icon name="plus" size="h-4 w-4" />
-          Registrar movimiento
+    @if (view() === 'arqueo') {
+      <app-page-header
+        title="Caja"
+        subtitle="Control de la sesión de caja y arqueo en vivo"
+        icon="wallet"
+      >
+        <button type="button" class="btn-primary" (click)="openPos()">
+          <app-icon name="shopping-cart" size="h-4 w-4" />
+          Vista de cajero
         </button>
-        <button type="button" class="btn-primary" (click)="openClose()">
-          <app-icon name="wallet" size="h-4 w-4" />
-          Cerrar caja
-        </button>
-      }
-    </app-page-header>
+        @if (session()) {
+          <button type="button" class="btn-secondary" (click)="openMovement()">
+            <app-icon name="plus" size="h-4 w-4" />
+            Registrar movimiento
+          </button>
+          <button type="button" class="btn-primary" (click)="openClose()">
+            <app-icon name="wallet" size="h-4 w-4" />
+            Cerrar caja
+          </button>
+        }
+      </app-page-header>
+    }
+
+    @if (view() === 'pos') {
+      <app-pos (exit)="closePos()" />
+    } @else {
 
     @if (loading()) {
       <app-loader />
@@ -829,6 +841,7 @@ const EMPTY_META: PaginationMeta = {
         <button type="button" class="btn-secondary" (click)="closeSessionDetail()">Cerrar</button>
       </div>
     </ng-template>
+    }
   `,
 })
 export class CashPage implements OnInit {
@@ -849,6 +862,24 @@ export class CashPage implements OnInit {
   readonly dialogView = this.preferences.dialogView;
   /** Monedas configuradas (para el filtro del historial). */
   readonly currencies = this.rates.currencies;
+
+  /**
+   * Vista activa de la caja: el arqueo del turno o el punto de venta del cajero
+   * (misma sesión, cobros y pedidos).
+   */
+  readonly view = signal<'arqueo' | 'pos'>('arqueo');
+
+  /** Abre el punto de venta dentro de la caja. */
+  openPos(): void {
+    this.view.set('pos');
+  }
+
+  /** Vuelve al arqueo y refresca los totales tras cobrar en el POS. */
+  closePos(): void {
+    this.view.set('arqueo');
+    this.load();
+    this.loadMovements();
+  }
   readonly categoryLabels = CASH_CATEGORY_LABELS;
   readonly categoryOptions = CASH_CATEGORY_OPTIONS;
   readonly methodLabels = PAYMENT_METHOD_LABELS;

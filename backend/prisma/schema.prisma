@@ -190,11 +190,18 @@ model Product {
   sku         String
   name        String
   description String?
+  // Foto que el cajero ve en la grilla del POS (punto de venta): URL publica o
+  // data URL (base64) ya reducida por el navegador (ver frontend utils/image.ts).
+  imageUrl    String?
   price       Int      @default(0)
   cost        Int      @default(0)
   stock       Int      @default(0)
   minStock    Int      @default(0)
   unit        String   @default("UND") // UND | KG | LT | CAJA | PAQUETE
+  // Unidades individuales que trae la presentacion (caja/paquete). El `price`
+  // sigue siendo el de la presentacion completa y el stock se lleva en unidades
+  // individuales: el POS vende sueltas a `price / unitsPerBox`. 1 = suelto.
+  unitsPerBox Int      @default(1)
   trackStock  Boolean  @default(true)
   active      Boolean  @default(true)
   categoryId  String?
@@ -257,6 +264,7 @@ model Order {
   subtotal      Int      @default(0)
   discount      Int      @default(0)
   tax           Int      @default(0)
+  tip           Int      @default(0) // Propina del cliente (no paga IGV)
   total         Int      @default(0)
   paidAmount    Int      @default(0)
   paymentStatus String   @default("UNPAID") // UNPAID | PARTIAL | PAID

@@ -7,6 +7,7 @@ import {
   IsNumber,
   IsOptional,
   IsString,
+  MaxLength,
   Min,
   MinLength,
 } from 'class-validator';
@@ -27,6 +28,15 @@ export class CreateProductDto {
   @IsOptional()
   @IsString()
   description?: string;
+
+  @ApiPropertyOptional({
+    description:
+      'Foto del producto para el POS: URL publica o data URL (base64) reducida. Cadena vacia la elimina.',
+  })
+  @IsOptional()
+  @IsString()
+  @MaxLength(400_000, { message: 'La imagen del producto es demasiado grande' })
+  imageUrl?: string;
 
   @ApiProperty({ example: 25.0 })
   @Type(() => Number)
@@ -59,6 +69,17 @@ export class CreateProductDto {
   @IsOptional()
   @IsIn(PRODUCT_UNITS)
   unit?: ProductUnit;
+
+  @ApiPropertyOptional({
+    description:
+      'Unidades individuales que trae la presentacion (caja/paquete). El precio sigue siendo el de la presentacion completa y el stock se lleva en unidades, asi el POS vende sueltas a `price / unitsPerBox`. 1 = se vende suelto.',
+    default: 1,
+  })
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  unitsPerBox?: number;
 
   @ApiPropertyOptional({ default: true })
   @IsOptional()

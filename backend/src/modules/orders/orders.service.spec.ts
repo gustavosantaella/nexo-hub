@@ -9,7 +9,7 @@ import type { PrismaService } from '../../prisma/prisma.service';
 import type { CashService } from '../cash/cash.service';
 import type { InventoryService } from '../inventory/inventory.service';
 import type { RatesService } from '../rates/rates.service';
-import { OrdersService } from './orders.service';
+import { OrdersService, computeOrderTotals } from './orders.service';
 
 const COMPANY_ID = 'company-1';
 
@@ -45,6 +45,7 @@ interface OrderFixture {
   discount: number;
   subtotal: number;
   tax: number;
+  tip: number;
   total: number;
   paidAmount: number;
   items: OrderItemFixture[];
@@ -63,7 +64,7 @@ function item(overrides: Partial<OrderItemFixture> = {}): OrderItemFixture {
   };
 }
 
-/** Pedido de ejemplo: 2 cafes a 50 = 100, sin impuestos ni pagos. */
+/** Pedido de ejemplo: 2 cafes a 50 = 100, sin impuestos, propina ni pagos. */
 function order(overrides: Partial<OrderFixture> = {}): OrderFixture {
   return {
     id: 'o1',
@@ -72,6 +73,7 @@ function order(overrides: Partial<OrderFixture> = {}): OrderFixture {
     discount: 0,
     subtotal: 100,
     tax: 0,
+    tip: 0,
     total: 100,
     paidAmount: 0,
     items: [item()],
@@ -150,6 +152,30 @@ function itemsWrite(tx: { order: { update: jest.Mock } }): ItemsWrite {
   return (updateData(tx).items ?? {}) as ItemsWrite;
 }
 
+
+describe('computeOrderTotals (propina opcional)', () => {
+  it('suma la propina al total sin aplicarle IGV', () => {
+    const totals = computeOrderTotals({
+      items: [{ quantity: 2, unitPrice: 50 }],
+      taxRate: 18,
+      tip: 10,
+    });
+
+    expect(totals.subtotal).toBe(100);
+    expect(totals.tax).toBe(18);
+    expect(totals.tip).toBe(10);
+    expect(totals.total).toBe(128);
+  });
+
+  it('deja la propina en cero cuando el pedido no la trae', () => {
+    const totals = computeOrderTotals({
+      items: [{ quantity: 1, unitPrice: 25 }],
+    });
+
+    expect(totals.tip).toBe(0);
+    expect(totals.total).toBe(25);
+  });
+});
 
 describe('OrdersService.addItems (agregar productos a un pedido)', () => {
   it('aisla la busqueda del pedido a la empresa activa', async () => {
@@ -233,6 +259,23 @@ describe('OrdersService.addItems (agregar productos a un pedido)', () => {
     expect(data.subtotal).toBe(150);
     expect(data.tax).toBe(27);
     expect(data.total).toBe(177);
+  });
+
+  it('conserva la propina del pedido al recalcular los totales', async () => {
+    const { service, tx } = createService(order({ tip: 10, total: 110 }));
+
+    await service.addItems(
+      COMPANY_ID,
+      'o1',
+      { items: [{ productId: 'p1', quantity: 1 }] },
+      'u1',
+    );
+
+    const data = updateData(tx);
+    // 100 existentes + 50 nuevos + 10 de propina (sin IGV).
+    expect(data.tip).toBe(10);
+    expect(data.subtotal).toBe(150);
+    expect(data.total).toBe(160);
   });
 
   it('marca el pago como PARTIAL cuando ya habia un abono', async () => {

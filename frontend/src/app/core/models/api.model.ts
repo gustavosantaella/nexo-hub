@@ -151,11 +151,19 @@ export interface Product {
   sku: string;
   name: string;
   description?: string | null;
+  /** Foto para la grilla del POS: URL o data URL. */
+  imageUrl?: string | null;
   price: number;
   cost: number;
   stock: number;
   minStock: number;
   unit: ProductUnit;
+  /**
+   * Unidades individuales que trae la presentacion (caja/paquete): `price` es
+   * el de la caja completa y `stock` se lleva en unidades, asi el POS vende
+   * sueltas a `price / unitsPerBox`. `1` = se vende suelto.
+   */
+  unitsPerBox: number;
   trackStock: boolean;
   active: boolean;
   categoryId?: string | null;
@@ -173,17 +181,26 @@ export interface ProductOption {
   price: number;
   stock: number;
   unit: ProductUnit;
+  /** Unidades individuales de la presentacion (1 = se vende suelto). */
+  unitsPerBox: number;
+  /** Foto para la grilla del POS (URL o data URL); `null` si no tiene. */
+  imageUrl?: string | null;
+  categoryId?: string | null;
 }
 
 export interface ProductPayload {
   sku?: string;
   name: string;
   description?: string;
+  /** Foto del producto (URL o data URL). Cadena vacia la elimina. */
+  imageUrl?: string;
   price: number;
   cost?: number;
   stock?: number;
   minStock?: number;
   unit?: ProductUnit;
+  /** Unidades individuales de la presentacion (1 = se vende suelto). */
+  unitsPerBox?: number;
   trackStock?: boolean;
   categoryId?: string | null;
   supplierId?: string | null;

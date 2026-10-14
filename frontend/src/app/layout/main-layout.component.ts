@@ -6,6 +6,7 @@ import type { Role } from '../core/models/api.model';
 import type { CashSession } from '../core/models/operations.model';
 import { AuthService } from '../core/services/auth.service';
 import { CashService } from '../core/services/cash.service';
+import { LayoutService } from '../core/services/layout.service';
 import { RatesService } from '../core/services/rates.service';
 import { ThemeService } from '../core/services/theme.service';
 import { ToastService } from '../core/services/toast.service';
@@ -39,6 +40,7 @@ interface NavGroup {
   ],
   changeDetection: ChangeDetectionStrategy.OnPush,
   template: `    <div class="flex min-h-screen bg-slate-100">
+      @if (!fullscreen()) {
       <aside
         class="fixed inset-y-0 left-0 z-40 flex w-64 flex-col border-r border-slate-200 bg-white transition-transform lg:static lg:translate-x-0"
         [class.-translate-x-full]="!sidebarOpen()"
@@ -91,8 +93,9 @@ interface NavGroup {
           </button>
         </div>
       </aside>
+      }
 
-      @if (sidebarOpen()) {
+      @if (!fullscreen() && sidebarOpen()) {
         <div
           class="fixed inset-0 z-30 bg-slate-900/40 lg:hidden"
           (click)="sidebarOpen.set(false)"
@@ -100,6 +103,7 @@ interface NavGroup {
       }
 
       <div class="flex min-w-0 flex-1 flex-col">
+        @if (!fullscreen()) {
         <header
           class="sticky top-0 z-20 flex h-16 items-center gap-3 border-b border-slate-200 bg-white/90 px-4 backdrop-blur lg:px-6"
         >
@@ -188,6 +192,7 @@ interface NavGroup {
             <app-icon [name]="isDark() ? 'sun' : 'moon'" size="h-4 w-4" />
           </button>
         </header>
+        }
 
         <main class="flex-1 px-4 py-6 lg:px-6">
           <router-outlet />
@@ -203,6 +208,13 @@ export class MainLayoutComponent {
   private readonly confirm = inject(ConfirmService);
   private readonly router = inject(Router);
   private readonly toast = inject(ToastService);
+
+  /**
+   * Presentación del shell: cuando la vista activa (p. ej. el punto de venta)
+   * pide pantalla completa, la barra lateral y la cabecera se ocultan.
+   */
+  private readonly layout = inject(LayoutService);
+  readonly fullscreen = this.layout.fullscreen;
 
   readonly sidebarOpen = signal(false);
   readonly showConversions = this.rates.showConversions;

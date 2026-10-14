@@ -17,7 +17,14 @@ import {
   SuppliersService,
 } from '../../core/services/catalog.service';
 import { ToastService } from '../../core/services/toast.service';
-import { number } from '../../core/utils/format';
+import { apiErrorMessage, divMoney, number } from '../../core/utils/format';
+import {
+  boxUnitsOf,
+  isBoxProduct,
+  soldUnitLabel,
+  unitPriceOf,
+} from '../../core/utils/product-pricing';
+import { PRODUCT_IMAGE_MAX_SIZE, toProductImageDataUrl } from '../../core/utils/image';
 import { EmptyStateComponent, LoaderComponent } from '../../shared/components/feedback.component';
 import { IconComponent } from '../../shared/components/icon.component';
 import { ModalComponent } from '../../shared/components/modal.component';
@@ -39,11 +46,15 @@ interface ProductForm {
   sku: string;
   name: string;
   description: string;
+  /** Foto del producto (URL o data URL reducido en el navegador). */
+  imageUrl: string;
   price: number;
   cost: number;
   stock: number;
   minStock: number;
   unit: ProductUnit;
+  /** Unidades individuales que trae la presentacion (1 = producto suelto). */
+  unitsPerBox: number;
   trackStock: boolean;
   categoryId: string;
   supplierId: string;
@@ -169,14 +180,35 @@ interface ProductForm {
               @for (item of items(); track item.id) {
                 <tr>
                   <td class="font-mono text-xs text-slate-500">{{ item.sku }}</td>
-                  <td class="font-medium text-slate-900">{{ item.name }}</td>
+                  <td>
+                    <div class="flex items-center gap-3">
+                      <span
+                        class="flex h-9 w-9 shrink-0 items-center justify-center overflow-hidden rounded-lg border border-slate-200 bg-slate-50"
+                      >
+                        @if (item.imageUrl) {
+                          <img [src]="item.imageUrl" alt="" class="h-full w-full object-cover" />
+                        } @else {
+                          <app-icon name="image" size="h-4 w-4" class="text-slate-300" />
+                        }
+                      </span>
+                      <span class="font-medium text-slate-900">{{ item.name }}</span>
+                    </div>
+                  </td>
                   <td class="text-slate-500">{{ item.category?.name || '—' }}</td>
                   <td class="text-slate-500">{{ item.supplier?.name || '—' }}</td>
-                  <td class="text-right"><app-money [amount]="item.price" alignEnd="true" /></td>
+                  <td class="text-right">
+                    <app-money [amount]="item.price" alignEnd="true" />
+                    @if (isBoxProduct(item)) {
+                      <span class="block text-[11px] text-slate-400">
+                        Caja de {{ boxUnitsOf(item) }} = <app-money [amount]="unitPriceOf(item)" />
+                        / {{ soldUnitLabel(item) }}
+                      </span>
+                    }
+                  </td>
                   <td class="text-right text-slate-500"><app-money [amount]="item.cost" alignEnd="true" /></td>
                   <td class="text-right">
                     <span class="inline-flex items-center gap-2">
-                      <span>{{ number(item.stock) }} {{ item.unit }}</span>
+                      <span>{{ number(item.stock) }} {{ soldUnitLabel(item) }}</span>
                       @if (isLowStock(item)) {
                         <span
                           class="badge bg-rose-100 text-rose-700"
@@ -273,6 +305,58 @@ interface ProductForm {
               placeholder="Detalle opcional del producto"
             ></textarea>
           </div>
+          <div class="sm:col-span-2">
+            <span class="label">Foto para el punto de venta</span>
+            <div class="flex flex-wrap items-center gap-3">
+              <div
+                class="flex h-20 w-20 shrink-0 items-center justify-center overflow-hidden rounded-xl border border-dashed border-slate-300 bg-slate-50"
+              >
+                @if (form.imageUrl) {
+                  <img
+                    [src]="form.imageUrl"
+                    alt="Foto del producto"
+                    class="h-full w-full object-cover"
+                  />
+                } @else {
+                  <app-icon name="image" size="h-7 w-7" class="text-slate-400" />
+                }
+              </div>
+              <div class="flex flex-col gap-2">
+                <div class="flex flex-wrap gap-2">
+                  <label class="btn-secondary btn-sm cursor-pointer" for="prod-image">
+                    <app-icon name="image" size="h-4 w-4" />
+                    {{ imageReading() ? 'Leyendo…' : 'Subir foto' }}
+                  </label>
+                  <input
+                    id="prod-image"
+                    type="file"
+                    class="hidden"
+                    accept="image/png,image/jpeg,image/webp"
+                    (change)="onImageSelected($event)"
+                  />
+                  @if (form.imageUrl) {
+                    <button type="button" class="btn-ghost btn-sm text-rose-600" (click)="clearImage()">
+                      <app-icon name="trash" size="h-4 w-4" />
+                      Quitar
+                    </button>
+                  }
+                </div>
+                <input
+                  name="imageUrl"
+                  class="input w-72"
+                  placeholder="…o pega la URL de la imagen"
+                  [(ngModel)]="form.imageUrl"
+                />
+              </div>
+            </div>
+            <p class="mt-1 text-xs text-slate-400">
+              Se reduce a {{ productImageMaxSize }} px de ancho para que la grilla del cajero cargue
+              rápido.
+            </p>
+            @if (imageError(); as error) {
+              <p class="mt-1 text-xs text-rose-600">{{ error }}</p>
+            }
+          </div>
           <div>
             <label class="label" for="prod-price">Precio ({{ baseCurrency.code }}) *</label>
             <input
@@ -341,6 +425,28 @@ interface ProductForm {
             </select>
           </div>
           <div>
+            <label class="label" for="prod-units-per-box">Unidades por caja</label>
+            <input
+              id="prod-units-per-box"
+              name="unitsPerBox"
+              type="number"
+              min="1"
+              step="1"
+              class="input"
+              [(ngModel)]="form.unitsPerBox"
+            />
+            <p class="mt-1 text-[11px] text-slate-400">
+              El precio de arriba es el de la presentación; el stock se lleva en unidades sueltas.
+              Deja 1 si el producto se vende suelto.
+            </p>
+            @if (boxPreview; as box) {
+              <p class="mt-1 text-[11px] font-medium text-brand-600">
+                Caja de {{ box.units }} → la unidad suelta se vende a
+                <app-money [amount]="box.unitPrice" />
+              </p>
+            }
+          </div>
+          <div>
             <label class="label" for="prod-category">Categoría</label>
             <select id="prod-category" name="categoryId" class="input" [(ngModel)]="form.categoryId">
               <option value="">Sin categoría</option>
@@ -397,6 +503,10 @@ export class ProductsPage implements OnInit {
   readonly baseCurrency = BASE_CURRENCY;
   /** Helpers de formato expuestos a la plantilla. */
   readonly number = number;
+  /** `true` cuando el producto se vende por caja (precio de caja, stock por unidad). */
+  readonly isBoxProduct = isBoxProduct;
+  readonly boxUnitsOf = boxUnitsOf;
+  readonly soldUnitLabel = soldUnitLabel;
   readonly auth = inject(AuthService);
   private readonly products = inject(ProductsService);
   private readonly categories = inject(CategoriesService);
@@ -413,6 +523,11 @@ export class ProductsPage implements OnInit {
   readonly categoryOptions = signal<Category[]>([]);
   readonly supplierOptions = signal<Supplier[]>([]);
   readonly unitOptions = PRODUCT_UNIT_OPTIONS;
+  /** Lado máximo de la foto del producto (se muestra como ayuda en el formulario). */
+  readonly productImageMaxSize = PRODUCT_IMAGE_MAX_SIZE;
+  /** Lectura de la foto en curso y error del último intento. */
+  readonly imageReading = signal(false);
+  readonly imageError = signal<string | null>(null);
 
   search = '';
   categoryId = '';
@@ -443,11 +558,13 @@ export class ProductsPage implements OnInit {
       sku: '',
       name: '',
       description: '',
+      imageUrl: '',
       price: 0,
       cost: 0,
       stock: 0,
       minStock: 0,
       unit: 'UND',
+      unitsPerBox: 1,
       trackStock: true,
       categoryId: '',
       supplierId: '',
@@ -462,6 +579,28 @@ export class ProductsPage implements OnInit {
     if (!(price > 0 && cost > 0)) return null;
     const amount = Math.round((price - cost) * 100) / 100;
     return { amount, percent: Math.round((amount / price) * 1000) / 10 };
+  }
+
+  /** Unidades por caja listas para guardar (entero >= 1). */
+  private boxUnits(): number {
+    return boxUnitsOf({ unitsPerBox: this.form.unitsPerBox });
+  }
+
+  /**
+   * Presentacion que se esta editando: la caja declarada, con el precio de la
+   * presentacion repartido entre sus unidades (lo que cobra el POS al vender
+   * suelto). Devuelve `null` cuando no es un producto por caja.
+   */
+  get boxPreview(): { units: number; unitPrice: number } | null {
+    const units = this.boxUnits();
+    if (units <= 1) return null;
+    const price = Number(this.form.price) || 0;
+    return { units, unitPrice: divMoney(price, units) };
+  }
+
+  /** Precio por unidad suelta de un producto del listado. */
+  unitPriceOf(product: Product): number {
+    return unitPriceOf(product);
   }
 
   load(): void {
@@ -551,6 +690,7 @@ export class ProductsPage implements OnInit {
   openCreate(): void {
     this.editing.set(null);
     this.form = this.emptyForm();
+    this.imageError.set(null);
     this.modalOpen.set(true);
   }
 
@@ -560,11 +700,13 @@ export class ProductsPage implements OnInit {
       sku: item.sku,
       name: item.name,
       description: item.description ?? '',
+      imageUrl: item.imageUrl ?? '',
       price: item.price,
       cost: item.cost,
       stock: item.stock,
       minStock: item.minStock,
       unit: item.unit,
+      unitsPerBox: item.unitsPerBox,
       trackStock: item.trackStock,
       categoryId: item.categoryId ?? '',
       supplierId: item.supplierId ?? '',
@@ -577,6 +719,31 @@ export class ProductsPage implements OnInit {
     this.modalOpen.set(false);
   }
 
+  /** Lee la foto elegida y la reduce antes de guardarla en el formulario. */
+  async onImageSelected(event: Event): Promise<void> {
+    const input = event.target as HTMLInputElement;
+    const file = input.files?.[0];
+    // Se limpia el input para poder volver a elegir el mismo archivo.
+    input.value = '';
+    if (!file) return;
+
+    this.imageError.set(null);
+    this.imageReading.set(true);
+    try {
+      this.form.imageUrl = await toProductImageDataUrl(file);
+    } catch (error) {
+      this.imageError.set(apiErrorMessage(error));
+    } finally {
+      this.imageReading.set(false);
+    }
+  }
+
+  /** Quita la foto del producto (se guarda al enviar el formulario). */
+  clearImage(): void {
+    this.form.imageUrl = '';
+    this.imageError.set(null);
+  }
+
   save(): void {
     if (this.saving()) return;
     this.saving.set(true);
@@ -585,10 +752,13 @@ export class ProductsPage implements OnInit {
     const payload: ProductPayload = {
       name: this.form.name.trim(),
       description: this.form.description.trim() || undefined,
+      // Cadena vacia = el backend guarda `null` (producto sin foto).
+      imageUrl: this.form.imageUrl.trim(),
       price: Number(this.form.price) || 0,
       cost: Number(this.form.cost) || 0,
       minStock: Number(this.form.minStock) || 0,
       unit: this.form.unit,
+      unitsPerBox: this.boxUnits(),
       trackStock: this.form.trackStock,
       categoryId: this.form.categoryId || null,
       supplierId: this.form.supplierId || null,

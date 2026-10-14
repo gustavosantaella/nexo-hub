@@ -74,6 +74,7 @@ export interface OrderTotals {
   subtotal: number;
   discount: number;
   tax: number;
+  tip: number;
   total: number;
 }
 
@@ -106,11 +107,15 @@ interface MergedOrderLine {
   total: number;
 }
 
-/** Calculo unico de totales de un pedido (descuento + IGV sobre el neto). */
+/**
+ * Calculo unico de totales de un pedido: descuento + IGV sobre el neto y la
+ * propina al final (la propina NO paga IGV).
+ */
 export function computeOrderTotals(input: {
   items: { quantity: number; unitPrice: number }[];
   discount?: number;
   taxRate?: number;
+  tip?: number;
 }): OrderTotals {
   const subtotal = money.sum(
     input.items.map((i) => money.mul(i.unitPrice, i.quantity)),
@@ -118,7 +123,14 @@ export function computeOrderTotals(input: {
   const discount = Math.min(toMoney(input.discount ?? 0), subtotal);
   const taxable = money.sub(subtotal, discount);
   const tax = money.mul(taxable, toMoney(input.taxRate ?? 0) / 100);
-  return { subtotal, discount, tax, total: money.add(taxable, tax) };
+  const tip = toMoney(input.tip ?? 0);
+  return {
+    subtotal,
+    discount,
+    tax,
+    tip,
+    total: money.add(money.add(taxable, tax), tip),
+  };
 }
 
 @Injectable()
@@ -138,6 +150,7 @@ export class OrdersService {
       items,
       discount: dto.discount,
       taxRate: dto.taxRate,
+      tip: dto.tip,
     });
 
     return this.prisma.$transaction(async (tx) => {
@@ -153,6 +166,7 @@ export class OrdersService {
           subtotal: totals.subtotal,
           discount: totals.discount,
           tax: totals.tax,
+          tip: totals.tip,
           total: totals.total,
           createdById: userId,
           items: {
@@ -233,6 +247,7 @@ export class OrdersService {
       items: lines,
       discount: order.discount,
       taxRate: this.effectiveTaxRate(order),
+      tip: order.tip,
     });
 
     if (compareMoney(totals.total, order.paidAmount) < 0) {
@@ -606,6 +621,7 @@ export class OrdersService {
       items: order.items,
       discount: dto.discount ?? order.discount,
       taxRate: dto.taxRate ?? this.effectiveTaxRate(order),
+      tip: dto.tip ?? order.tip,
     });
 
     if (compareMoney(totals.total, order.paidAmount) < 0) {
@@ -937,6 +953,7 @@ export class OrdersService {
       items: lines,
       discount: order.discount,
       taxRate: this.effectiveTaxRate(order),
+      tip: order.tip,
     });
 
     if (compareMoney(totals.total, order.paidAmount) < 0) {

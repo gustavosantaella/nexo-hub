@@ -32,6 +32,7 @@ function product(overrides: Partial<Product> = {}): Product {
     stock: 10,
     minStock: 2,
     unit: 'UND',
+    unitsPerBox: 1,
     trackStock: true,
     active: true,
     categoryId: null,
@@ -82,6 +83,13 @@ describe('ProductsPage', () => {
     return (label.textContent ?? '').replace(/\s+/g, ' ').trim();
   }
 
+  /** Resuelve la recarga del catalogo que dispara la pagina tras guardar. */
+  function expectReload(items: Product[]): void {
+    http
+      .expectOne((request) => request.method === 'GET' && request.url === `${API}/products`)
+      .flush({ items, meta: { ...META, total: items.length } });
+  }
+
   it('etiqueta el precio y el costo en la moneda base (USD), no en soles', () => {
     const fixture = mount();
     const page = fixture.componentInstance;
@@ -107,5 +115,45 @@ describe('ProductsPage', () => {
     expect(page.form.cost).toBe(8);
     expect(labelText(fixture.nativeElement, 'prod-price')).toBe('Precio (USD) *');
     expect(labelText(fixture.nativeElement, 'prod-cost')).toBe('Costo (USD)');
+  });
+
+  it('configura las unidades por caja de la presentacion y muestra el precio suelto', () => {
+    const item = product({ name: 'Malta (caja 24)', price: 24, stock: 48, unit: 'CAJA', unitsPerBox: 24 });
+    const fixture = mount([item]);
+    const page = fixture.componentInstance;
+
+    page.openEdit(item);
+    fixture.detectChanges();
+
+    expect(page.form.unitsPerBox).toBe(24);
+    // La caja de $ 24 trae 24 unidades: cada una se vende a $ 1.
+    expect(page.boxPreview).toEqual({ units: 24, unitPrice: 1 });
+    expect(labelText(fixture.nativeElement, 'prod-units-per-box')).toBe('Unidades por caja');
+
+    page.save();
+    const request = http.expectOne(
+      (candidate) => candidate.method === 'PATCH' && candidate.url === `${API}/products/p1`,
+    );
+    expect(request.request.body.unitsPerBox).toBe(24);
+    request.flush(item);
+    expectReload([item]);
+  });
+
+  it('envia una unidad por caja cuando el producto se vende suelto', () => {
+    const fixture = mount([]);
+    const page = fixture.componentInstance;
+
+    page.openCreate();
+    fixture.detectChanges();
+    page.form.name = 'Agua 500 ml';
+    page.form.price = 1.5;
+    page.save();
+
+    const request = http.expectOne(
+      (candidate) => candidate.method === 'POST' && candidate.url === `${API}/products`,
+    );
+    expect(request.request.body.unitsPerBox).toBe(1);
+    request.flush(product({ id: 'p2', name: 'Agua 500 ml', price: 1.5 }));
+    expectReload([]);
   });
 });

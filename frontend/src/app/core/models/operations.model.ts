@@ -108,6 +108,8 @@ export interface Order {
   subtotal: number;
   discount: number;
   tax: number;
+  /** Propina del cliente (no paga IGV). */
+  tip: number;
   total: number;
   paidAmount: number;
   cashSessionId?: string | null;
@@ -133,6 +135,8 @@ export interface OrderPayload {
   notes?: string;
   discount?: number;
   taxRate?: number;
+  /** Propina en monto absoluto (no se le aplica IGV). */
+  tip?: number;
   items: OrderItemPayload[];
 }
 
