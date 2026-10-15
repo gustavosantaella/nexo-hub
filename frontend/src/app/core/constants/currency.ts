@@ -118,6 +118,29 @@ export function rateSourceLabel(
   }
 }
 
+/**
+ * Origen de la tasa de una clave del sistema (`BCV_USD` → `BCV`, `CUSTOM_USD` →
+ * `CUSTOM`).
+ *
+ * Sirve para etiquetar con qué tasa se convierte un monto cuando la tasa no es la
+ * de la moneda sino una elegida (el monto de un precio o la **tasa de cobro** del
+ * cajero): sin esto, el dolar aparecería como "personalizada" aunque se esté
+ * cobrando al BCV.
+ */
+export function rateKeySource(
+  key: RateKey | null | undefined,
+): CurrencyRateSource {
+  switch (key) {
+    case 'BCV_USD':
+    case 'BCV_EUR':
+      return 'BCV';
+    case 'CUSTOM_USD':
+      return 'CUSTOM';
+    default:
+      return 'NONE';
+  }
+}
+
 export interface RateMeta {
   /** Nombre completo (tablas y configuración). */
   label: string;

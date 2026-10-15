@@ -12,10 +12,12 @@ import { bs, moneyIn } from '../../core/utils/format';
 interface ConversionLine {
   /** Etiqueta corta de la tasa ("BCV $", "BCV €", "Personalizada"). */
   label: string;
-  /** Monto convertido y formateado (Bs o USD). */
+  /** Monto convertido y formateado, en la moneda de esa tasa (Bs, $ o €). */
   text: string;
   /** `true` para la tasa elegida en el campo (la que se guardara). */
   selected: boolean;
+  /** Codigo de la moneda del monto convertido (lo que filtra el cajero). */
+  currency: string;
 }
 
 /**
@@ -26,11 +28,17 @@ interface ConversionLine {
  * esta escribiendo sin cambiar de moneda:
  *
  *   - Monto en USD  -> su equivalente en bolivares con cada tasa.
- *   - Monto en VES  -> su equivalente en USD con cada tasa.
- *   - Otra moneda   -> su equivalente en USD y en bolivares con la tasa activa.
+ *   - Monto en VES  -> su equivalente en la divisa de cada tasa (la del euro
+ *     devuelve euros, no dolares).
+ *   - Otra moneda   -> su equivalente en USD y en bolivares con la tasa elegida
+ *     en el campo (la activa del sistema cuando no elige ninguna).
  *
  * Con `rateKey` (el campo permite elegir tasa) la linea de la tasa elegida se
  * resalta: es con la que se calculara el monto al guardar.
+ *
+ * Solo se pintan las monedas que esta sesion puede ver: el personal de caja ve
+ * las que el admin activo en Configuracion -> Cajero (por defecto **ninguna**: el
+ * precio en su moneda y nada debajo) y ADMIN/MANAGER las ven todas.
  */
 @Component({
   selector: 'app-rate-conversions',
@@ -70,38 +78,71 @@ export class RateConversionsComponent {
     const amount = Number(this.amount ?? 0);
     if (!amount) return [];
 
-    const code = String(this.currency ?? '')
-      .trim()
-      .toUpperCase() || BASE_CURRENCY_CODE;
+    const code =
+      String(this.currency ?? '')
+        .trim()
+        .toUpperCase() || BASE_CURRENCY_CODE;
 
     // En USD: cuanto son esos dolares en bolivares con cada tasa.
     if (code === BASE_CURRENCY_CODE) {
-      return this.rateOptions().map((option) => ({
-        label: RATE_META[option.key].shortLabel,
-        text: bs(amount * option.rate),
-        selected: option.key === this.rateKey,
-      }));
+      return this.visible(
+        this.rateOptions().map((option) => ({
+          label: RATE_META[option.key].shortLabel,
+          text: bs(amount * option.rate),
+          selected: option.key === this.rateKey,
+          currency: LOCAL_CURRENCY_CODE,
+        })),
+      );
     }
 
-    // En bolivares: cuanto son esos bolivares en dolares con cada tasa.
+    // En bolivares: cuanto son esos bolivares en la divisa de cada tasa. El
+    // equivalente va en la moneda de esa tasa (la del euro devuelve euros).
     if (code === LOCAL_CURRENCY_CODE) {
-      return this.rateOptions().map((option) => ({
-        label: RATE_META[option.key].shortLabel,
-        text: moneyIn(amount / option.rate, BASE_CURRENCY_CODE),
-        selected: option.key === this.rateKey,
-      }));
+      return this.visible(
+        this.rateOptions().map((option) => ({
+          label: RATE_META[option.key].shortLabel,
+          text: moneyIn(amount / option.rate, option.currency),
+          selected: option.key === this.rateKey,
+          currency: option.currency,
+        })),
+      );
     }
 
-    // Otra moneda: equivalente en USD (tasa activa) y en bolivares.
-    const converted = this.rates.toBase(amount, code);
+    // Otra moneda: equivalente en USD (con la tasa elegida) y en bolivares.
+    // El equivalente en USD usa esa tasa porque es la misma que el API aplica al
+    // guardar el monto: sin ella el chip diria un numero distinto al registrado
+    // (el cajero cobra el precio de la pantalla pasado a la tasa del cobro).
+
+    const converted = this.rates.toBase(amount, code, this.rateKey);
     if (converted === null) return [];
     const base = this.rates.bsPerUnit(code);
-    return [
-      { label: '=', text: moneyIn(converted, BASE_CURRENCY_CODE), selected: false },
+    return this.visible([
+      {
+        label: '=',
+        text: moneyIn(converted, BASE_CURRENCY_CODE),
+        selected: false,
+        currency: BASE_CURRENCY_CODE,
+      },
       ...(base
-        ? [{ label: 'Bs', text: bs(amount * base), selected: false }]
+        ? [
+            {
+              label: 'Bs',
+              text: bs(amount * base),
+              selected: false,
+              currency: LOCAL_CURRENCY_CODE,
+            },
+          ]
         : []),
-    ];
+    ]);
+  }
+
+  /**
+   * Deja las lineas de las monedas que esta sesion puede ver: el personal de caja
+   * solo ve las que el admin activo en Configuracion -> Cajero (por defecto
+   * ninguna) y ADMIN/MANAGER las ven todas.
+   */
+  private visible(items: readonly ConversionLine[]): ConversionLine[] {
+    return items.filter((item) => this.rates.showsConversion(item.currency));
   }
 
   private rateOptions() {

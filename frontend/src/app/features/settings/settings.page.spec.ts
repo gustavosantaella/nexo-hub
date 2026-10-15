@@ -1,4 +1,4 @@
-import { signal } from '@angular/core';
+import { signal, type WritableSignal } from '@angular/core';
 import { provideHttpClient } from '@angular/common/http';
 import {
   HttpTestingController,
@@ -10,7 +10,7 @@ import { EMPTY, of } from 'rxjs';
 import { environment } from '../../../environments/environment';
 import type { Company, User } from '../../core/models/api.model';
 import type { CatalogDocument, CatalogImportResult } from '../../core/models/data-transfer.model';
-import type { CurrencyRateOption } from '../../core/models/rates.model';
+import type { CurrencyRateOption, RateConversion, RateOption } from '../../core/models/rates.model';
 import { AuthService } from '../../core/services/auth.service';
 import { CompaniesService } from '../../core/services/companies.service';
 import { CurrenciesService } from '../../core/services/currencies.service';
@@ -34,6 +34,21 @@ const DIALOG_VIEW_KEY = 'nexo-hub.dialog-view';
  */
 const PRICE_CURRENCY_KEY = 'nexo-hub.price-currency';
 
+/** Copia local en el navegador de las conversiones que ve el cajero. */
+const CONVERSION_CURRENCIES_KEY = 'nexo-hub.conversion-currencies';
+
+/** Copia local en el navegador del precio en dólares del BCV que ve el cajero. */
+const SHOW_BCV_PRICE_KEY = 'nexo-hub.show-bcv-price';
+
+/** Copia local en el navegador de la tasa con la que cobra el cajero. */
+const CHARGE_RATE_KEY = 'nexo-hub.charge-rate';
+
+/**
+ * Línea del dólar del BCV que la pantalla usa para su vista previa: en el servicio
+ * real sale de la tasa cargada, aquí la fija cada prueba (por defecto, sin tasa).
+ */
+const bcvConversion = signal<RateConversion | null>(null);
+
 /** Doble mínimo de `RatesService`: aquí solo importa la navegación por pestañas. */
 const ratesStub = {
   loading: signal(false),
@@ -41,7 +56,7 @@ const ratesStub = {
   bcv: signal(null),
   custom: signal(null),
   hasCustom: signal(false),
-  rates: signal([]),
+  rates: signal<RateOption[]>([]),
   currencies: signal<CurrencyRateOption[]>([]),
   baseCurrency: signal({
     code: 'USD',
@@ -56,10 +71,12 @@ const ratesStub = {
   stale: signal(false),
   activeKey: signal(null),
   showConversions: signal(true),
+  /** Precio en dólares del BCV: apagado salvo que la prueba lo encienda. */
+  showBcvPrice: signal(false),
   reference: signal(null),
   ensureLoaded: () => undefined,
   load: () => undefined,
-  setConversions: () => undefined,
+  setConversions: jasmine.createSpy('setConversions'),
   /** Etiqueta de una moneda configurada (como el servicio real). */
   currencyLabel: (code: string) =>
     code === 'COP' ? 'Pesos colombianos (COP)' : `Dólares (${code})`,
@@ -69,6 +86,10 @@ const ratesStub = {
     .and.callFake((amount: number) => Number(amount) * 3985.44),
   /** Lo llama la pantalla al guardar la moneda de los precios. */
   applyDisplayPreference: jasmine.createSpy('applyDisplayPreference'),
+  /** La línea del dólar del BCV que la pantalla usa para la vista previa. */
+  bcvUsdConversion: jasmine
+    .createSpy('bcvUsdConversion')
+    .and.callFake(() => bcvConversion()),
 };
 
 /** Doble mínimo de `AuthService` (los effects de la pantalla leen estos signals). */
@@ -161,12 +182,19 @@ describe('SettingsPage (pestañas de configuración)', () => {
     localStorage.removeItem(TIP_PERCENT_KEY);
     localStorage.removeItem(DIALOG_VIEW_KEY);
     localStorage.removeItem(PRICE_CURRENCY_KEY);
+    localStorage.removeItem(CONVERSION_CURRENCIES_KEY);
+    localStorage.removeItem(SHOW_BCV_PRICE_KEY);
+    localStorage.removeItem(CHARGE_RATE_KEY);
 
     // Cada prueba arranca sin permiso de administración y con los dobles limpios.
     authStub.canManage.set(false);
+    ratesStub.rates.set([]);
     ratesStub.currencies.set([]);
     ratesStub.applyDisplayPreference.calls.reset();
     ratesStub.fromBase.calls.reset();
+    ratesStub.setConversions.calls.reset();
+    ratesStub.bcvUsdConversion.calls.reset();
+    bcvConversion.set(null);
     dataTransferStub.exportCatalog.calls.reset();
     dataTransferStub.importCatalog.calls.reset();
 
@@ -196,7 +224,11 @@ describe('SettingsPage (pestañas de configuración)', () => {
     localStorage.removeItem(TIP_PERCENT_KEY);
     localStorage.removeItem(DIALOG_VIEW_KEY);
     localStorage.removeItem(PRICE_CURRENCY_KEY);
+    localStorage.removeItem(CONVERSION_CURRENCIES_KEY);
+    localStorage.removeItem(SHOW_BCV_PRICE_KEY);
+    localStorage.removeItem(CHARGE_RATE_KEY);
     authStub.canManage.set(false);
+    ratesStub.rates.set([]);
     ratesStub.currencies.set([]);
   });
 
@@ -419,8 +451,17 @@ describe('SettingsPage (pestañas de configuración)', () => {
       tipPercent: 10,
       dialogView: 'modal',
       priceCurrency: 'COP',
+      conversionCurrencies: null,
+      showBcvPrice: false,
+      chargeRateKey: null,
     });
-    guardado.flush({ tipPercent: 10, dialogView: 'modal', priceCurrency: 'COP' });
+    guardado.flush({
+      tipPercent: 10,
+      dialogView: 'modal',
+      priceCurrency: 'COP',
+      conversionCurrencies: null,
+      showBcvPrice: null,
+    });
 
     // Volver a la moneda base borra la preferencia (también al guardar).
     pickPriceCurrency('');
@@ -442,8 +483,17 @@ describe('SettingsPage (pestañas de configuración)', () => {
       tipPercent: 10,
       dialogView: 'modal',
       priceCurrency: null,
+      conversionCurrencies: null,
+      showBcvPrice: false,
+      chargeRateKey: null,
     });
-    borrado.flush({ tipPercent: 10, dialogView: 'modal', priceCurrency: null });
+    borrado.flush({
+      tipPercent: 10,
+      dialogView: 'modal',
+      priceCurrency: null,
+      conversionCurrencies: null,
+      showBcvPrice: null,
+    });
   });
 
   it('descarta lo elegido en la pestaña Cajero sin tocar lo guardado', async () => {
@@ -456,6 +506,7 @@ describe('SettingsPage (pestañas de configuración)', () => {
 
     panelButton('20 %').click();
     pickPriceCurrency('COP');
+    toggleConversion(0);
 
     expect(panelButton('Guardar cambios').disabled).toBe(false);
     expect(panel().textContent).toContain('Tienes cambios sin guardar');
@@ -469,9 +520,12 @@ describe('SettingsPage (pestañas de configuración)', () => {
 
     expect(panelButton('10 %').getAttribute('aria-pressed')).toBe('true');
     expect(priceCurrencySelect().value).toBe('');
+    // Los interruptores de las conversiones vuelven a estar apagados.
+    expect(conversionSwitches()[0].getAttribute('aria-checked')).toBe('false');
     expect(panelButton('Guardar cambios').disabled).toBe(true);
     expect(localStorage.getItem(TIP_PERCENT_KEY)).toBeNull();
     expect(localStorage.getItem(PRICE_CURRENCY_KEY)).toBeNull();
+    expect(localStorage.getItem(CONVERSION_CURRENCIES_KEY)).toBeNull();
   });
 
   it('solo ofrece monedas habilitadas y con tasa para los precios del cajero', () => {
@@ -486,6 +540,405 @@ describe('SettingsPage (pestañas de configuración)', () => {
     const codes = Array.from(priceCurrencySelect().options).map((option) => option.value);
 
     expect(codes).toEqual(['', 'COP']);
+  });
+
+  /**
+   * Interruptores de la tarjeta «Conversiones del cajero» (uno por moneda). El
+   * precio en dólares del BCV vive en esa misma tarjeta y tiene su propio
+   * interruptor.
+   */
+  function conversionSwitches(): HTMLButtonElement[] {
+    return switchNodes()
+      .filter((item) => item.textContent?.includes('Mostrar la conversión en '))
+      .map((item) => switchButton(item));
+  }
+
+  /** Interruptor de la tarjeta «Precio en dólares BCV». */
+  function bcvPriceSwitch(): HTMLButtonElement {
+    const found = switchNodes().find((item) =>
+      item.textContent?.includes('Mostrar el precio en dólares BCV'),
+    );
+    if (!found) throw new Error('No se encontró el interruptor del precio en dólares BCV');
+    return switchButton(found);
+  }
+
+  /** Interruptores reutilizables (`app-switch`) del panel activo. */
+  function switchNodes(): HTMLElement[] {
+    return Array.from(
+      panel().querySelectorAll('app-switch') as NodeListOf<HTMLElement>,
+    );
+  }
+
+  function switchButton(node: HTMLElement): HTMLButtonElement {
+    return node.querySelector('button[role="switch"]') as HTMLButtonElement;
+  }
+
+  /** Enciende o apaga la conversión de esa moneda como lo haría el usuario. */
+  function toggleConversion(index: number): void {
+    conversionSwitches()[index].click();
+    fixture.detectChanges();
+  }
+
+  it('por defecto el cajero no ve ninguna conversión: solo su moneda', () => {
+    ratesStub.currencies.set([COP]);
+    tab('Cajero').click();
+    fixture.detectChanges();
+
+    expect(panel().textContent).toContain('Conversiones del cajero');
+    expect(panel().textContent).toContain('Sin conversiones');
+
+    // Una moneda configurada, un interruptor, apagado y nada que guardar.
+    expect(conversionSwitches().length).toBe(1);
+    expect(conversionSwitches()[0].getAttribute('aria-checked')).toBe('false');
+    expect(panelButton('Guardar cambios').disabled).toBe(true);
+  });
+
+  it('activa la conversión de una moneda y la guarda para toda la empresa', () => {
+    const http = TestBed.inject(HttpTestingController);
+    ratesStub.currencies.set([COP]);
+    tab('Cajero').click();
+    fixture.detectChanges();
+
+    toggleConversion(0);
+
+    // Elegir no aplica nada todavía: la preferencia de la empresa sigue vacía.
+    expect(conversionSwitches()[0].getAttribute('aria-checked')).toBe('true');
+    expect(panel().textContent).toContain('COP');
+    expect(localStorage.getItem(CONVERSION_CURRENCIES_KEY)).toBeNull();
+    expect(panelButton('Guardar cambios').disabled).toBe(false);
+
+    panelButton('Guardar cambios').click();
+    fixture.detectChanges();
+
+    expect(localStorage.getItem(CONVERSION_CURRENCIES_KEY)).toBe('["COP"]');
+
+    const guardado = http.expectOne({
+      method: 'PATCH',
+      url: `${environment.apiUrl}/preferences`,
+    });
+    expect(guardado.request.body).toEqual({
+      tipPercent: 10,
+      dialogView: 'modal',
+      priceCurrency: null,
+      conversionCurrencies: ['COP'],
+      showBcvPrice: false,
+      chargeRateKey: null,
+    });
+    guardado.flush({
+      tipPercent: 10,
+      dialogView: 'modal',
+      priceCurrency: null,
+      conversionCurrencies: ['COP'],
+      showBcvPrice: null,
+    });
+
+    // Apagarla devuelve al cajero a su moneda (sin conversiones).
+    toggleConversion(0);
+    expect(panel().textContent).toContain('Sin conversiones');
+
+    panelButton('Guardar cambios').click();
+    fixture.detectChanges();
+
+    expect(localStorage.getItem(CONVERSION_CURRENCIES_KEY)).toBeNull();
+    http
+      .expectOne({ method: 'PATCH', url: `${environment.apiUrl}/preferences` })
+      .flush({
+        tipPercent: 10,
+        dialogView: 'modal',
+        priceCurrency: null,
+        conversionCurrencies: null,
+        showBcvPrice: null,
+      });
+  });
+
+  it('solo ofrece monedas habilitadas y con tasa en las conversiones', () => {
+    ratesStub.currencies.set([
+      COP,
+      { ...COP, code: 'EUR', label: 'Euros', enabled: false },
+      { ...COP, code: 'PEN', label: 'Soles', enabled: true, bsPerUnit: null },
+    ]);
+    tab('Cajero').click();
+    fixture.detectChanges();
+
+    expect(conversionSwitches().length).toBe(1);
+    expect(panel().textContent).toContain(
+      'Mostrar la conversión en Pesos colombianos (COP)',
+    );
+    // La pista dice de dónde sale la tasa de esa moneda.
+    expect(panel().textContent).toContain(
+      'Con la tasa manual configurada en Tasas → Monedas.',
+    );
+  });
+
+  it('avisa a los roles que administran que las conversiones no aplican a ellos', () => {
+    authStub.canManage.set(true);
+    ratesStub.currencies.set([COP]);
+    tab('Cajero').click();
+    fixture.detectChanges();
+
+    expect(panel().textContent).toContain('Tu rol siempre ve todas las conversiones');
+  });
+
+  it('activa el precio en dólares BCV del cajero y lo guarda para toda la empresa', () => {
+    const http = TestBed.inject(HttpTestingController);
+    ratesStub.currencies.set([COP]);
+    tab('Cajero').click();
+    fixture.detectChanges();
+
+    expect(panel().textContent).toContain('Mostrar el precio en dólares BCV');
+    expect(panel().textContent).toContain('BCV · Desactivado');
+    expect(bcvPriceSwitch().getAttribute('aria-checked')).toBe('false');
+    // Sin tasa cargada, la vista previa dice de dónde sale.
+    expect(panel().textContent).toContain('Todavía no hay tasa del BCV');
+
+    bcvPriceSwitch().click();
+    fixture.detectChanges();
+
+    // Elegir no aplica nada todavía: la preferencia de la empresa sigue vacía.
+    expect(panel().textContent).toContain('Activado');
+    expect(bcvPriceSwitch().getAttribute('aria-checked')).toBe('true');
+    expect(localStorage.getItem(SHOW_BCV_PRICE_KEY)).toBeNull();
+    expect(panelButton('Guardar cambios').disabled).toBe(false);
+    expect(panel().textContent).toContain('Tienes cambios sin guardar');
+
+    // Con la tasa del BCV, la vista previa enseña la línea que verá la caja. (El
+    // rótulo distingue este dólar del de la tasa personalizada del local.)
+    bcvConversion.set({
+      key: 'BCV_USD',
+      code: 'USD',
+      label: 'USD · BCV',
+      rate: 876.7976,
+      amount: 1.14,
+      text: '$ 1.14',
+    });
+    fixture.detectChanges();
+    expect(panel().textContent).toContain(
+      'Un producto de $ 10.00 se ve también USD · BCV $ 1.14.',
+    );
+
+    panelButton('Guardar cambios').click();
+    fixture.detectChanges();
+
+    expect(localStorage.getItem(SHOW_BCV_PRICE_KEY)).toBe('true');
+
+    const guardado = http.expectOne({
+      method: 'PATCH',
+      url: `${environment.apiUrl}/preferences`,
+    });
+    expect(guardado.request.body).toEqual({
+      tipPercent: 10,
+      dialogView: 'modal',
+      priceCurrency: null,
+      conversionCurrencies: null,
+      showBcvPrice: true,
+      chargeRateKey: null,
+    });
+    guardado.flush({
+      tipPercent: 10,
+      dialogView: 'modal',
+      priceCurrency: null,
+      conversionCurrencies: null,
+      showBcvPrice: true,
+    });
+
+    // Guardado: la pantalla refleja lo de la empresa y no queda nada pendiente.
+    expect(panel().textContent).toContain('Activado');
+    expect(panelButton('Guardar cambios').disabled).toBe(true);
+
+    // Apagarlo lo quita para toda la empresa y borra la copia de este equipo.
+    bcvPriceSwitch().click();
+    fixture.detectChanges();
+
+    expect(panelButton('Guardar cambios').disabled).toBe(false);
+    panelButton('Guardar cambios').click();
+    fixture.detectChanges();
+
+    expect(localStorage.getItem(SHOW_BCV_PRICE_KEY)).toBeNull();
+    http
+      .expectOne({ method: 'PATCH', url: `${environment.apiUrl}/preferences` })
+      .flush({
+        tipPercent: 10,
+        dialogView: 'modal',
+        priceCurrency: null,
+        conversionCurrencies: null,
+        showBcvPrice: null,
+      });
+  });
+
+  it('la vista previa del precio en dólares BCV sigue a la moneda de los precios', () => {
+    ratesStub.currencies.set([COP]);
+    // La línea que devuelve el servicio ya viene en la dirección que pide la
+    // pantalla: con los precios en una divisa, los bolívares de esa tasa oficial.
+    bcvConversion.set({
+      key: 'BCV_USD',
+      code: 'VES',
+      label: 'VES · BCV',
+      rate: 876.7976,
+      amount: 8767.98,
+      text: 'Bs 8,767.98',
+    });
+    tab('Cajero').click();
+    fixture.detectChanges();
+
+    pickPriceCurrency('COP');
+
+    // La pantalla pide la línea para la moneda elegida y el ejemplo usa esa moneda.
+    expect(ratesStub.bcvUsdConversion).toHaveBeenCalledWith(10, null, 'COP');
+    expect(panel().textContent).toContain(
+      'Un producto de COL$ 10.00 se ve también VES · BCV Bs 8,767.98.',
+    );
+  });
+
+  /** Selector de la tasa del dólar con la que cobra el cajero. */
+  function chargeRateSelect(): HTMLSelectElement {
+    const found = panel().querySelector('#charge-rate') as HTMLSelectElement | null;
+    if (!found) throw new Error('No se encontró el selector de la tasa de cobro');
+    return found;
+  }
+
+  /** Elige la tasa de cobro ('' = la tasa activa del sistema) como el usuario. */
+  function pickChargeRate(key: string): void {
+    const select = chargeRateSelect();
+    select.value = key;
+    select.dispatchEvent(new Event('change'));
+    fixture.detectChanges();
+  }
+
+  /** Tasas del dólar del sistema, tal como las carga `RatesService`. */
+  const DOLLAR_RATES: RateOption[] = [
+    {
+      key: 'BCV_USD',
+      currency: 'USD',
+      source: 'BCV',
+      rate: 876.7976,
+      date: '2026-10-13',
+      previousRate: 870,
+      changePercentage: 0.78,
+    },
+  ];
+
+  it('por defecto el cajero cobra con la tasa activa del sistema', () => {
+    ratesStub.rates.set(DOLLAR_RATES);
+    tab('Cajero').click();
+    fixture.detectChanges();
+
+    expect(panel().textContent).toContain('Cobro');
+    expect(panel().textContent).toContain('Tasa activa');
+    expect(chargeRateSelect().value).toBe('');
+    expect(panel().textContent).toContain(
+      'El cajero cobra con la tasa activa del sistema',
+    );
+    expect(panelButton('Guardar cambios').disabled).toBe(true);
+  });
+
+  it('fija la tasa de cobro del cajero y la guarda para toda la empresa', () => {
+    const http = TestBed.inject(HttpTestingController);
+    ratesStub.rates.set(DOLLAR_RATES);
+    tab('Cajero').click();
+    fixture.detectChanges();
+
+    // Solo se ofrecen las tasas del dólar: la del BCV y la personalizada.
+    const options = Array.from(chargeRateSelect().options).map((option) => option.value);
+    expect(options).toEqual(['', 'BCV_USD', 'CUSTOM_USD']);
+
+    pickChargeRate('BCV_USD');
+
+    // Elegir no guarda nada todavía: la preferencia de la empresa sigue vacía.
+    expect(localStorage.getItem(CHARGE_RATE_KEY)).toBeNull();
+    expect(panel().textContent).toContain('BCV Dólar');
+    expect(panel().textContent).toContain('por $ 1');
+    expect(panelButton('Guardar cambios').disabled).toBe(false);
+
+    panelButton('Guardar cambios').click();
+    fixture.detectChanges();
+
+    expect(localStorage.getItem(CHARGE_RATE_KEY)).toBe('BCV_USD');
+
+    const guardado = http.expectOne({
+      method: 'PATCH',
+      url: `${environment.apiUrl}/preferences`,
+    });
+    expect(guardado.request.body).toEqual({
+      tipPercent: 10,
+      dialogView: 'modal',
+      priceCurrency: null,
+      conversionCurrencies: null,
+      showBcvPrice: false,
+      chargeRateKey: 'BCV_USD',
+    });
+    guardado.flush({
+      tipPercent: 10,
+      dialogView: 'modal',
+      priceCurrency: null,
+      conversionCurrencies: null,
+      showBcvPrice: null,
+      chargeRateKey: 'BCV_USD',
+    });
+
+    // Volver a la tasa activa la quita para toda la empresa (y de este equipo).
+    pickChargeRate('');
+    panelButton('Guardar cambios').click();
+    fixture.detectChanges();
+
+    expect(localStorage.getItem(CHARGE_RATE_KEY)).toBeNull();
+    http
+      .expectOne({ method: 'PATCH', url: `${environment.apiUrl}/preferences` })
+      .flush({
+        tipPercent: 10,
+        dialogView: 'modal',
+        priceCurrency: null,
+        conversionCurrencies: null,
+        showBcvPrice: null,
+        chargeRateKey: null,
+      });
+  });
+
+  it('no deja elegir una tasa de cobro que todavía no tiene valor', () => {
+    ratesStub.rates.set(DOLLAR_RATES);
+    tab('Cajero').click();
+    fixture.detectChanges();
+
+    const custom = Array.from(chargeRateSelect().options).find(
+      (option) => option.value === 'CUSTOM_USD',
+    );
+    expect(custom?.disabled).toBe(true);
+    expect(panel().textContent).toContain('Personalizada · sin tasa');
+  });
+
+  it('enciende los montos al cambio con el interruptor reutilizable (pestaña Tasas)', () => {
+    // La tarjeta de las tasas solo se pinta cuando el snapshot ya cargó.
+    const rates = ratesStub.rates as WritableSignal<RateOption[]>;
+    ratesStub.snapshot.set({});
+    rates.set([
+      {
+        key: 'BCV_USD',
+        currency: 'USD',
+        source: 'BCV',
+        rate: 876.7976,
+        date: '2026-10-13',
+        previousRate: null,
+        changePercentage: null,
+      },
+    ]);
+    fixture.detectChanges();
+
+    try {
+      expect(panel().textContent).toContain(
+        'Mostrar los montos al cambio en todo el sistema',
+      );
+
+      const interruptor = panel().querySelector(
+        'app-switch button[role="switch"]',
+      ) as HTMLButtonElement;
+      interruptor.click();
+      fixture.detectChanges();
+
+      // Estaba encendido: el interruptor solo avisa del estado contrario.
+      expect(ratesStub.setConversions).toHaveBeenCalledWith(false);
+    } finally {
+      rates.set([]);
+      ratesStub.snapshot.set(null);
+    }
   });
 
   it('avisa a los roles que administran que la preferencia no aplica a ellos', () => {

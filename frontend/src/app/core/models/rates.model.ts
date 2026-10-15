@@ -47,6 +47,37 @@ export interface RateOption {
   changePercentage: number | null;
 }
 
+/** Una de las tasas que quedan guardadas en el historial de un cobro. */
+export interface RateHistoryEntry {
+  key: RateKey;
+  currency: 'USD' | 'EUR';
+  source: 'BCV' | 'CUSTOM';
+  /** Bolívares por 1 unidad de `currency`. */
+  rate: number;
+  /** Fecha publicada por el BCV (`YYYY-MM-DD`); `null` en la personalizada. */
+  date: string | null;
+}
+
+/**
+ * HISTORIAL DE TASAS: foto de TODAS las tasas vigentes (BCV dólar, BCV euro y la
+ * personalizada del local) en el momento de un cobro.
+ *
+ * Es lo que el backend guarda con cada pago, para poder auditar después con qué
+ * tasas se cobró ese día aunque las tasas hayan cambiado.
+ */
+export interface RateHistory {
+  /** Momento en que se tomaron las tasas. */
+  capturedAt: string;
+  /** Fecha de la serie del BCV de la que salen las tasas oficiales. */
+  bcvDate: string | null;
+  /** `true` cuando el BCV no respondió y se repitió su última serie conocida. */
+  stale: boolean;
+  /** Tasa con la que el sistema cotiza por defecto (personalizada o BCV dólar). */
+  activeKey: RateKey;
+  /** Todas las tasas vigentes, en el mismo orden en que las ofrece la pantalla. */
+  rates: RateHistoryEntry[];
+}
+
 /** Origen de la tasa de una moneda. */
 export type CurrencyRateSource = 'BASE' | 'BCV' | 'CUSTOM' | 'MANUAL' | 'NONE';
 

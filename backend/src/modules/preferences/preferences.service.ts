@@ -1,6 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import type { Prisma } from '@prisma/client';
-import type { DialogView } from '../../common/constants/enums';
+import type { ChargeRateKey, DialogView } from '../../common/constants/enums';
+import { CHARGE_RATE_KEYS } from '../../common/constants/enums';
 import { PrismaService } from '../../prisma/prisma.service';
 import { UpdatePreferencesDto } from './dto/update-preferences.dto';
 
@@ -13,6 +14,24 @@ export interface CompanyPreferences {
   tipPercent: number | null;
   dialogView: DialogView | null;
   priceCurrency: string | null;
+  /**
+   * Monedas cuyas conversiones ve el personal de caja debajo de cada monto
+   * (`null` = ninguna: solo ve los precios en su moneda). Se guardan como JSON de
+   * texto porque es una lista.
+   */
+  conversionCurrencies: string[] | null;
+  /**
+   * `true` para mostrar debajo de cada monto, ademas de las conversiones, el
+   * precio en dolares a la tasa oficial del BCV. `null` = no se muestra.
+   */
+  showBcvPrice: boolean | null;
+  /**
+   * Tasa del dolar (bolivares por 1 USD) con la que el punto de venta cobra: el
+   * cajero convierte con ella el saldo del pedido, el efectivo recibido y el
+   * vuelto, sin preguntar nada. `null` = sin configurar: se cobra con la tasa
+   * activa del sistema (la personalizada del dolar o, si no existe, la del BCV).
+   */
+  chargeRateKey: ChargeRateKey | null;
 }
 
 /** Columnas que viajan al cliente (el `companyId` es la sesion, no hace falta). */
@@ -20,6 +39,9 @@ const PREFERENCES_SELECT = {
   tipPercent: true,
   dialogView: true,
   priceCurrency: true,
+  conversionCurrencies: true,
+  showBcvPrice: true,
+  chargeRateKey: true,
 } satisfies Prisma.CompanyPreferenceSelect;
 
 type PreferenceRow = Prisma.CompanyPreferenceGetPayload<{
@@ -31,7 +53,13 @@ const NO_PREFERENCES: CompanyPreferences = {
   tipPercent: null,
   dialogView: null,
   priceCurrency: null,
+  conversionCurrencies: null,
+  showBcvPrice: null,
+  chargeRateKey: null,
 };
+
+/** Tope de monedas en la lista (la interfaz ofrece las configuradas del local). */
+const MAX_CONVERSION_CURRENCIES = 24;
 
 /**
  * Deja la propina en un porcentaje utilizable (0-100, dos decimales) o en
@@ -55,11 +83,77 @@ function normalizePriceCurrency(value: string | null | undefined): string | null
   return /^[A-Z]{3}$/.test(code) ? code : null;
 }
 
+/**
+ * Deja la lista de conversiones del cajero en codigos ISO sin repetir, o en `null`
+ * cuando no queda ninguna (es el valor de fabrica: el cajero solo ve los precios
+ * en su moneda). Cualquier elemento que no sea un codigo se descarta.
+ */
+function normalizeConversionCurrencies(
+  value: readonly string[] | null | undefined,
+): string[] | null {
+  if (!value || !Array.isArray(value)) return null;
+  const codes = value
+    .map((item) => String(item ?? '').trim().toUpperCase())
+    .filter((code) => /^[A-Z]{3}$/.test(code));
+  const unique = [...new Set(codes)].slice(0, MAX_CONVERSION_CURRENCIES);
+  return unique.length ? unique : null;
+}
+
+/**
+ * Lee la lista guardada como JSON de texto tolerando valores corruptos: lo que no
+ * sea una lista de codigos se descarta (misma normalizacion que al escribir).
+ */
+function parseConversionCurrencies(value: string | null): string[] | null {
+  if (!value) return null;
+  try {
+    const parsed: unknown = JSON.parse(value);
+    return Array.isArray(parsed)
+      ? normalizeConversionCurrencies(parsed as string[])
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * La lista como JSON de texto para guardarla en la columna (`null` borra la
+ * preferencia): SQLite no tiene listas, la columna es un `String`.
+ */
+function serializeConversionCurrencies(
+  codes: string[] | null,
+): string | null {
+  return codes ? JSON.stringify(codes) : null;
+}
+
+/**
+ * Deja la preferencia del precio en dolares del BCV en `true` (se muestra) o en
+ * `null` para borrarla: sin configurar, el cajero no ve esa linea. Solo un
+ * booleano la enciende; cualquier otra cosa la deja apagada, igual que en la
+ * interfaz.
+ */
+function normalizeShowBcvPrice(value: boolean | null | undefined): boolean | null {
+  return value === true ? true : null;
+}
+
+/**
+ * Deja la tasa de cobro del cajero en una de las tasas del dolar permitidas o en
+ * `null` para cobrar con la tasa activa del sistema. Cualquier otro valor se
+ * descarta, igual que en la interfaz.
+ */
+function normalizeChargeRateKey(value: string | null | undefined): ChargeRateKey | null {
+  if (value === null || value === undefined) return null;
+  const key = String(value).trim().toUpperCase();
+  return (CHARGE_RATE_KEYS as readonly string[]).includes(key) ? (key as ChargeRateKey) : null;
+}
+
 function toPreferences(row: PreferenceRow): CompanyPreferences {
   return {
     tipPercent: row.tipPercent,
     dialogView: (row.dialogView as DialogView | null) ?? null,
     priceCurrency: row.priceCurrency ?? null,
+    conversionCurrencies: parseConversionCurrencies(row.conversionCurrencies),
+    showBcvPrice: row.showBcvPrice ?? null,
+    chargeRateKey: normalizeChargeRateKey(row.chargeRateKey),
   };
 }
 
@@ -68,10 +162,12 @@ function toPreferences(row: PreferenceRow): CompanyPreferences {
  *
  * Una sola fila por empresa (`company_preferences`), compartida por todo su
  * personal: la propina que propone el punto de venta, la moneda en la que el
- * cajero ve los precios y la presentacion de los formularios son configuracion
- * del local, no de cada cajero. Quien entra desde otro navegador recibe al
- * iniciar sesion lo mismo que ve el resto del equipo (el frontend copia la
- * respuesta a su `localStorage` para pintar de inmediato).
+ * cajero ve los precios —con las conversiones que puede ver debajo de cada
+ * monto, el precio en dolares del BCV y la tasa con la que cobra— y la
+ * presentacion de los formularios son
+ * configuracion del local, no de cada cajero. Quien entra desde otro navegador
+ * recibe al iniciar sesion lo mismo que ve el resto del equipo (el frontend copia
+ * la respuesta a su `localStorage` para pintar de inmediato).
  */
 @Injectable()
 export class PreferencesService {
@@ -104,6 +200,17 @@ export class PreferencesService {
     if (dto.priceCurrency !== undefined) {
       update.priceCurrency = normalizePriceCurrency(dto.priceCurrency);
     }
+    if (dto.conversionCurrencies !== undefined) {
+      update.conversionCurrencies = serializeConversionCurrencies(
+        normalizeConversionCurrencies(dto.conversionCurrencies),
+      );
+    }
+    if (dto.showBcvPrice !== undefined) {
+      update.showBcvPrice = normalizeShowBcvPrice(dto.showBcvPrice);
+    }
+    if (dto.chargeRateKey !== undefined) {
+      update.chargeRateKey = normalizeChargeRateKey(dto.chargeRateKey);
+    }
 
     const row = await this.prisma.companyPreference.upsert({
       where: { companyId },
@@ -112,6 +219,11 @@ export class PreferencesService {
         tipPercent: normalizeTipPercent(dto.tipPercent),
         dialogView: dto.dialogView ?? null,
         priceCurrency: normalizePriceCurrency(dto.priceCurrency),
+        conversionCurrencies: serializeConversionCurrencies(
+          normalizeConversionCurrencies(dto.conversionCurrencies),
+        ),
+        showBcvPrice: normalizeShowBcvPrice(dto.showBcvPrice),
+        chargeRateKey: normalizeChargeRateKey(dto.chargeRateKey),
       },
       update,
       select: PREFERENCES_SELECT,

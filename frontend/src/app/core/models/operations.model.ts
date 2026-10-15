@@ -1,5 +1,7 @@
 /** Modelos de operacion: inventario, pedidos y caja. */
 
+import type { RateHistory, RateKey } from './rates.model';
+
 export type StockMovementType = 'IN' | 'OUT' | 'ADJUSTMENT';
 
 export interface StockLevel {
@@ -148,6 +150,10 @@ export interface OrderPayment {
   currency: string;
   /** Bolivares por 1 unidad de `currency` al momento del cobro. */
   exchangeRate?: number | null;
+  /** Tasa ELEGIDA para el cobro (`null` = la activa del sistema al cobrar). */
+  rateKey?: RateKey | null;
+  /** Historial de TODAS las tasas vigentes ese dia cuando se cobro. */
+  ratesHistory?: RateHistory | null;
   /** Equivalente en USD (moneda base del sistema). */
   baseAmount: number;
   note?: string | null;

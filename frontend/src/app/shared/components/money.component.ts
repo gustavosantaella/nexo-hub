@@ -5,7 +5,7 @@ import {
   booleanAttribute,
   inject,
 } from '@angular/core';
-import { RatesService } from '../../core/services/rates.service';
+import { RatesService, BCV_USD_RATE_KEY } from '../../core/services/rates.service';
 import type { RateConversion } from '../../core/models/rates.model';
 import { LOCAL_CURRENCY_CODE } from '../../core/constants/currency';
 import {
@@ -36,6 +36,14 @@ import {
  *
  * El interruptor global (`RatesService.showConversions`, visible en
  * Configuración) permite ocultar las conversiones sin perder las tasas.
+ *
+ * Además, el personal de caja solo ve las monedas que el admin active en
+ * Configuración → Cajero: **por defecto ninguna**, así que ve el precio en su
+ * moneda y nada más. En esa misma pantalla el admin puede activar el **precio en
+ * dólares del BCV** (`USD · BCV $ 10,33`), que se suma a esas líneas: con los
+ * precios en bolívares son los dólares oficiales de lo cobrado y con los precios
+ * en una divisa, los bolívares a esa tasa oficial. ADMIN y MANAGER siempre ven
+ * todas las conversiones y su vista no cambia con esa preferencia.
  */
 @Component({
   selector: 'app-money',
@@ -130,13 +138,34 @@ export class MoneyComponent {
             : item,
         )
       : items;
-    if (!this.compact) return resolved;
-    return resolved.map((item) => ({
+    // El personal de caja solo ve las conversiones que activó el admin
+    // (Configuración → Cajero): por defecto ninguna, solo el precio en su moneda.
+    // Y, si el admin lo activó, suma el precio en dólares del BCV.
+    const visible = this.withBcvPrice(this.rates.visibleConversions(resolved));
+    if (!this.compact) return visible;
+    return visible.map((item) => ({
       ...item,
       text: item.inBs
         ? bsCompact(item.amount)
         : moneyInCompact(item.amount, item.code),
     }));
+  }
+
+  /**
+   * Suma el **precio en dólares del BCV** cuando el admin lo activó en
+   * Configuración → Cajero, salvo que esa línea ya venga entre las conversiones
+   * (con la base en bolívares la lista de tasas ya trae el dólar del BCV).
+   *
+   * Los bolívares de la línea son los que escribió el operador cuando el registro
+   * los guarda: así el dólar que se ve es el de los bolívares cobrados y no el del
+   * equivalente redondeado a centavos.
+   */
+  private withBcvPrice(items: readonly RateConversion[]): RateConversion[] {
+    const all = [...items];
+    if (!this.rates.showBcvPrice()) return all;
+    if (all.some((item) => item.key === BCV_USD_RATE_KEY)) return all;
+    const line = this.rates.bcvUsdConversion(this.amount, this.loadedRate?.amount);
+    return line ? [...all, line] : all;
   }
 
   /**

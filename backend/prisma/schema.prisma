@@ -124,16 +124,20 @@ model User {
 }
 
 // Preferencias de INTERFAZ de la empresa (Configuracion): la propina que el
-// punto de venta propone al cobrar y la presentacion de los formularios de caja
-// y pedidos. Es una sola fila por empresa, compartida por todo su personal: el
-// cajero que entra desde otro navegador la recibe al iniciar sesion. `null` en
+// punto de venta propone al cobrar, la moneda/tasas con las que el cajero ve los
+// precios, la tasa del dolar con la que cobra y la presentacion de los formularios
+// de caja y pedidos. Es una sola fila por empresa, compartida por todo su personal:
+// el cajero que entra desde otro navegador la recibe al iniciar sesion. `null` en
 // una columna significa "sin configurar": la interfaz usa entonces su valor de
-// fabrica (10 % de propina y formularios en ventana modal).
+// fabrica (10 % de propina, moneda base del sistema y formularios en ventana modal).
 model CompanyPreference {
   companyId     String   @id
   tipPercent    Float? // Propina sugerida (%) que el punto de venta propone al cobrar
   dialogView    String? // modal | sidebar: como se abren los formularios de caja/pedidos
   priceCurrency String? // Moneda (ISO, ej. VES) en la que el cajero ve los precios; null = moneda base
+  conversionCurrencies String? // JSON con las monedas (ISO, ej. ["USD","COP"]) cuyas conversiones ve el cajero; null = ninguna
+  showBcvPrice  Boolean? // Mostrar debajo de cada monto el precio en dolares a la tasa oficial del BCV; null = no
+  chargeRateKey String? // Tasa del dolar con la que el cajero cobra (`BCV_USD` o `CUSTOM_USD`); null = la activa
   updatedAt     DateTime @updatedAt
 
   company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
@@ -438,6 +442,13 @@ model OrderPayment {
   method         String // CASH | CARD | TRANSFER | YAPE | PLIN | MIXED
   currency       String   @default("USD") // Moneda en que pago el cliente
   exchangeRate   Float? // Bolivares por 1 unidad de `currency` (tasa usada)
+  rateKey        String? // Tasa ELEGIDA para el cobro (BCV_USD | BCV_EUR | CUSTOM_USD); null = la activa del sistema
+  // HISTORIAL DE TASAS del dia del cobro: JSON en texto con TODAS las tasas
+  // vigentes al cobrar (BCV dolar, BCV euro y la personalizada del local), no
+  // solo la aplicada. Asi un cobro viejo se puede auditar con las tasas que
+  // existian ese dia aunque despues hayan cambiado. No es una columna de dinero
+  // ni una tasa suelta (por eso no aparece en `money-columns.ts`).
+  ratesHistory   String?
   baseAmount     Int      @default(0) // Equivalente en USD (moneda base del sistema)
   cashMovementId String?  @unique
   note           String?

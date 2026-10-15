@@ -6,7 +6,10 @@ import {
 import { Component, signal } from '@angular/core';
 import { TestBed, type ComponentFixture } from '@angular/core/testing';
 import { environment } from '../../../environments/environment';
+import { clearSession, saveSession } from '../../core/auth/session';
+import type { SessionResponse } from '../../core/models/api.model';
 import type { RatesSnapshot, RateKey } from '../../core/models/rates.model';
+import { PreferencesService } from '../../core/services/preferences.service';
 import { RatesService } from '../../core/services/rates.service';
 import { RateConversionsComponent } from './rate-conversions.component';
 
@@ -152,13 +155,15 @@ describe('RateConversionsComponent', () => {
     expect(text()).toContain('Personalizada: Bs 9,500.00');
   });
 
-  it('convierte un monto en bolivares a dolares con las tres tasas', () => {
+  it('convierte un monto en bolivares a la divisa de cada tasa', () => {
     fixture.componentInstance.currency.set('VES');
     fixture.componentInstance.amount.set(9000);
     fixture.detectChanges();
 
     expect(text()).toContain('BCV $: $ 10.00');
-    expect(text()).toContain('BCV €: $ 9.00');
+    // El euro del BCV se muestra en euros: su tasa (1.000 Bs) es la oficial de esa
+    // divisa, así que el equivalente no puede salir rotulado con el dólar.
+    expect(text()).toContain('BCV €: € 9.00');
     expect(text()).toContain('Personalizada: $ 9.47');
   });
 
@@ -169,6 +174,42 @@ describe('RateConversionsComponent', () => {
 
     // Sin tasa configurada para COP no hay conversion que mostrar.
     expect(text().trim()).toBe('');
+  });
+
+  /**
+   * La ida a dolares de una moneda que no es la base ni el bolivar usa la **tasa
+   * elegida** en el campo (`rateKey`): es la misma con la que el API guarda el
+   * monto, asi que el chip no puede decir un equivalente distinto al registrado.
+   */
+  it('convierte otra moneda con la tasa elegida', () => {
+    // Este local acepta soles: 0,25 Bs por sol.
+    TestBed.inject(RatesService).load(true);
+    http.expectOne(`${API}/rates?refresh=true`).flush({
+      ...SNAPSHOT,
+      currencies: [
+        ...SNAPSHOT.currencies,
+        {
+          code: 'PEN',
+          label: 'Soles',
+          symbol: 'S/',
+          enabled: true,
+          bsPerUnit: 0.25,
+          source: 'MANUAL',
+          isBase: false,
+          isDisplayBase: false,
+          bsPerUsd: 950,
+        },
+      ],
+    });
+
+    fixture.componentInstance.currency.set('PEN');
+    fixture.componentInstance.amount.set(1000);
+    fixture.componentInstance.rateKey.set('BCV_USD');
+    fixture.detectChanges();
+
+    // 1.000 soles son 250 Bs y, al cambio del BCV (900), $ 0.28 (con la
+    // personalizada del local serian $ 0.26: la tasa elegida es la que manda).
+    expect(text()).toContain('=: $ 0.28');
   });
 
   /**
@@ -194,5 +235,101 @@ describe('RateConversionsComponent', () => {
     fixture.detectChanges();
 
     expect(highlighted()).toBe('');
+  });
+});
+
+/**
+ * Lineas que ve el **personal de caja**: solo las monedas que el admin activo en
+ * Configuracion -> Cajero (por defecto **ninguna**, el monto en su moneda y nada
+ * debajo). Quien administra el local, y las pantallas sin sesion, las ven todas.
+ */
+describe('RateConversionsComponent (conversiones que ve el cajero)', () => {
+  let http: HttpTestingController;
+  let rates: RatesService;
+  let preferences: PreferencesService;
+  let fixture: ComponentFixture<HostComponent>;
+
+  beforeEach(async () => {
+    localStorage.clear();
+    // El cajero ya entro: el rol y la preferencia de la empresa se leen de aqui.
+    saveSession({ accessToken: 'token', role: 'CASHIER' } as SessionResponse);
+
+    await TestBed.configureTestingModule({
+      imports: [HostComponent],
+      providers: [provideHttpClient(), provideHttpClientTesting()],
+    }).compileComponents();
+
+    http = TestBed.inject(HttpTestingController);
+    rates = TestBed.inject(RatesService);
+    preferences = TestBed.inject(PreferencesService);
+    rates.load();
+    http.expectOne(`${API}/rates`).flush(SNAPSHOT);
+
+    fixture = TestBed.createComponent(HostComponent);
+    fixture.detectChanges();
+  });
+
+  afterEach(() => {
+    localStorage.clear();
+    clearSession();
+    http.verify();
+  });
+
+  function text(): string {
+    return (fixture.nativeElement.textContent ?? '').replace(/\s+/g, ' ').trim();
+  }
+
+  /** Activa las monedas que vera el cajero (como el admin en Configuracion). */
+  function allowConversions(codes: string[]): void {
+    preferences.setConversionCurrencies(codes);
+    http
+      .expectOne({ method: 'PATCH', url: `${API}/preferences` })
+      .flush({ tipPercent: 10, dialogView: 'modal', conversionCurrencies: codes });
+  }
+
+  it('por defecto no pinta ninguna linea', () => {
+    fixture.componentInstance.amount.set(10);
+    fixture.detectChanges();
+
+    expect(rates.allowedConversionCodes()).toEqual([]);
+    expect(text()).toBe('');
+  });
+
+  it('con los montos en dolares pinta la moneda local solo si esta activada', () => {
+    allowConversions(['VES']);
+    fixture.componentInstance.amount.set(10);
+    fixture.detectChanges();
+
+    // Las tasas siguen ahi, rotuladas como siempre, pero solo la moneda activada.
+    expect(text()).toContain('BCV $: Bs 9,000.00');
+    expect(text()).toContain('BCV €: Bs 10,000.00');
+
+    allowConversions([]);
+    fixture.detectChanges();
+
+    expect(text()).toBe('');
+  });
+
+  it('con los montos en bolivares deja pasar la moneda activada', () => {
+    allowConversions(['EUR']);
+    fixture.componentInstance.currency.set('VES');
+    fixture.componentInstance.amount.set(9000);
+    fixture.detectChanges();
+
+    expect(text()).toContain('BCV €: € 9.00');
+    expect(text()).not.toContain('BCV $');
+    expect(text()).not.toContain('Personalizada');
+  });
+
+  it('a quien administra el local no le cambia la vista', () => {
+    saveSession({ accessToken: 'token', role: 'ADMIN' } as SessionResponse);
+    allowConversions([]);
+    fixture.componentInstance.amount.set(10);
+    fixture.detectChanges();
+
+    expect(rates.allowedConversionCodes()).toBeNull();
+    expect(text()).toContain('BCV $: Bs 9,000.00');
+    expect(text()).toContain('BCV €: Bs 10,000.00');
+    expect(text()).toContain('Personalizada: Bs 9,500.00');
   });
 });

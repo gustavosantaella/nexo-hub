@@ -18,9 +18,9 @@ import type {
   RatesSnapshot,
   ReferenceRate,
 } from '../models/rates.model';
-import { bs, money, moneyIn, setDisplayCurrency } from '../utils/format';
+import { bs, displayBaseCode, money, moneyIn, setDisplayCurrency } from '../utils/format';
 import type { DisplayCurrency } from '../utils/format';
-import { storedCanManage } from '../auth/session';
+import { sessionChanges, storedCanManage, storedIsCashier } from '../auth/session';
 import { PreferencesService } from './preferences.service';
 
 /** Redondeo monetario (2 decimales) equivalente al del backend. */
@@ -40,6 +40,13 @@ const DEFAULT_BASE_CURRENCY: BaseCurrencyInfo = {
 
 /** Preferencia local: mostrar los montos "al cambio" en todo el sistema. */
 const CONVERSIONS_KEY = 'nexo-hub.rate-conversions';
+
+/**
+ * Clave de la tasa oficial del dólar (`BCV_USD`): es la línea de **precio en
+ * dólares del BCV** que el admin puede activar debajo de cada monto
+ * (Configuración → Cajero) y con la que se evita repetirla dos veces.
+ */
+export const BCV_USD_RATE_KEY: RateKey = 'BCV_USD';
 
 function storedConversions(): boolean {
   try {
@@ -77,6 +84,25 @@ export class RatesService {
   readonly error = this._error.asReadonly();
   /** Interruptor global de los montos "al cambio". */
   readonly showConversions = this._conversions.asReadonly();
+
+  /**
+   * Monedas cuyas conversiones puede ver la sesión activa debajo de cada monto:
+   * `null` = sin filtro (ADMIN, MANAGER o sin sesión: se ven todas) y `[]` = el
+   * personal de caja no ve ninguna, que es el valor de fábrica.
+   *
+   * Las activa el admin en Configuración → Cajero y son de la empresa: el cajero
+   * que entra desde otro equipo las recibe al iniciar sesión.
+   */
+  readonly allowedConversionCodes = computed<string[] | null>(() => {
+    // La sesión y la preferencia se leen siempre (aunque el rol no aplique): un
+    // `computed` que sale antes de leer una señal no la registra como dependencia
+    // y se queda con el valor de la primera vez —por ejemplo, sin sesión, cuando
+    // el servicio se construye al abrir la aplicación—.
+    const currencies = this.preferences.conversionCurrencies();
+    sessionChanges();
+    if (!storedIsCashier()) return null;
+    return currencies ?? [];
+  });
 
   /** Tasas disponibles: 2 (BCV) o 3 (con la personalizada). */
   readonly rates = computed(() => this._snapshot()?.rates ?? []);
@@ -377,6 +403,182 @@ export class RatesService {
     const rate = this.rateOf(key);
     if (rate === null) return null;
     return Number(amount ?? 0) * rate;
+  }
+
+  // ===========================================================================
+  //  COBRO
+  // ===========================================================================
+
+  /**
+   * Monto **tal como se está leyendo en pantalla**.
+   *
+   * Los montos del sistema viven en dólares, pero la empresa elige con qué moneda
+   * mostrarlos (Configuración → Tasas; el admin puede fijar otra para el cajero).
+   * Ese número —el que el operador lee en el pedido— es el precio que se cobra.
+   */
+  displayAmount(amount: number | null | undefined): number {
+    const value = Number(amount ?? 0);
+    const code = displayBaseCode();
+    if (code === BASE_CURRENCY_CODE) return round2(value);
+    return this.fromBase(value, code) ?? round2(value);
+  }
+
+  /**
+   * Monto a cobrar en `currency` por un monto del sistema (`amount`, en dólares).
+   *
+   * El cajero **cobra el precio que ve**: `amount` se lleva primero a la moneda de
+   * visualización (los bolívares que lee el cajero) y de ahí a la moneda del cobro
+   * con la **tasa de cobro** que eligió la empresa (`key`; `null` = la activa del
+   * sistema). Por eso el cobro en divisas puede valer más que el monto guardado: la
+   * tasa de cobro (el BCV, por ejemplo) no es la misma con la que se muestran los
+   * precios (la personalizada del local), y el precio que el cliente paga es el que
+   * está en pantalla.
+   *
+   * Con la moneda de cobro igual a la de visualización se cobra el monto tal cual
+   * se lee, sin dar la vuelta por la moneda base.
+   */
+  chargeAmount(
+    amount: number | null | undefined,
+    currency?: string | null,
+    key?: RateKey | null,
+  ): number {
+    const shown = this.displayAmount(amount);
+    const display = displayBaseCode();
+    const target =
+      String(currency ?? '').trim().toUpperCase() || BASE_CURRENCY_CODE;
+    if (target === display) return shown;
+
+    const base = this.toBase(shown, display, key);
+    if (base === null) return shown;
+    if (target === BASE_CURRENCY_CODE) return base;
+    return this.fromBase(base, target, key) ?? shown;
+  }
+
+  // ===========================================================================
+  //  CONVERSIONES QUE VE EL CAJERO
+  // ===========================================================================
+
+  /**
+   * Moneda de una conversión: la de la línea (`USD · BCV`) o el bolívar cuando la
+   * línea ya viene en bolívares (las tasas del monto con la base en dólares).
+   */
+  conversionCurrency(item: RateConversion): string | null {
+    if (item.code) return String(item.code).trim().toUpperCase();
+    return item.inBs ? LOCAL_CURRENCY_CODE : null;
+  }
+
+  /**
+   * Conversiones que puede ver esta sesión.
+   *
+   * El personal de caja solo ve las monedas que el admin activó en
+   * Configuración → Cajero —ninguna por defecto: los precios, en su moneda, y
+   * nada más—; ADMIN y MANAGER (y las pantallas sin sesión) siguen viendo todas,
+   * igual que hasta ahora.
+   */
+  visibleConversions(items: readonly RateConversion[]): RateConversion[] {
+    return items.filter((item) => this.showsConversion(this.conversionCurrency(item)));
+  }
+
+  /**
+   * `true` cuando esta sesión puede ver el monto convertido a esa moneda: quien
+   * administra el local (y las pantallas sin sesión) ven todas; el personal de caja
+   * solo las que activó el admin en Configuración → Cajero.
+   */
+  showsConversion(code: string | null | undefined): boolean {
+    const allowed = this.allowedConversionCodes();
+    if (allowed === null) return true;
+    const normalized = String(code ?? '').trim().toUpperCase();
+    return normalized !== '' && allowed.includes(normalized);
+  }
+
+  /**
+   * `true` cuando la sesión es del **personal de caja** y la empresa tiene activado
+   * el precio en dólares del BCV (Configuración → Cajero). Es una línea aparte de
+   * las conversiones: se suma a las que el cajero ya ve.
+   *
+   * ADMIN y MANAGER no lo ven —su vista no cambia con las preferencias del cajero—
+   * y sin sesión tampoco se pinta.
+   */
+  readonly showBcvPrice = computed(() => {
+    // El interruptor se lee antes del rol para que quede registrado como
+    // dependencia siempre (ver `allowedConversionCodes`), y el rol se recalcula
+    // cuando entra o sale una sesión en este mismo equipo.
+    const enabled = this.preferences.showBcvPrice();
+    sessionChanges();
+    return storedIsCashier() && enabled;
+  });
+
+  /** Tasa oficial del BCV en bolívares por dólar (`null` si aún no está). */
+  private readonly bcvUsdRate = computed(() => this.bcv()?.current.usd ?? null);
+
+  /**
+   * **Precio en dólares del BCV**: la línea que el admin activa en Configuración →
+   * Cajero y que se suma a las conversiones de cada monto.
+   *
+   * La dirección depende de la moneda con la que se ven los precios (`code`, por
+   * defecto la de la pantalla):
+   *
+   *   - Precios en **bolívares**: el monto ya dice cuántos bolívares son, así que
+   *     la línea responde la otra pregunta del mostrador —**cuántos dólares
+   *     oficiales son esos bolívares**— y va rotulada `USD · BCV`
+   *     (Bs 8.767,98 → `USD · BCV $ 10,00`).
+   *   - Precios en **dólares** (o en cualquier otra divisa): la línea es la vuelta,
+   *     **cuántos bolívares** valen esas divisas a la tasa oficial del BCV, y va
+   *     rotulada `VES · BCV` ($ 10,00 → `VES · BCV Bs 8.767,98`).
+   *
+   * Va rotulada con la tasa para no confundirla con el dólar de la tasa
+   * personalizada del local.
+   *
+   * `bsAmount` son los bolívares tal como los escribió el operador cuando el
+   * registro los guarda (`priceEntered`): con eso la línea respeta lo cargado y no
+   * el redondeo a centavos del equivalente en dólares. Sin él se usan los
+   * bolívares que salen de la tasa activa del sistema.
+   *
+   * Devuelve `null` cuando falta la tasa del BCV o no hay monto que convertir.
+   */
+  bcvUsdConversion(
+    amount: number | null | undefined,
+    bsAmount?: number | null,
+    code: string = displayBaseCode(),
+  ): RateConversion | null {
+    const rate = this.bcvUsdRate();
+    if (!rate) return null;
+
+    const usd = Number(amount ?? 0);
+    const shown =
+      String(code ?? '')
+        .trim()
+        .toUpperCase() || BASE_CURRENCY_CODE;
+
+    // Con los precios en una divisa la línea son los bolívares de la tasa oficial:
+    // los dólares del monto multiplicados por la tasa del BCV. Los bolívares que
+    // escribió el operador son de otra tasa (la del local), así que aquí no aplican.
+    if (shown !== LOCAL_CURRENCY_CODE) {
+      if (!usd) return null;
+      const value = round2(usd * rate);
+      return {
+        key: BCV_USD_RATE_KEY,
+        code: LOCAL_CURRENCY_CODE,
+        label: `${LOCAL_CURRENCY_CODE} · ${rateSourceLabel('BCV')}`,
+        rate,
+        amount: value,
+        text: moneyIn(value, LOCAL_CURRENCY_CODE),
+      };
+    }
+
+    const entered = Number(bsAmount ?? NaN);
+    const bs = Number.isFinite(entered) ? entered : usd * (this.bsPerUsd() ?? 0);
+    if (!bs) return null;
+
+    const value = round2(bs / rate);
+    return {
+      key: BCV_USD_RATE_KEY,
+      code: BASE_CURRENCY_CODE,
+      label: `${BASE_CURRENCY_CODE} · ${rateSourceLabel('BCV')}`,
+      rate,
+      amount: value,
+      text: moneyIn(value, BASE_CURRENCY_CODE),
+    };
   }
 
   // ===========================================================================

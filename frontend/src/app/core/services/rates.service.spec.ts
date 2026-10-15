@@ -139,12 +139,39 @@ const THREE_RATES: RatesSnapshot = {
   ],
 };
 
+/**
+ * Snapshot del punto de venta: los precios se ven en BOLÍVARES y la tasa
+ * personalizada del local (950) es la activa —por eso se leen Bs 9.500 por cada
+ * $ 10—, mientras el BCV marca 876,7976 Bs por dólar: eso es lo que cobra el
+ * cajero cuando la empresa fija el BCV como tasa de cobro.
+ */
+const POS_SNAPSHOT: RatesSnapshot = {
+  ...THREE_RATES,
+  activeKey: 'CUSTOM_USD',
+  currencies: THREE_RATES.currencies.map((item) =>
+    item.code === 'USD'
+      ? { ...item, bsPerUnit: 950, bsPerUsd: 950, source: 'CUSTOM' as const }
+      : { ...item, bsPerUsd: 950 },
+  ),
+  baseCurrency: {
+    code: 'VES',
+    label: 'Bolívares',
+    symbol: 'Bs',
+    decimals: 2,
+    bsPerUnit: 1,
+    bsPerUsd: 950,
+  },
+};
+
 /** Conversiones entre la moneda base (USD) y las monedas configuradas. */
 describe('RatesService (conversión de monedas)', () => {
   let http: HttpTestingController;
   let rates: RatesService;
 
   beforeEach(() => {
+    // La moneda de los precios se lee de aquí: sin limpiarlo, una preferencia que
+    // dejó otra prueba cambiaría el formateo de estos montos.
+    localStorage.clear();
     TestBed.configureTestingModule({
       providers: [provideHttpClient(), provideHttpClientTesting()],
     });
@@ -258,6 +285,51 @@ describe('RatesService (conversión de monedas)', () => {
     expect(rates.bsPerUsdWith('CUSTOM_USD')).toBe(876.7976);
     expect(rates.toBase(9000, 'VES', 'CUSTOM_USD')).toBe(10.26);
     expect(rates.fromBase(10, 'VES', 'CUSTOM_USD')).toBe(8767.98);
+  });
+
+  /**
+   * El cajero cobra el precio que LEE en pantalla, y lo lee en la moneda de la
+   * empresa (los bolívares, con la tasa personalizada activa): la **tasa de cobro**
+   * (el BCV) lleva ese precio a la moneda con la que paga el cliente.
+   */
+  it('cobra el precio que se ve en pantalla con la tasa de cobro', () => {
+    rates.load(true);
+    http.expectOne(`${API}/rates?refresh=true`).flush(POS_SNAPSHOT);
+
+    // 10 USD se ven como Bs 9.500,00 (personalizada 950)…
+    expect(rates.displayAmount(10)).toBe(9500);
+    // …y esos bolívares, al cambio del BCV (876,7976), son 10,83 USD: eso cobra el
+    // cajero cuando el cliente paga en divisas, no los 10 USD guardados.
+    expect(rates.chargeAmount(10, 'USD', 'BCV_USD')).toBe(10.83);
+    // Pagando en bolívares el cliente entrega el precio de la pantalla, tal cual.
+    expect(rates.chargeAmount(10, 'VES', 'BCV_USD')).toBe(9500);
+  });
+
+  it('cobra el monto guardado cuando la tasa de cobro es la activa', () => {
+    rates.load(true);
+    http.expectOne(`${API}/rates?refresh=true`).flush(POS_SNAPSHOT);
+
+    // Con la tasa activa (la personalizada del local) el precio en pantalla y los
+    // dólares guardados coinciden: no hay nada que reexpresar.
+    expect(rates.chargeAmount(10, 'USD')).toBe(10);
+    expect(rates.chargeAmount(10, 'USD', 'CUSTOM_USD')).toBe(10);
+  });
+
+  it('cobra en otra moneda el precio que se ve en pantalla', () => {
+    rates.load(true);
+    http.expectOne(`${API}/rates?refresh=true`).flush(POS_SNAPSHOT);
+
+    // Bs 9.500 son 10,83 USD al BCV y, en pesos (0,22 Bs por COP), 43.162,35 COP.
+    expect(rates.chargeAmount(10, 'COP', 'BCV_USD')).toBe(43162.35);
+  });
+
+  it('no cambia el cobro cuando los precios se ven en dólares', () => {
+    rates.load(true);
+    http.expectOne(`${API}/rates?refresh=true`).flush(THREE_RATES);
+
+    // La pantalla muestra dólares: el precio que se lee ya es el monto guardado.
+    expect(rates.displayAmount(10)).toBe(10);
+    expect(rates.chargeAmount(10, 'USD', 'BCV_USD')).toBe(10);
   });
 
   it('muestra los montos en la moneda base elegida por el local', () => {
@@ -527,3 +599,356 @@ describe('RatesService (moneda de los precios por rol)', () => {
     expect(money(10)).toBe('Bs 8,767.98');
   });
 });
+
+/**
+ * Conversiones que ve el cajero: por defecto **ninguna** (los precios, en la
+ * moneda que le configuraron) y solo las monedas que el admin active en
+ * Configuración → Cajero. Quien administra el local —o una pantalla sin sesión—
+ * sigue viendo todas.
+ */
+describe('RatesService (conversiones que ve el cajero)', () => {
+  let http: HttpTestingController;
+  let rates: RatesService;
+  let preferences: PreferencesService;
+
+  beforeEach(() => {
+    localStorage.clear();
+    TestBed.configureTestingModule({
+      providers: [provideHttpClient(), provideHttpClientTesting()],
+    });
+
+    http = TestBed.inject(HttpTestingController);
+    rates = TestBed.inject(RatesService);
+    preferences = TestBed.inject(PreferencesService);
+  });
+
+  afterEach(() => {
+    clearSession();
+    localStorage.clear();
+    http.verify();
+  });
+
+  /** Deja una sesión guardada con ese rol (es lo que lee la vista del cajero). */
+  function sessionWith(role: Role): void {
+    saveSession({ accessToken: 'token', role } as SessionResponse);
+  }
+
+  /** Carga las tasas del snapshot. */
+  function load(): void {
+    rates.load();
+    http.expectOne(`${API}/rates`).flush(SNAPSHOT);
+  }
+
+  /** Activa las conversiones del cajero, como Configuración → Cajero. */
+  function allowConversions(codes: string[]): void {
+    preferences.setConversionCurrencies(codes);
+    http
+      .expectOne({ method: 'PATCH', url: `${API}/preferences` })
+      .flush({
+        tipPercent: 10,
+        dialogView: 'modal',
+        priceCurrency: null,
+        conversionCurrencies: codes.length ? codes : null,
+      });
+  }
+
+  it('sin configurar, el cajero no ve ninguna conversión', () => {
+    sessionWith('CASHIER');
+    load();
+
+    expect(rates.allowedConversionCodes()).toEqual([]);
+
+    const lines = rates.conversionLines(10);
+    // Hay conversiones que mostrar (el peso y el dólar del BCV)…
+    expect(lines.length).toBeGreaterThan(1);
+    // …pero el cajero no ve ninguna hasta que el admin las active.
+    expect(rates.visibleConversions(lines)).toEqual([]);
+  });
+
+  it('deja pasar solo las monedas activadas', () => {
+    sessionWith('CASHIER');
+    allowConversions(['USD']);
+    load();
+
+    const lines = rates.conversionLines(10);
+    expect(lines.some((item) => item.code === 'COP')).toBeTrue();
+
+    expect(rates.visibleConversions(lines).map((item) => item.code)).toEqual(['USD']);
+  });
+
+  it('las líneas "al cambio" en bolívares dependen de VES', () => {
+    sessionWith('CASHIER');
+    load();
+
+    // Con la moneda base en dólares la conversión es el equivalente en bolívares:
+    // esas líneas van sin código de moneda y las gobierna el bolívar.
+    const inBs = rates.conversions(10);
+    expect(inBs.every((item) => item.inBs)).toBeTrue();
+
+    allowConversions(['VES']);
+    expect(rates.visibleConversions(inBs)).toEqual(inBs);
+
+    allowConversions(['COP']);
+    expect(rates.visibleConversions(inBs)).toEqual([]);
+  });
+
+  it('a quien administra el local no se le filtra nada', () => {
+    sessionWith('MANAGER');
+    allowConversions([]);
+    load();
+
+    const lines = rates.conversionLines(10);
+
+    expect(rates.allowedConversionCodes()).toBeNull();
+    expect(rates.visibleConversions(lines)).toEqual(lines);
+  });
+
+  it('una pantalla sin sesión tampoco filtra (no hay preferencia que aplicar)', () => {
+    allowConversions([]);
+    load();
+
+    const lines = rates.conversionLines(10);
+
+    expect(rates.allowedConversionCodes()).toBeNull();
+    expect(rates.visibleConversions(lines)).toEqual(lines);
+  });
+
+  it('sabe la moneda de cada línea de conversión', () => {
+    expect(
+      rates.conversionCurrency({
+        key: 'cop',
+        code: 'cop',
+        label: 'COP · manual',
+        rate: 0.22,
+        amount: 1,
+        text: 'COL$ 1.00',
+      }),
+    ).toBe('COP');
+
+    // Las líneas en bolívares (una por tasa) no traen código: son del bolívar.
+    expect(
+      rates.conversionCurrency({
+        key: 'BCV_USD',
+        label: 'BCV $',
+        rate: 876.7976,
+        amount: 1,
+        text: 'Bs 876.80',
+        inBs: true,
+      }),
+    ).toBe('VES');
+
+    // Sin moneda (no debería pasar) no se puede comparar con lo activado.
+    expect(
+      rates.conversionCurrency({
+        key: 'X',
+        label: 'X',
+        rate: 1,
+        amount: 1,
+        text: '1',
+      }),
+    ).toBeNull();
+  });
+
+  it('sabe si esta sesión puede ver una moneda', () => {
+    // Quien administra el local (y una pantalla sin sesión) ven todas.
+    expect(rates.showsConversion('USD')).toBeTrue();
+    expect(rates.showsConversion(' ')).toBeTrue();
+
+    sessionWith('CASHIER');
+    expect(rates.showsConversion('USD')).toBeFalse();
+    // Las líneas en bolívares (sin código) tampoco pasan hasta activar VES.
+    expect(rates.showsConversion(null)).toBeFalse();
+
+    allowConversions(['USD']);
+    // La comparación no distingue mayúsculas ni espacios: la preferencia y las
+    // líneas vienen del servidor y de la vista.
+    expect(rates.showsConversion(' usd ')).toBeTrue();
+    expect(rates.showsConversion('VES')).toBeFalse();
+  });
+
+  it('recalcula el filtro al entrar o salir la sesión en este equipo', () => {
+    // El servicio se construye al abrir la aplicación, cuando todavía no hay
+    // sesión: el filtro no puede quedarse con lo que vio entonces.
+    allowConversions(['USD']);
+    expect(rates.showsConversion('VES')).toBeTrue();
+
+    // Entra el cajero desde el login: pasa a ver solo lo que activó el admin.
+    sessionWith('CASHIER');
+    expect(rates.showsConversion('USD')).toBeTrue();
+    expect(rates.showsConversion('VES')).toBeFalse();
+
+    // Si la misma pantalla pasa a administrar el local, vuelve a verlo todo.
+    sessionWith('MANAGER');
+    expect(rates.allowedConversionCodes()).toBeNull();
+    expect(rates.showsConversion('VES')).toBeTrue();
+
+    // Y al cerrar sesión (login abierto en un equipo compartido) tampoco se filtra
+    // nada: no hay preferencia de cajero que aplicar.
+    sessionWith('CASHIER');
+    expect(rates.showsConversion('VES')).toBeFalse();
+
+    clearSession();
+    expect(rates.showsConversion('VES')).toBeTrue();
+  });
+});
+
+/**
+ * Precio en dólares del BCV: la línea que el admin activa en Configuración → Cajero
+ * para que el cajero vea, debajo de cada monto, la equivalencia con la **tasa
+ * oficial** del BCV. La dirección depende de la moneda con la que se ven los
+ * precios: en bolívares enseña los dólares oficiales de esos bolívares y en una
+ * divisa enseña los bolívares que valen esas divisas. Es una preferencia de la
+ * empresa y solo la ve el personal de caja.
+ */
+describe('RatesService (precio en dólares del BCV)', () => {
+  let http: HttpTestingController;
+  let rates: RatesService;
+  let preferences: PreferencesService;
+
+  beforeEach(() => {
+    localStorage.clear();
+    TestBed.configureTestingModule({
+      providers: [provideHttpClient(), provideHttpClientTesting()],
+    });
+
+    http = TestBed.inject(HttpTestingController);
+    rates = TestBed.inject(RatesService);
+    preferences = TestBed.inject(PreferencesService);
+  });
+
+  afterEach(() => {
+    setDisplayCurrency(null);
+    clearSession();
+    localStorage.clear();
+    http.verify();
+  });
+
+  /** Deja una sesión guardada con ese rol (es lo que lee la línea del BCV). */
+  function sessionWith(role: Role): void {
+    saveSession({ accessToken: 'token', role } as SessionResponse);
+  }
+
+  /** Carga las tasas del snapshot. */
+  function load(): void {
+    rates.load();
+    http.expectOne(`${API}/rates`).flush(SNAPSHOT);
+  }
+
+  /** Activa (o apaga) el precio en dólares del BCV, como Configuración → Cajero. */
+  function preferBcvPrice(show: boolean): void {
+    preferences.setShowBcvPrice(show);
+    http.expectOne({ method: 'PATCH', url: `${API}/preferences` }).flush({
+      tipPercent: 10,
+      dialogView: 'modal',
+      priceCurrency: null,
+      showBcvPrice: show ? true : null,
+    });
+  }
+
+  it('con los precios en bolívares convierte los bolívares del monto a dólares oficiales', () => {
+    load();
+
+    // 10 USD * 876,7976 = 8 767,98 Bs y, a la tasa del BCV, son 10,00 dólares.
+    const line = rates.bcvUsdConversion(10, null, 'VES');
+
+    expect(line?.key).toBe('BCV_USD');
+    expect(line?.code).toBe('USD');
+    // Rotulada con su origen: el dólar del BCV no es el de la tasa del local.
+    expect(line?.label).toBe('USD · BCV');
+    expect(line?.rate).toBe(876.7976);
+    expect(line?.text).toBe('$ 10.00');
+    expect(line?.inBs).toBeUndefined();
+  });
+
+  it('con los precios en una divisa devuelve los bolívares de la tasa oficial', () => {
+    load();
+
+    // $ 10,00 a la tasa oficial del BCV son 8 767,98 Bs: la línea que necesita
+    // quien cobra con los precios en dólares (o en euros).
+    const line = rates.bcvUsdConversion(10, null, 'USD');
+
+    expect(line?.key).toBe('BCV_USD');
+    expect(line?.code).toBe('VES');
+    expect(line?.label).toBe('VES · BCV');
+    expect(line?.rate).toBe(876.7976);
+    expect(line?.text).toBe('Bs 8,767.98');
+
+    // Los bolívares que escribió el operador son de otra tasa (la del local), así
+    // que aquí no aplican: la línea sale siempre de la tasa oficial del BCV.
+    expect(rates.bcvUsdConversion(10, 8767.98, 'EUR')?.text).toBe('Bs 8,767.98');
+  });
+
+  it('sin indicar la moneda sigue la que se usa para mostrar los precios', () => {
+    load();
+
+    expect(displayBaseCode()).toBe('USD');
+    expect(rates.bcvUsdConversion(10)?.text).toBe('Bs 8,767.98');
+
+    // Con los precios en bolívares la línea es la vuelta al dólar oficial.
+    setDisplayCurrency({
+      code: 'VES',
+      label: 'Bolívares',
+      symbol: 'Bs',
+      decimals: 2,
+      bsPerUnit: 1,
+      bsPerUsd: 876.7976,
+    });
+
+    expect(displayBaseCode()).toBe('VES');
+    expect(rates.bcvUsdConversion(10)?.text).toBe('$ 10.00');
+  });
+
+  it('respeta los bolívares que escribió el operador', () => {
+    load();
+
+    // Bs 350,00 escritos por el operador son 0,40 dólares oficiales, no los 0,36 que
+    // salen de volver a convertir el monto guardado (0,36 * 876,7976).
+    expect(rates.bcvUsdConversion(0.36, 350, 'VES')?.text).toBe('$ 0.40');
+    expect(rates.bcvUsdConversion(0.36, null, 'VES')?.text).toBe('$ 0.36');
+  });
+
+  it('no devuelve línea sin bolívares ni sin la tasa del BCV', () => {
+    load();
+
+    expect(rates.bcvUsdConversion(0, null, 'VES')).toBeNull();
+    expect(rates.bcvUsdConversion(null, null, 'VES')).toBeNull();
+    expect(rates.bcvUsdConversion(0, null, 'USD')).toBeNull();
+
+    // El BCV no respondió con una tasa utilizable: no hay dólares oficiales que
+    // mostrar (y las conversiones "al cambio" siguen con la última tasa conocida).
+    rates.load(true);
+    http.expectOne(`${API}/rates?refresh=true`).flush({
+      ...SNAPSHOT,
+      bcv: { ...SNAPSHOT.bcv, current: { ...SNAPSHOT.bcv.current, usd: 0 } },
+    });
+
+    expect(rates.bcvUsdConversion(10, null, 'VES')).toBeNull();
+    expect(rates.bcvUsdConversion(10, null, 'USD')).toBeNull();
+  });
+
+  it('solo la ve el cajero con la preferencia de la empresa activada', () => {
+    sessionWith('CASHIER');
+    load();
+    expect(rates.showBcvPrice()).toBeFalse();
+
+    preferBcvPrice(true);
+    expect(rates.showBcvPrice()).toBeTrue();
+
+    // Apagarla vuelve al precio sin la línea del BCV.
+    preferBcvPrice(false);
+    expect(rates.showBcvPrice()).toBeFalse();
+
+    // La preferencia es de la caja: ADMIN y MANAGER conservan su vista.
+    preferBcvPrice(true);
+    sessionWith('ADMIN');
+    expect(rates.showBcvPrice()).toBeFalse();
+
+    sessionWith('MANAGER');
+    expect(rates.showBcvPrice()).toBeFalse();
+
+    // Y una pantalla sin sesión (login, pantallas públicas) tampoco la pinta.
+    clearSession();
+    expect(rates.showBcvPrice()).toBeFalse();
+  });
+});
+

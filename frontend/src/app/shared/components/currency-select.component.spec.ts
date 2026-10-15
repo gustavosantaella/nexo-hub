@@ -6,7 +6,7 @@ import {
 import { Component, signal } from '@angular/core';
 import { TestBed, type ComponentFixture } from '@angular/core/testing';
 import { environment } from '../../../environments/environment';
-import type { RatesSnapshot } from '../../core/models/rates.model';
+import type { RateKey, RatesSnapshot } from '../../core/models/rates.model';
 import { RatesService } from '../../core/services/rates.service';
 import { CurrencySelectComponent } from './currency-select.component';
 
@@ -120,6 +120,7 @@ const CUSTOM_SNAPSHOT: RatesSnapshot = {
       label="Moneda del pago"
       [value]="currency()"
       [amount]="amount()"
+      [rateKey]="rateKey()"
       (valueChange)="currency.set($event)"
     />
   `,
@@ -127,6 +128,7 @@ const CUSTOM_SNAPSHOT: RatesSnapshot = {
 class HostComponent {
   readonly currency = signal('USD');
   readonly amount = signal<number>(0);
+  readonly rateKey = signal<RateKey | null>(null);
 }
 
 /** Selector de la moneda de un pago con vista previa de la conversión. */
@@ -242,6 +244,62 @@ describe('CurrencySelectComponent', () => {
     fixture.detectChanges();
 
     expect(fixture.nativeElement.textContent).toContain('al cambio');
+  });
+
+  /**
+   * Con una **tasa de cobro** fijada (Configuración → Cajero) el monto en bolívares
+   * y la etiqueta del dólar hablan de ESA tasa: el operador no puede leer que se
+   * cobra con la personalizada mientras el cajero cobra al BCV.
+   */
+  it('convierte y etiqueta el dólar con la tasa de cobro', () => {
+    rates.load(true);
+    http.expectOne(`${API}/rates?refresh=true`).flush(CUSTOM_SNAPSHOT);
+
+    fixture.componentInstance.amount.set(10);
+    fixture.componentInstance.rateKey.set('BCV_USD');
+    fixture.detectChanges();
+
+    expect(options()[0].textContent).toContain('Dólares (USD) · tasa BCV');
+    // $ 10 al cambio del BCV son Bs 8.767,98 (con la personalizada, 9.055,00).
+    expect(fixture.nativeElement.textContent).toContain('Bs 8,767.98');
+    expect(fixture.nativeElement.textContent).toContain('tasa BCV');
+  });
+
+  /**
+   * La ayuda del monto tambien usa la **tasa de cobro**: cobrando en bolivares el
+   * equivalente dice los dolares que el API va a registrar por ese cobro (el precio
+   * de la pantalla pasado a la tasa del cajero), no los dolares del catalogo.
+   */
+  it('convierte el monto en bolívares con la tasa de cobro', () => {
+    rates.load(true);
+    http.expectOne(`${API}/rates?refresh=true`).flush(CUSTOM_SNAPSHOT);
+
+    fixture.componentInstance.currency.set('VES');
+    // Los bolívares que se leen en pantalla: $ 10 al cambio del local (905,50).
+    fixture.componentInstance.amount.set(9055);
+    fixture.componentInstance.rateKey.set('BCV_USD');
+    fixture.detectChanges();
+
+    // 9.055 Bs al cambio del BCV (876,7976) son $ 10.33: lo mismo que guarda el
+    // API, y la ayuda nombra la tasa para que el número se explique.
+    expect(fixture.nativeElement.textContent).toContain(
+      '= $ 10.33 · Bs 9,055.00 · tasa BCV',
+    );
+  });
+
+  it('sin tasa de cobro el bolívar se convierte con la tasa de la pantalla', () => {
+    rates.load(true);
+    http.expectOne(`${API}/rates?refresh=true`).flush(CUSTOM_SNAPSHOT);
+
+    fixture.componentInstance.currency.set('VES');
+    fixture.componentInstance.amount.set(9055);
+    fixture.detectChanges();
+
+    // Los mismos bolívares, con la tasa personalizada (905,50) que es con la que
+    // se ven los precios, son los $ 10.00 del catálogo.
+    expect(fixture.nativeElement.textContent).toContain(
+      '= $ 10.00 · Bs 9,055.00',
+    );
   });
 
   it('no muestra conversión cuando el monto es cero', () => {

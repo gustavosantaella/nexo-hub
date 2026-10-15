@@ -2,6 +2,7 @@ import { BadRequestException, NotFoundException } from '@nestjs/common';
 import {
   OrderStatus,
   OrderType,
+  PaymentMethod,
   PaymentStatus,
   StockMovementType,
   StockReferenceType,
@@ -10,10 +11,49 @@ import type { PrismaService } from '../../prisma/prisma.service';
 import type { CashService } from '../cash/cash.service';
 import type { InventoryService } from '../inventory/inventory.service';
 import type { MenusService } from '../menus/menus.service';
-import type { RatesService } from '../rates/rates.service';
-import { OrdersService, computeOrderTotals } from './orders.service';
+import type { RatesService, RateHistory } from '../rates/rates.service';
+import {
+  OrdersService,
+  computeOrderTotals,
+  encodeRatesHistory,
+  parseRatesHistory,
+} from './orders.service';
 
 const COMPANY_ID = 'company-1';
+
+/**
+ * Historial de tasas de ejemplo: TODAS las tasas vigentes del dia (BCV dolar y
+ * euro + la personalizada del local), tal como lo arma `RatesService`.
+ */
+const RATES_HISTORY: RateHistory = {
+  capturedAt: '2026-10-13T20:54:00.203Z',
+  bcvDate: '2026-10-13',
+  stale: false,
+  activeKey: 'CUSTOM_USD',
+  rates: [
+    {
+      key: 'BCV_USD',
+      currency: 'USD',
+      source: 'BCV',
+      rate: 876.7976,
+      date: '2026-10-13',
+    },
+    {
+      key: 'BCV_EUR',
+      currency: 'EUR',
+      source: 'BCV',
+      rate: 982.00454402,
+      date: '2026-10-13',
+    },
+    {
+      key: 'CUSTOM_USD',
+      currency: 'USD',
+      source: 'CUSTOM',
+      rate: 905.5,
+      date: null,
+    },
+  ],
+};
 
 /** Catalogo de productos simulado (precios en la moneda base, decimales). */
 const PRODUCTS: Record<
@@ -57,6 +97,19 @@ interface OrderFixture {
   paidAmount: number;
   items: OrderItemFixture[];
   /** Pagos registrados (bloquean la cancelacion cuando hay alguno). */
+  payments?: {
+    id: string;
+    amount: number;
+    method: string;
+    currency: string;
+    exchangeRate?: number | null;
+    /** Tasa elegida para el cobro (`null` = la activa del sistema). */
+    rateKey?: string | null;
+    /** Historial de tasas del dia, tal como lo guarda la columna (JSON texto). */
+    ratesHistory?: string | null;
+    baseAmount: number;
+    createdAt: string;
+  }[];
   _count?: { payments: number };
 }
 
@@ -152,6 +205,7 @@ const MENUS: Record<string, MenuFixture> = {
 function createService(
   current: OrderFixture | null,
   rates: Partial<RatesService> = {},
+  cash: Partial<CashService> = {},
 ) {
   const trackedProducts = jest.fn(
     async (args: { where: { id: { in: string[] } } }) =>
@@ -176,6 +230,14 @@ function createService(
       updateMany: jest.fn(async () => ({ count: 1 })),
       findUniqueOrThrow: jest.fn(async () => ({ ...current, items: current?.items ?? [] })),
       delete: jest.fn(async () => ({ id: current?.id ?? 'o1' })),
+      // Los cobros releen el pedido dentro de la transaccion.
+      findFirst: jest.fn(async () => current),
+    },
+    orderPayment: {
+      create: jest.fn(async (args: { data: Record<string, unknown> }) => ({
+        id: 'pay1',
+        ...args.data,
+      })),
     },
     product: { findMany: trackedProducts },
   };
@@ -230,12 +292,14 @@ function createService(
   const service = new OrdersService(
     prisma as unknown as PrismaService,
     inventory as unknown as InventoryService,
-    {} as unknown as CashService,
-    rates as unknown as RatesService,
+    cash as unknown as CashService,
+    // Cada test declara solo las tasas que usa: todo cobro guarda ademas el
+    // historial de tasas del dia, asi que viene simulado por defecto.
+    { ratesHistory: jest.fn(async () => RATES_HISTORY), ...rates } as unknown as RatesService,
     menus as unknown as MenusService,
   );
 
-  return { service, prisma, tx, inventory, menus };
+  return { service, prisma, tx, inventory, menus, cash };
 }
 
 /** Datos enviados a `tx.order.update` en la primera llamada. */
@@ -795,6 +859,222 @@ describe('OrdersService.update (costo de delivery)', () => {
 });
 
 
+describe('OrdersService.addPayment (tasa de cobro del cajero)', () => {
+  /** Conversion simulada: 1 USD = 36.5 VES. */
+  const rates = {
+    resolvePayment: jest.fn(async () => ({
+      currency: 'VES',
+      exchangeRate: 36.5,
+      baseAmount: 100,
+    })),
+    /** Sin tasa de cobro el saldo que se puede cobrar es el del pedido. */
+    chargeBalance: jest.fn(async (_companyId: string, balance: number) => balance),
+  };
+
+  /** Caja abierta: todo cobro impacta un movimiento de ingreso. */
+  const cash = {
+    getOpenSessionOrThrow: jest.fn(async () => ({ id: 's1' })),
+    registerMovement: jest.fn(async () => ({ id: 'mv1' })),
+  } as unknown as Partial<CashService>;
+
+  beforeEach(() => {
+    rates.resolvePayment.mockClear();
+  });
+
+  it('cobra con la tasa de cobro configurada por la empresa', async () => {
+    const { service, tx } = createService(order(), rates, cash);
+
+    await service.addPayment(
+      COMPANY_ID,
+      'o1',
+      {
+        amount: 3650,
+        method: PaymentMethod.CASH,
+        currency: 'VES',
+        rateKey: 'CUSTOM_USD',
+      },
+      'u1',
+    );
+
+    expect(rates.resolvePayment).toHaveBeenCalledWith(
+      COMPANY_ID,
+      3650,
+      'VES',
+      'CUSTOM_USD',
+    );
+
+    const payment = tx.orderPayment.create.mock.calls[0][0].data;
+    expect(payment.exchangeRate).toBe(36.5);
+    expect(payment.baseAmount).toBe(100);
+    expect(payment.currency).toBe('VES');
+    // El cobro guarda con que tasa se cobro y la foto del dia completa.
+    expect(payment.rateKey).toBe('CUSTOM_USD');
+    expect(JSON.parse(String(payment.ratesHistory))).toEqual(RATES_HISTORY);
+  });
+
+  it('guarda TODAS las tasas del dia en el cobro (no solo la aplicada)', async () => {
+    const { service, tx } = createService(order(), rates, cash);
+
+    await service.addPayment(
+      COMPANY_ID,
+      'o1',
+      {
+        amount: 3650,
+        method: PaymentMethod.CASH,
+        currency: 'VES',
+        rateKey: 'CUSTOM_USD',
+      },
+      'u1',
+    );
+
+    const payment = tx.orderPayment.create.mock.calls[0][0].data;
+    const history = parseRatesHistory(payment.ratesHistory);
+    expect(history?.rates.map((rate) => rate.key)).toEqual([
+      'BCV_USD',
+      'BCV_EUR',
+      'CUSTOM_USD',
+    ]);
+    expect(history?.bcvDate).toBe('2026-10-13');
+    expect(history?.activeKey).toBe('CUSTOM_USD');
+    expect(history?.stale).toBe(false);
+  });
+
+  it('sin tasa elegida el cobro queda sin clave (la activa del sistema)', async () => {
+    const { service, tx } = createService(order(), rates, cash);
+
+    await service.addPayment(
+      COMPANY_ID,
+      'o1',
+      { amount: 3650, method: PaymentMethod.CASH, currency: 'VES' },
+      'u1',
+    );
+
+    const payment = tx.orderPayment.create.mock.calls[0][0].data;
+    expect(payment.rateKey).toBeNull();
+    expect(parseRatesHistory(payment.ratesHistory)?.rates).toHaveLength(3);
+  });
+
+  it('entrega el historial del cobro ya decodificado al leer el pedido', async () => {
+    const { service } = createService(
+      order({
+        payments: [
+          {
+            id: 'pay1',
+            amount: 3650,
+            method: PaymentMethod.CASH,
+            currency: 'VES',
+            exchangeRate: 36.5,
+            rateKey: 'CUSTOM_USD',
+            ratesHistory: encodeRatesHistory(RATES_HISTORY),
+            baseAmount: 100,
+            createdAt: '2026-10-13T20:55:00.000Z',
+          },
+        ],
+        paidAmount: 100,
+      }),
+    );
+
+    const found = await service.findOne(COMPANY_ID, 'o1');
+
+    expect(found.payments?.[0].ratesHistory).toEqual(RATES_HISTORY);
+    expect(found.payments?.[0].rateKey).toBe('CUSTOM_USD');
+    // El resto del cobro se conserva tal cual.
+    expect(found.payments?.[0].baseAmount).toBe(100);
+  });
+
+  it('sin tasa elegida cobra con la tasa activa del sistema', async () => {
+    const { service } = createService(order(), rates, cash);
+
+    await service.addPayment(
+      COMPANY_ID,
+      'o1',
+      { amount: 3650, method: PaymentMethod.CASH, currency: 'VES' },
+      'u1',
+    );
+
+    // `null` deja que el modulo de tasas use la personalizada del dolar o el BCV.
+    expect(rates.resolvePayment).toHaveBeenCalledWith(COMPANY_ID, 3650, 'VES', null);
+  });
+
+  it('descarta una tasa inventada y cobra con la activa', async () => {
+    const { service } = createService(order(), rates, cash);
+
+    await service.addPayment(
+      COMPANY_ID,
+      'o1',
+      {
+        amount: 3650,
+        method: PaymentMethod.CASH,
+        currency: 'VES',
+        rateKey: 'MALA',
+      },
+      'u1',
+    );
+
+    expect(rates.resolvePayment).toHaveBeenCalledWith(COMPANY_ID, 3650, 'VES', null);
+  });
+
+  /**
+   * El cajero cobra el precio que LEE en pantalla (los bolivares del pedido) y lo
+   * pasa a la moneda del pago con la tasa de cobro: con el BCV por debajo de la
+   * tasa personalizada del local, el cobro en divisas vale mas que el total del
+   * pedido y no es un exceso.
+   */
+  it('acepta el cobro en divisas que vale el precio en bolivares de la pantalla', async () => {
+    const posRates = {
+      resolvePayment: jest.fn(async () => ({
+        currency: 'USD',
+        exchangeRate: null,
+        baseAmount: 110,
+      })),
+      chargeBalance: jest.fn(async () => 110),
+    };
+    const { service, tx } = createService(order(), posRates, cash);
+
+    await service.addPayment(
+      COMPANY_ID,
+      'o1',
+      {
+        amount: 110,
+        method: PaymentMethod.CASH,
+        currency: 'USD',
+        rateKey: 'BCV_USD',
+      },
+      'u1',
+    );
+
+    expect(posRates.chargeBalance).toHaveBeenCalledWith(COMPANY_ID, 100, 'BCV_USD');
+    const payment = tx.orderPayment.create.mock.calls[0][0].data;
+    expect(payment.baseAmount).toBe(110);
+  });
+
+  it('rechaza el cobro que supera el precio en pantalla', async () => {
+    const posRates = {
+      resolvePayment: jest.fn(async () => ({
+        currency: 'USD',
+        exchangeRate: null,
+        baseAmount: 130,
+      })),
+      chargeBalance: jest.fn(async () => 110),
+    };
+    const { service } = createService(order(), posRates, cash);
+
+    await expect(
+      service.addPayment(
+        COMPANY_ID,
+        'o1',
+        {
+          amount: 130,
+          method: PaymentMethod.CASH,
+          currency: 'USD',
+          rateKey: 'BCV_USD',
+        },
+        'u1',
+      ),
+    ).rejects.toBeInstanceOf(BadRequestException);
+  });
+});
+
 describe('OrdersService.updateItem / removeItem (corregir o quitar productos)', () => {
   it('baja la cantidad y devuelve la diferencia al inventario', async () => {
     const { service, tx, inventory } = createService(order());
@@ -1225,6 +1505,53 @@ describe('OrdersService (consumo de inventario congelado)', () => {
       ),
     ).rejects.toThrow(/Descontinuado/);
     expect(tx.order.update).not.toHaveBeenCalled();
+  });
+});
+
+describe('historial de tasas del cobro (JSON de la columna)', () => {
+  it('serializa el historial y lo vuelve a leer tal cual', () => {
+    const raw = encodeRatesHistory(RATES_HISTORY);
+
+    expect(typeof raw).toBe('string');
+    expect(parseRatesHistory(raw)).toEqual(RATES_HISTORY);
+    // Un historial ya decodificado (objeto) tambien se acepta.
+    expect(parseRatesHistory(RATES_HISTORY)).toEqual(RATES_HISTORY);
+  });
+
+  it('devuelve null cuando el historial esta vacio o corrupto', () => {
+    expect(parseRatesHistory(null)).toBeNull();
+    expect(parseRatesHistory(undefined)).toBeNull();
+    expect(parseRatesHistory('')).toBeNull();
+    expect(parseRatesHistory('{ no es json')).toBeNull();
+    // Sin la lista de tasas no es un historial valido.
+    expect(parseRatesHistory('{"capturedAt":"2026-10-13T20:54:00.203Z"}')).toBeNull();
+  });
+
+  it('descarta las tasas que no reconoce y completa los datos faltantes', () => {
+    const parsed = parseRatesHistory(
+      JSON.stringify({
+        activeKey: 'MALA',
+        rates: [
+          { key: 'BCV_USD', source: 'BCV', rate: '876.7976', date: '2026-10-13' },
+          { key: 'MALA', rate: 1 },
+          { key: 'BCV_EUR', rate: 0 },
+        ],
+      }),
+    );
+
+    expect(parsed?.rates).toEqual([
+      {
+        key: 'BCV_USD',
+        currency: 'USD',
+        source: 'BCV',
+        rate: 876.7976,
+        date: '2026-10-13',
+      },
+    ]);
+    // Sin clave valida el historial cae en la tasa por defecto del sistema.
+    expect(parsed?.activeKey).toBe('BCV_USD');
+    expect(parsed?.stale).toBe(false);
+    expect(parsed?.bcvDate).toBeNull();
   });
 });
 

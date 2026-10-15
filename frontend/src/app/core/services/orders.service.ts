@@ -72,7 +72,10 @@ export class OrdersService {
   /**
    * Registra un cobro del pedido (impacta la caja abierta).
    * `amount` va en la moneda del cobro (`currency`); el backend guarda ademas
-   * su equivalente en la moneda base.
+   * su equivalente en la moneda base. `rateKey` es la **tasa de cobro** con la
+   * que se convierte ese monto (la que fijo la empresa en Configuracion → Cajero):
+   * el cajero cobra el precio que ve en pantalla, asi que con una tasa de cobro
+   * distinta de la activa el cobro puede valer mas que el total del pedido.
    */
   pay(
     id: string,
@@ -80,6 +83,7 @@ export class OrdersService {
       amount: number;
       method: PaymentMethod;
       currency?: string;
+      rateKey?: string;
       note?: string;
     },
   ) {

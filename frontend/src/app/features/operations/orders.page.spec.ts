@@ -171,6 +171,79 @@ const RATES_SNAPSHOT: RatesSnapshot = {
   reference: null,
 };
 
+/**
+ * Tasas de la venta de mostrador con los precios vistos en BOLÍVARES: la tasa
+ * personalizada del local (950) es la activa —por eso cada $ 10 se leen como
+ * Bs 9.500— y el BCV marca 876,7976 Bs por dólar, que es con lo que cobra el
+ * cajero cuando la empresa fija el BCV como tasa de cobro.
+ */
+const POS_RATES: RatesSnapshot = {
+  bcv: {
+    current: { date: '2026-10-13', usd: 876.7976, eur: 982.00454402 },
+    previous: { date: '2026-10-09', usd: 875.6505, eur: 980.61472543 },
+    changePercentage: { usd: 0.131, eur: 0.1417 },
+    fetchedAt: '2026-10-13T12:00:00.000Z',
+    expiresAt: '2026-10-13T12:15:00.000Z',
+    stale: false,
+    sourceUrl: 'https://rates.dolarvzla.com/bcv/current.json',
+  },
+  custom: { usd: 950, updatedAt: '2026-10-13T12:00:00.000Z', updatedBy: null },
+  rates: [
+    {
+      key: 'BCV_USD',
+      currency: 'USD',
+      source: 'BCV',
+      rate: 876.7976,
+      date: '2026-10-13',
+      previousRate: 875.6505,
+      changePercentage: 0.131,
+    },
+    {
+      key: 'CUSTOM_USD',
+      currency: 'USD',
+      source: 'CUSTOM',
+      rate: 950,
+      date: null,
+      previousRate: null,
+      changePercentage: null,
+    },
+  ],
+  activeKey: 'CUSTOM_USD',
+  currencies: [
+    {
+      code: 'USD',
+      label: 'Dólares',
+      symbol: '$',
+      enabled: true,
+      bsPerUnit: 950,
+      source: 'CUSTOM',
+      isBase: true,
+      isDisplayBase: false,
+      bsPerUsd: 950,
+    },
+    {
+      code: 'VES',
+      label: 'Bolívares',
+      symbol: 'Bs',
+      enabled: true,
+      bsPerUnit: 1,
+      source: 'BASE',
+      isBase: false,
+      isDisplayBase: true,
+      bsPerUsd: 950,
+    },
+  ],
+  baseCurrency: {
+    code: 'VES',
+    label: 'Bolívares',
+    symbol: 'Bs',
+    decimals: 2,
+    bsPerUnit: 1,
+    bsPerUsd: 950,
+  },
+  reference: null,
+};
+
 /** Pruebas del POS del cajero: productos del inventario, stock y cobro inmediato. */
 describe('OrdersPage (formulario del cajero)', () => {
   let http: HttpTestingController;
@@ -870,6 +943,53 @@ describe('OrdersPage (formulario del cajero)', () => {
     flushReload();
   });
 
+  /**
+   * Configuración → Cajero puede fijar la **tasa de cobro** de la empresa (el BCV):
+   * la venta de mostrador cobra el precio que se lee en pantalla —los bolívares—
+   * pasado a esa tasa, y el cobro viaja con ella para que el backend haga la misma
+   * cuenta contra el saldo del pedido.
+   */
+  it('cobra la venta de mostrador con la tasa de cobro del cajero', () => {
+    chargeRate('BCV_USD');
+    const { fixture, page } = mount();
+    openCreate(fixture, page);
+
+    // Llegan las tasas: los precios se ven en bolívares (personalizada 950).
+    rates.load(true);
+    http.expectOne(`${API}/rates?refresh=true`).flush(POS_RATES);
+    fixture.detectChanges();
+
+    // Sin propina, para que el total sea el del producto.
+    page.form.tipRate = 0;
+    page.addProduct(PRODUCTS[0]);
+
+    // 30 USD se ven como Bs 28.500,00 y, pagando en bolívares, el cliente entrega
+    // ese precio tal cual.
+    page.onChargeCurrencyChange('VES');
+    expect(page.chargeTotal).toBe(28500);
+    // En divisas, al cambio del BCV (876,7976), ese precio son 32,50 USD.
+    page.onChargeCurrencyChange('USD');
+    expect(page.chargeTotal).toBe(32.5);
+
+    page.submitCreate();
+
+    const createRequest = http.expectOne(
+      (request) => request.method === 'POST' && request.url === `${API}/orders`,
+    );
+    createRequest.flush(order({ total: 30 }));
+
+    const payRequest = http.expectOne(`${API}/orders/o1/payments`);
+    expect(payRequest.request.body).toEqual({
+      amount: 32.5,
+      method: 'CASH',
+      currency: 'USD',
+      rateKey: 'BCV_USD',
+    });
+    payRequest.flush(order({ total: 30, paidAmount: 32.5, paymentStatus: 'PAID' }));
+
+    flushReload();
+  });
+
   it('reabre el cobro si el pago falla despues de crear la venta', () => {
     const { fixture, page } = mount();
     openCreate(fixture, page);
@@ -906,6 +1026,16 @@ describe('OrdersPage (formulario del cajero)', () => {
       .flush({ tipPercent: 10, dialogView: view, priceCurrency: null });
   }
 
+  /** Fija la tasa de cobro de la empresa (Configuración → Cajero). */
+  function chargeRate(key: string): void {
+    TestBed.inject(PreferencesService).setChargeRateKey(key);
+    http
+      .expectOne(
+        (request) => request.method === 'PATCH' && request.url === `${API}/preferences`,
+      )
+      .flush({ tipPercent: 10, dialogView: 'modal', priceCurrency: null, chargeRateKey: key });
+  }
+
   it('abre el nuevo pedido en una ventana modal por defecto', () => {
     const { fixture, page } = mount();
     openCreate(fixture, page);
@@ -940,6 +1070,68 @@ describe('OrdersPage (formulario del cajero)', () => {
     fixture.detectChanges();
     expect(page.createOpen()).toBeFalse();
     expect(root.querySelector('app-sidebar aside')).toBeNull();
+  });
+
+  it('muestra el historial de tasas del dia guardado en el cobro', () => {
+    const { fixture, page } = mount();
+    openDetailWithItem(
+      fixture,
+      page,
+      detailOrderWithItem({
+        paymentStatus: 'PAID',
+        paidAmount: 60,
+        payments: [
+          {
+            id: 'pay1',
+            orderId: 'o1',
+            amount: 57000,
+            method: 'CASH',
+            currency: 'VES',
+            exchangeRate: 950,
+            rateKey: 'CUSTOM_USD',
+            ratesHistory: {
+              capturedAt: '2026-10-13T21:00:00.000Z',
+              bcvDate: '2026-10-13',
+              stale: false,
+              activeKey: 'CUSTOM_USD',
+              rates: [
+                {
+                  key: 'BCV_USD',
+                  currency: 'USD',
+                  source: 'BCV',
+                  rate: 900,
+                  date: '2026-10-13',
+                },
+                {
+                  key: 'BCV_EUR',
+                  currency: 'EUR',
+                  source: 'BCV',
+                  rate: 1000,
+                  date: '2026-10-13',
+                },
+                {
+                  key: 'CUSTOM_USD',
+                  currency: 'USD',
+                  source: 'CUSTOM',
+                  rate: 950,
+                  date: null,
+                },
+              ],
+            },
+            baseAmount: 60,
+            createdAt: '2026-10-13T21:00:00.000Z',
+          },
+        ],
+      }),
+    );
+
+    const text = (fixture.nativeElement as HTMLElement).textContent ?? '';
+    // La tasa con la que se cobro queda etiquetada en el pago...
+    expect(text).toContain('Personalizada');
+    // ...y se listan TODAS las tasas que estaban vigentes ese dia.
+    expect(text).toContain(
+      'Tasas del día: BCV $ 900.00 · BCV € 1,000.00 · Personalizada 950.00',
+    );
   });
 
   it('abre el detalle del pedido en el panel lateral y lo cierra desde su pie', () => {

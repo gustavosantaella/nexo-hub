@@ -17,6 +17,7 @@ import {
   type OrderType,
   type PaymentMethod,
 } from '../../../common/constants/enums';
+import { RATE_KEYS } from '../../rates/rates.service';
 
 export class OrderItemDto {
   @ApiPropertyOptional({
@@ -239,6 +240,15 @@ export class AddOrderPaymentDto {
   @IsOptional()
   @IsString()
   currency?: string;
+
+  @ApiPropertyOptional({
+    description:
+      'Tasa elegida para convertir el cobro (`BCV_USD`, `BCV_EUR` o `CUSTOM_USD`). Sin tasa se usa la personalizada del dolar (o, si no existe, la del BCV). El cajero envia aqui la tasa de cobro configurada por la empresa.',
+    enum: RATE_KEYS,
+  })
+  @IsOptional()
+  @IsIn(RATE_KEYS, { message: 'Tasa de conversion invalida' })
+  rateKey?: string;
 
   @ApiPropertyOptional()
   @IsOptional()

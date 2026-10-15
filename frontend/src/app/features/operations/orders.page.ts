@@ -5,11 +5,13 @@ import type { Customer, MenuOption, PaginationMeta, ProductOption } from '../../
 import type {
   Order,
   OrderItem,
+  OrderPayment,
   OrderStatus,
   OrderType,
   PaymentMethod,
   PaymentStatus,
 } from '../../core/models/operations.model';
+import type { RateKey } from '../../core/models/rates.model';
 import {
   ORDER_STATUS_CLASSES,
   ORDER_STATUS_LABELS,
@@ -21,7 +23,7 @@ import {
   PAYMENT_STATUS_CLASSES,
   PAYMENT_STATUS_LABELS,
 } from '../../core/constants/domain';
-import { BASE_CURRENCY } from '../../core/constants/currency';
+import { BASE_CURRENCY, RATE_META, type RateMeta } from '../../core/constants/currency';
 import { AuthService } from '../../core/services/auth.service';
 import { CashService } from '../../core/services/cash.service';
 import { CustomersService, ProductsService } from '../../core/services/catalog.service';
@@ -33,9 +35,11 @@ import { CurrencySelectComponent } from '../../shared/components/currency-select
 import {
   apiErrorMessage,
   dateTime,
+  displayBaseCode,
   money,
   moneyIn,
   mulMoney,
+  rate,
   sumMoney,
 } from '../../core/utils/format';
 import {
@@ -759,7 +763,10 @@ const NEXT_STATUS: Partial<Record<OrderStatus, OrderStatus>> = {
             <span>Total</span>
             <app-money [amount]="total" alignEnd="true" strong />
           </div>
-          <app-rate-conversions [amount]="total" [currency]="baseCurrency.code" />
+          <app-rate-conversions
+            [amount]="amountInDisplay(total)"
+            [currency]="moneyBaseCode()"
+          />
 
           <div class="border-t border-slate-200 pt-3">
             <label class="flex items-center gap-2 text-sm font-medium text-slate-700">
@@ -791,6 +798,7 @@ const NEXT_STATUS: Partial<Record<OrderStatus, OrderStatus>> = {
                     id="charge-currency"
                     label="Moneda del pago"
                     [value]="chargeCurrency"
+                    [rateKey]="chargeRateKey()"
                     (valueChange)="onChargeCurrencyChange($event)"
                   />
                 </div>
@@ -800,9 +808,13 @@ const NEXT_STATUS: Partial<Record<OrderStatus, OrderStatus>> = {
                   <span class="font-semibold">
                     {{ amountIn(chargeTotal, chargeCurrency) }}
                   </span>
-                  (total del pedido).
+                  (total del pedido)@if (chargeRateLabel(); as label) { · tasa {{ label }} }.
                 </p>
-                <app-rate-conversions [amount]="chargeTotal" [currency]="chargeCurrency" />
+                <app-rate-conversions
+                  [amount]="chargeTotal"
+                  [currency]="chargeCurrency"
+                  [rateKey]="chargeRateKey()"
+                />
 
                 @if (chargeMethod === 'CASH') {
                   <div class="grid grid-cols-2 gap-2">
@@ -989,6 +1001,11 @@ const NEXT_STATUS: Partial<Record<OrderStatus, OrderStatus>> = {
                       <span class="badge ml-1 bg-slate-200 text-slate-700">
                         {{ payment.currency || baseCurrency.code }}
                       </span>
+                      @if (payment.rateKey) {
+                        <span class="badge ml-1" [class]="rateMetaOf(payment.rateKey).badge">
+                          {{ rateMetaOf(payment.rateKey).shortLabel }}
+                        </span>
+                      }
                     </span>
                     <span class="text-right">
                       <span class="block font-medium">
@@ -1000,6 +1017,11 @@ const NEXT_STATUS: Partial<Record<OrderStatus, OrderStatus>> = {
                           @if (payment.exchangeRate) {
                             · × {{ payment.exchangeRate }}
                           }
+                        </span>
+                      }
+                      @if (ratesHistoryHint(payment); as hint) {
+                        <span class="block text-[10px] text-slate-400">
+                          Tasas del día: {{ hint }}
                         </span>
                       }
                     </span>
@@ -1019,7 +1041,10 @@ const NEXT_STATUS: Partial<Record<OrderStatus, OrderStatus>> = {
               <div class="flex justify-between"><span class="text-slate-500">Delivery</span><app-money [amount]="order.deliveryFee" alignEnd="true" /></div>
             }
             <div class="flex justify-between border-t border-slate-200 pt-1 text-base font-semibold"><span>Total</span><app-money [amount]="order.total" alignEnd="true" strong /></div>
-            <app-rate-conversions [amount]="order.total" [currency]="baseCurrency.code" />
+            <app-rate-conversions
+              [amount]="amountInDisplay(order.total)"
+              [currency]="moneyBaseCode()"
+            />
             <div class="flex justify-between"><span class="text-slate-500">Pagado</span><app-money [amount]="order.paidAmount" alignEnd="true" /></div>
             <div class="flex justify-between font-semibold text-brand-700"><span>Saldo</span><app-money [amount]="balance(order)" alignEnd="true" strong /></div>
           </div>
@@ -1370,6 +1395,7 @@ const NEXT_STATUS: Partial<Record<OrderStatus, OrderStatus>> = {
               id="pay-currency"
               label="Moneda del pago"
               [value]="payForm.currency"
+              [rateKey]="chargeRateKey()"
               (valueChange)="onPayCurrencyChange($event)"
             />
           </div>
@@ -1393,11 +1419,12 @@ const NEXT_STATUS: Partial<Record<OrderStatus, OrderStatus>> = {
             <app-rate-conversions
               [amount]="payForm.amount"
               [currency]="payForm.currency"
+              [rateKey]="chargeRateKey()"
             />
             <p class="mt-1 text-xs text-slate-400">
               Saldo pendiente:
-              <span class="font-medium">{{ amountIn(balance(order), baseCurrency.code) }}</span>
-              @if (payForm.currency !== baseCurrency.code && payBaseHint) {
+              <span class="font-medium">{{ amountIn(payDisplayBalance, moneyBaseCode()) }}</span>
+              @if (payForm.currency !== moneyBaseCode() && payBaseHint) {
                 <span> · {{ payBaseHint }}</span>
               }
             </p>
@@ -1484,6 +1511,13 @@ export class OrdersPage implements OnInit {
   readonly boxUnitsOf = boxUnitsOf;
   readonly isBoxProduct = isBoxProduct;
   readonly baseCurrency = BASE_CURRENCY;
+  /**
+   * Moneda con la que se están mostrando los montos: la que eligió el admin para
+   * el cajero (Configuración → Cajero) o la base de la empresa. Los bloques de
+   * tasas de cada total se calculan sobre lo que se lee en la pantalla, no sobre
+   * los dólares guardados.
+   */
+  readonly moneyBaseCode = displayBaseCode;
   /** Disponibilidad de la carta: porciones, agotado o receta con insumo inactivo. */
   readonly menuStockLabel = menuStockLabel;
   readonly menuTitle = menuTitle;
@@ -1543,6 +1577,12 @@ export class OrdersPage implements OnInit {
   chargeCurrency: string = BASE_CURRENCY.code;
   /** Efectivo entregado por el cliente (en `chargeCurrency`). */
   receivedAmount = 0;
+  /**
+   * **Tasa de cobro** que fijó la empresa en Configuración → Cajero (`null` = la
+   * tasa activa del sistema): es la que lleva el precio que se lee en pantalla a
+   * la moneda con la que paga el cliente.
+   */
+  readonly chargeRateKey = this.preferences.chargeRateKey;
   readonly taxRatePresets = [0, 10, 18];
   /** Propinas de atajo del formulario (0 % = sin propina). */
   readonly tipRatePresets = TIP_PERCENT_PRESETS;
@@ -1858,12 +1898,32 @@ export class OrdersPage implements OnInit {
     return sumMoney([order.total, -order.paidAmount]);
   }
 
-  /** Saldo pendiente expresado en la moneda indicada. */
+  /**
+   * Saldo pendiente expresado en la moneda indicada, con la **tasa de cobro** de la
+   * empresa: es el precio que el cajero lee en pantalla pasado a la moneda con la
+   * que paga el cliente.
+   */
   balanceIn(currency: string): number {
     const order = this.payOrder();
     const balance = order ? this.balance(order) : 0;
-    if (!currency || currency === BASE_CURRENCY.code) return balance;
-    return this.rates.fromBase(balance, currency) ?? balance;
+    return this.rates.chargeAmount(balance, currency, this.chargeRateKey());
+  }
+
+  /** Saldo pendiente tal como se lee en pantalla (la moneda de los precios). */
+  get payDisplayBalance(): number {
+    const order = this.payOrder();
+    return order ? this.rates.displayAmount(this.balance(order)) : 0;
+  }
+
+  /**
+   * Monto expresado en la moneda con la que se están mostrando los montos: lo que
+   * necesitan los bloques de conversiones para hablar de la misma moneda que el
+   * total que se lee arriba.
+   */
+  amountInDisplay(value: number): number {
+    const code = displayBaseCode();
+    if (code === BASE_CURRENCY.code) return value;
+    return this.rates.fromBase(value, code) ?? value;
   }
 
   /** Formatea un monto en la moneda indicada. */
@@ -1871,17 +1931,47 @@ export class OrdersPage implements OnInit {
     return moneyIn(value, currency);
   }
 
+  /**
+   * Ficha de la tasa con la que se cobro un pago (etiqueta corta y color). Los
+   * cobros viejos, guardados antes de que la tasa de cobro se registrara, no
+   * tienen clave: se etiquetan con la tasa del BCV, que es la activa por defecto.
+   */
+  rateMetaOf(key: RateKey | null | undefined): RateMeta {
+    return RATE_META[key ?? 'BCV_USD'];
+  }
+
+  /**
+   * TODAS las tasas que estaban vigentes cuando se registro el cobro
+   * (`ratesHistory`), para el detalle del pedido: es el historial que permite
+   * auditar el cobro aunque hoy las tasas sean otras. Sin historial (cobros
+   * viejos o guardado degradado) devuelve cadena vacia y no se pinta la linea.
+   */
+  ratesHistoryHint(payment: OrderPayment): string {
+    const rates = payment.ratesHistory?.rates ?? [];
+    if (rates.length === 0) return '';
+    return rates
+      .map((item) => `${RATE_META[item.key].shortLabel} ${rate(item.rate, 2)}`)
+      .join(' · ');
+  }
+
   /** Equivalente en la moneda base del monto que se esta cobrando. */
   get payBaseHint(): string | null {
-    return this.rates.baseHint(this.payForm.amount, this.payForm.currency);
+    return this.rates.baseHint(
+      this.payForm.amount,
+      this.payForm.currency,
+      this.chargeRateKey(),
+    );
   }
 
   openPay(order: Order): void {
     this.payOrder.set(order);
+    const currency = this.payForm.currency || BASE_CURRENCY.code;
     this.payForm = {
-      amount: this.balance(order),
+      // El monto arranca con el saldo tal como lo cobra el cajero: el precio que
+      // lee en pantalla pasado a la moneda del pago con la tasa de cobro.
+      amount: this.balanceIn(currency),
       method: 'CASH',
-      currency: this.payForm.currency || BASE_CURRENCY.code,
+      currency,
       note: '',
       received: 0,
     };
@@ -1926,25 +2016,37 @@ export class OrdersPage implements OnInit {
     }
 
     const currency = this.payForm.currency || BASE_CURRENCY.code;
-    const converted = this.rates.toBase(amount, currency);
-    if (converted === null) {
+    if (
+      currency !== BASE_CURRENCY.code &&
+      this.rates.bsPerUnit(currency) === null
+    ) {
       this.toast.error(
         `Falta la tasa de ${currency}. Configúrala en Configuración → Monedas.`,
       );
       return;
     }
-    // Se tolera la diferencia por redondeo al convertir desde otra moneda.
-    if (converted > this.balance(order) + 0.02) {
+    // El saldo con el que se compara es el que cobra el cajero: el precio que lee
+    // en pantalla pasado a la moneda del pago con la tasa de cobro. Se tolera la
+    // diferencia por redondeo al convertir.
+    const limit = this.rates.chargeAmount(
+      this.balance(order),
+      currency,
+      this.chargeRateKey(),
+    );
+    if (amount > limit + 0.02) {
       this.toast.error('El monto excede el saldo pendiente');
       return;
     }
 
     this.saving.set(true);
+    const rateKey = this.chargeRateKey();
     this.orders
       .pay(order.id, {
         amount,
         method: this.payForm.method,
         currency,
+        // La tasa de cobro solo viaja cuando la empresa tiene una fijada.
+        ...(rateKey ? { rateKey } : {}),
         note: this.payForm.note || undefined,
       })
       .subscribe({
@@ -2095,11 +2197,23 @@ export class OrdersPage implements OnInit {
     return this.chargeNow && this.cashOpen() ? 'Crear y cobrar' : 'Crear pedido';
   }
 
-  /** Total del pedido expresado en la moneda del cobro. */
+  /**
+   * Total del pedido expresado en la moneda del cobro, con la **tasa de cobro** de
+   * la empresa: el cajero cobra el total que lee en pantalla (en su moneda de
+   * precios) pasado a la moneda con la que paga el cliente.
+   */
   get chargeTotal(): number {
-    const currency = this.chargeCurrency || BASE_CURRENCY.code;
-    if (currency === BASE_CURRENCY.code) return this.total;
-    return this.rates.fromBase(this.total, currency) ?? this.total;
+    return this.rates.chargeAmount(
+      this.total,
+      this.chargeCurrency,
+      this.chargeRateKey(),
+    );
+  }
+
+  /** Etiqueta de la tasa de cobro (`null` cuando se cobra con la activa). */
+  chargeRateLabel(): string | null {
+    const key = this.chargeRateKey();
+    return key ? (RATE_META[key]?.label ?? key) : null;
   }
 
   /** Al cambiar de moneda se recalcula el efectivo recibido. */
@@ -2405,15 +2519,20 @@ export class OrdersPage implements OnInit {
   /** Cobra de inmediato la venta recien creada (monto = total del pedido). */
   private payCreatedOrder(order: Order): void {
     const currency = this.chargeCurrency || BASE_CURRENCY.code;
+    const rateKey = this.chargeRateKey();
     // El monto se envia en la moneda del cobro; el backend guarda ademas el
-    // equivalente en la moneda base del sistema.
-    const amount =
-      currency === BASE_CURRENCY.code
-        ? order.total
-        : (this.rates.fromBase(order.total, currency) ?? order.total);
+    // equivalente en la moneda base del sistema y compara el cobro con el saldo
+    // del pedido usando esta misma tasa de cobro.
+    const amount = this.rates.chargeAmount(order.total, currency, rateKey);
 
     this.orders
-      .pay(order.id, { amount, method: this.chargeMethod, currency })
+      .pay(order.id, {
+        amount,
+        method: this.chargeMethod,
+        currency,
+        // La tasa de cobro solo viaja cuando la empresa tiene una fijada.
+        ...(rateKey ? { rateKey } : {}),
+      })
       .subscribe({
         next: () => {
           this.saving.set(false);

@@ -131,6 +131,13 @@ export interface UpdateProfilePayload {
 export type DialogView = 'modal' | 'sidebar';
 
 /**
+ * Tasas del dólar (bolívares por 1 USD) que el admin puede fijar como **tasa de
+ * cobro** del cajero. Son las dos que expresan bolívares por dólar: la del BCV y
+ * la personalizada del local.
+ */
+export type ChargeRateKey = 'BCV_USD' | 'CUSTOM_USD';
+
+/**
  * Respuesta de `GET /preferences`: preferencias de interfaz de la **empresa
  * activa**, que se guardan en la base de datos y comparte todo el personal. El
  * cajero que entra desde otro navegador recibe las mismas al iniciar sesión.
@@ -148,6 +155,23 @@ export interface CompanyPreferences {
    * los precios del catálogo. `null` = la moneda base del sistema.
    */
   priceCurrency: string | null;
+  /**
+   * Monedas (códigos ISO) en las que el personal de caja ve, además de la suya, la
+   * conversión de cada monto. `null` (o vacío) = ninguna: el cajero solo ve los
+   * precios en su moneda.
+   */
+  conversionCurrencies: string[] | null;
+  /**
+   * `true` para mostrar debajo de cada monto, además de las conversiones, el
+   * precio en dólares a la tasa oficial del BCV. `null` = no se muestra.
+   */
+  showBcvPrice: boolean | null;
+  /**
+   * Tasa del dólar con la que el punto de venta cobra: el cajero convierte el
+   * saldo del pedido, el efectivo recibido y el vuelto con ella, sin preguntar
+   * nada. `null` = sin configurar: se cobra con la tasa activa del sistema.
+   */
+  chargeRateKey: ChargeRateKey | null;
 }
 
 /** Cuerpo de `PATCH /preferences`: `null` borra la preferencia de la empresa. */
@@ -155,6 +179,9 @@ export interface UpdatePreferencesPayload {
   tipPercent?: number | null;
   dialogView?: DialogView | null;
   priceCurrency?: string | null;
+  conversionCurrencies?: string[] | null;
+  showBcvPrice?: boolean | null;
+  chargeRateKey?: ChargeRateKey | null;
 }
 
 /** Cuerpo de `POST /companies` y `PATCH /companies/current`. */

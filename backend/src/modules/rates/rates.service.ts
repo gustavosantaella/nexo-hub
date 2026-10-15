@@ -113,6 +113,44 @@ export interface RateOption {
   changePercentage: number | null;
 }
 
+/**
+ * Una de las tasas que quedan guardadas en el historial de un cobro.
+ *
+ * Se guarda solo lo que no cambia nunca: la clave, de que moneda es, de donde
+ * salio, su valor en bolivares y la fecha que publico el BCV. La variacion del
+ * dia (`changePercentage`) no se guarda porque se recalcula con la serie.
+ */
+export interface RateHistoryEntry {
+  key: RateKey;
+  currency: 'USD' | 'EUR';
+  source: 'BCV' | 'CUSTOM';
+  /** Bolivares por 1 unidad de `currency`. */
+  rate: number;
+  /** Fecha publicada por el BCV (`YYYY-MM-DD`); `null` en la personalizada. */
+  date: string | null;
+}
+
+/**
+ * HISTORIAL DE TASAS: foto de TODAS las tasas vigentes (BCV dolar, BCV euro y
+ * la personalizada del local) en un momento dado.
+ *
+ * Es lo que se guarda junto a cada cobro para poder auditar despues con que
+ * tasas se cobro y que otras existian ese dia, aunque despues cambien. No
+ * incluye la tasa USDT de referencia (es informativa y no convierte montos).
+ */
+export interface RateHistory {
+  /** Momento (ISO) en que se tomaron las tasas. */
+  capturedAt: string;
+  /** Fecha de la serie del BCV de la que salen las tasas oficiales. */
+  bcvDate: string | null;
+  /** `true` cuando el BCV no respondio y se repitio su ultima serie conocida. */
+  stale: boolean;
+  /** Tasa con la que el sistema cotiza por defecto (personalizada o BCV dolar). */
+  activeKey: RateKey;
+  /** Todas las tasas vigentes, en el mismo orden en que las ofrece la pantalla. */
+  rates: RateHistoryEntry[];
+}
+
 /** Fuente de la tasa de una moneda. */
 export type CurrencyRateSource = 'BASE' | 'BCV' | 'CUSTOM' | 'MANUAL' | 'NONE';
 
@@ -226,39 +264,7 @@ export class RatesService {
       this.reference(refresh),
     ]);
     const custom = await this.customRate(companyId);
-
-    const rates: RateOption[] = [
-      {
-        key: 'BCV_USD',
-        currency: 'USD',
-        source: 'BCV',
-        rate: payload.current.usd,
-        date: payload.current.date,
-        previousRate: payload.previous.usd,
-        changePercentage: payload.changePercentage.usd,
-      },
-      {
-        key: 'BCV_EUR',
-        currency: 'EUR',
-        source: 'BCV',
-        rate: payload.current.eur,
-        date: payload.current.date,
-        previousRate: payload.previous.eur,
-        changePercentage: payload.changePercentage.eur,
-      },
-    ];
-
-    if (custom) {
-      rates.push({
-        key: 'CUSTOM_USD',
-        currency: 'USD',
-        source: 'CUSTOM',
-        rate: custom.usd,
-        date: null,
-        previousRate: null,
-        changePercentage: null,
-      });
-    }
+    const rates = this.rateOptions(payload, custom);
 
     const bsPerUsd = this.bsPerUsd(payload, custom);
     const configured = await this.currencies.list(companyId);
@@ -282,7 +288,7 @@ export class RatesService {
       },
       custom,
       rates,
-      activeKey: custom ? 'CUSTOM_USD' : 'BCV_USD',
+      activeKey: this.activeKeyOf(custom),
       currencies: options,
       baseCurrency: this.baseCurrencyInfo(
         options.find((item) => item.isDisplayBase),
@@ -293,8 +299,117 @@ export class RatesService {
   }
 
   // =========================================================================
+  //  HISTORIAL DE TASAS
+  // =========================================================================
+
+  /**
+   * TODAS las tasas vigentes (BCV dolar, BCV euro y, cuando existe, la
+   * personalizada del local) para guardarlas como HISTORIAL junto a un
+   * movimiento de dinero: es lo que se registra en cada cobro.
+   *
+   * Nunca lanza. Si el BCV no responde y no hay cache previa, o la tasa
+   * personalizada no se puede leer, se guarda lo que si se pudo resolver: perder
+   * la foto de las tasas no puede impedir registrar un cobro que ya se convirtio
+   * bien, asi que el historial es "lo mejor disponible en ese momento".
+   */
+  async ratesHistory(companyId: string): Promise<RateHistory> {
+    const capturedAt = new Date().toISOString();
+
+    let custom: CustomRate | null = null;
+    try {
+      custom = await this.customRate(companyId);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      this.logger.warn(
+        `No se pudo leer la tasa personalizada para el historial de tasas (${message})`,
+      );
+    }
+
+    let payload: BcvPayload | null = null;
+    let stale = false;
+    try {
+      const bcv = await this.bcv();
+      payload = bcv.payload;
+      stale = bcv.stale;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      this.logger.warn(
+        `No se pudo leer la tasa del BCV para el historial de tasas (${message})`,
+      );
+    }
+
+    return {
+      capturedAt,
+      bcvDate: payload?.current.date ?? null,
+      stale,
+      activeKey: this.activeKeyOf(custom),
+      rates: this.rateOptions(payload, custom).map((rate) => ({
+        key: rate.key,
+        currency: rate.currency,
+        source: rate.source,
+        rate: rate.rate,
+        date: rate.date,
+      })),
+    };
+  }
+
+  // =========================================================================
   //  MONEDAS / CONVERSIONES
   // =========================================================================
+
+  /**
+   * Las tasas utilizables (BCV dolar, BCV euro y -si existe- la personalizada
+   * del local), con su serie del dia. Sin serie del BCV (`payload` nulo) quedan
+   * solo las tasas que no dependen de el: la personalizada.
+   */
+  private rateOptions(
+    payload: BcvPayload | null,
+    custom: CustomRate | null,
+  ): RateOption[] {
+    const rates: RateOption[] = [];
+
+    if (payload) {
+      rates.push(
+        {
+          key: 'BCV_USD',
+          currency: 'USD',
+          source: 'BCV',
+          rate: payload.current.usd,
+          date: payload.current.date,
+          previousRate: payload.previous.usd,
+          changePercentage: payload.changePercentage.usd,
+        },
+        {
+          key: 'BCV_EUR',
+          currency: 'EUR',
+          source: 'BCV',
+          rate: payload.current.eur,
+          date: payload.current.date,
+          previousRate: payload.previous.eur,
+          changePercentage: payload.changePercentage.eur,
+        },
+      );
+    }
+
+    if (custom) {
+      rates.push({
+        key: 'CUSTOM_USD',
+        currency: 'USD',
+        source: 'CUSTOM',
+        rate: custom.usd,
+        date: null,
+        previousRate: null,
+        changePercentage: null,
+      });
+    }
+
+    return rates;
+  }
+
+  /** Tasa con la que el sistema cotiza por defecto (personalizada o BCV dolar). */
+  private activeKeyOf(custom: CustomRate | null): RateKey {
+    return custom ? 'CUSTOM_USD' : 'BCV_USD';
+  }
 
   /** Bolivares por 1 USD con la tasa que el sistema tiene activa. */
   private bsPerUsd(payload: BcvPayload, custom: CustomRate | null): number {
@@ -524,6 +639,46 @@ export class RatesService {
   /** Normaliza el codigo de moneda (vacio = moneda base). */
   private normalizeCurrency(currency: string | null | undefined): string {
     return normalizeCurrencyCode(currency) || BASE_CURRENCY_CODE;
+  }
+
+  /**
+   * Saldo que puede cubrir un cobro hecho con la **tasa de cobro** `rateKey`.
+   *
+   * El cajero cobra el precio que lee en pantalla, y los montos se muestran en la
+   * moneda base de la empresa (`baseCurrency`), no en dolares: cuando la tasa de
+   * cobro no es la activa (el BCV en vez de la personalizada del local), el cobro
+   * en divisas vale MAS que el total del pedido —que esta en dolares— sin que sea
+   * un exceso real, y al cobrar en bolivares el cliente paga el precio de la
+   * pantalla. Esta es la misma conversion que hace el punto de venta antes de
+   * mandar el cobro.
+   *
+   * Sin tasa elegida devuelve el saldo tal cual (`fitToBalance` sigue comparando en
+   * dolares); con la empresa mostrando los precios en dolares, tambien.
+   */
+  async chargeBalance(
+    companyId: string,
+    balance: number,
+    rateKey?: string | null,
+  ): Promise<number> {
+    const key = normalizeRateKey(rateKey);
+    if (!key) return balance;
+
+    const displayCode = await this.currencies.baseCurrencyCode(companyId);
+    if (displayCode === BASE_CURRENCY_CODE) return balance;
+
+    const shown = convertFromBase(
+      balance,
+      displayCode,
+      await this.conversionRates(companyId, displayCode, null),
+    );
+    if (shown === null) return balance;
+
+    const converted = convertToBase(
+      shown,
+      displayCode,
+      await this.conversionRates(companyId, displayCode, key),
+    );
+    return converted?.baseAmount ?? balance;
   }
 
   /** Lee la tasa personalizada de la empresa (o `null` si no existe). */

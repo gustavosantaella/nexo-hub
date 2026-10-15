@@ -280,15 +280,17 @@ describe('CurrencyAmountInputComponent', () => {
     fixture.componentInstance.amount.set(9000);
     fixture.detectChanges();
 
-    // 9.000 Bs son 10 USD al cambio del BCV $ y 9 al del euro.
+    // 9.000 Bs son 10 USD al cambio del BCV $ y 9 EUR al del euro: la linea del
+    // euro va en euros (la moneda de su propia tasa), no en dolares.
     expect(text()).toContain('BCV $: $ 10.00');
-    expect(text()).toContain('BCV €: $ 9.00');
+    expect(text()).toContain('BCV €: € 9.00');
+    expect(text()).not.toContain('BCV €: $ 9.00');
     expect(selectedConversion()).toContain('BCV $: $ 10.00');
 
     fixture.componentInstance.rateKey.set('BCV_EUR');
     fixture.detectChanges();
 
-    expect(selectedConversion()).toContain('BCV €: $ 9.00');
+    expect(selectedConversion()).toContain('BCV €: € 9.00');
   });
 
   it('cae en la tasa activa cuando la elegida ya no esta disponible', () => {

@@ -45,7 +45,12 @@ import { PrismaService, type PrismaClientLike } from '../../prisma/prisma.servic
 import { CashService } from '../cash/cash.service';
 import { InventoryService } from '../inventory/inventory.service';
 import { MenusService, type MenuRecipe } from '../menus/menus.service';
-import { RatesService, normalizeRateKey } from '../rates/rates.service';
+import {
+  RatesService,
+  normalizeRateKey,
+  type RateHistory,
+  type RateHistoryEntry,
+} from '../rates/rates.service';
 import {
   AddOrderItemsDto,
   AddOrderPaymentDto,
@@ -186,6 +191,70 @@ export function computeOrderTotals(input: {
   };
 }
 
+/**
+ * Serializa el HISTORIAL DE TASAS para guardarlo en la columna de texto del
+ * cobro (`OrderPayment.ratesHistory`): SQLite no tiene columnas JSON, asi que la
+ * foto de las tasas del dia viaja como JSON en texto y se lee con
+ * `parseRatesHistory`.
+ */
+export function encodeRatesHistory(history: RateHistory): string {
+  return JSON.stringify(history);
+}
+
+/**
+ * Lee el historial de tasas guardado en un cobro.
+ *
+ * Tolera valores vacios o corruptos (devuelve `null` y nunca lanza) y descarta
+ * las tasas que no reconoce: la lectura de un pedido viejo no puede romperse
+ * porque su historial quedo a medias.
+ */
+export function parseRatesHistory(value: unknown): RateHistory | null {
+  if (value === null || value === undefined) return null;
+
+  let parsed: unknown = value;
+  if (typeof value === 'string') {
+    const raw = value.trim();
+    if (!raw) return null;
+    try {
+      parsed = JSON.parse(raw);
+    } catch {
+      return null;
+    }
+  }
+
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return null;
+  const row = parsed as Record<string, unknown>;
+  if (!Array.isArray(row.rates)) return null;
+
+  const rates: RateHistoryEntry[] = [];
+  for (const item of row.rates) {
+    if (!item || typeof item !== 'object') continue;
+    const entry = item as Record<string, unknown>;
+    const key = normalizeRateKey(
+      typeof entry.key === 'string' ? entry.key : null,
+    );
+    const rate = Number(entry.rate);
+    if (!key || !Number.isFinite(rate) || rate <= 0) continue;
+    rates.push({
+      key,
+      currency: entry.currency === 'EUR' ? 'EUR' : 'USD',
+      source: entry.source === 'CUSTOM' ? 'CUSTOM' : 'BCV',
+      rate,
+      date: typeof entry.date === 'string' && entry.date ? entry.date : null,
+    });
+  }
+
+  return {
+    capturedAt: typeof row.capturedAt === 'string' ? row.capturedAt : '',
+    bcvDate: typeof row.bcvDate === 'string' && row.bcvDate ? row.bcvDate : null,
+    stale: row.stale === true,
+    activeKey:
+      normalizeRateKey(typeof row.activeKey === 'string' ? row.activeKey : null) ??
+      'BCV_USD',
+    rates,
+  };
+}
+
 @Injectable()
 export class OrdersService {
   constructor(
@@ -258,7 +327,7 @@ export class OrdersService {
         userId,
       });
 
-      return order;
+      return this.withRatesHistory(order);
     });
   }
 
@@ -386,7 +455,7 @@ export class OrdersService {
         userId,
       });
 
-      return updated;
+      return this.withRatesHistory(updated);
     });
   }
 
@@ -750,6 +819,31 @@ export class OrdersService {
   }
 
   // =========================================================================
+  //  HISTORIAL DE TASAS DE LOS COBROS
+  // =========================================================================
+
+  /**
+   * Decodifica el historial de tasas de los cobros de un pedido.
+   *
+   * La columna `ratesHistory` guarda la foto de las tasas en JSON de texto
+   * (SQLite no tiene columnas JSON) y la API entrega el objeto ya leido, igual
+   * que hace el codec de dinero con los montos. Un pedido sin pagos -o con un
+   * historial corrupto, que `parseRatesHistory` degrada a `null`- pasa intacto.
+   */
+  private withRatesHistory<T>(order: T): T {
+    const payments = (order as { payments?: unknown } | null)?.payments;
+    if (!Array.isArray(payments)) return order;
+
+    const decoded = payments.map((payment: unknown) => {
+      if (!payment || typeof payment !== 'object') return payment;
+      const row = payment as Record<string, unknown>;
+      return { ...row, ratesHistory: parseRatesHistory(row.ratesHistory) };
+    });
+
+    return { ...(order as object), payments: decoded } as T;
+  }
+
+  // =========================================================================
   //  CONSULTAS
   // =========================================================================
 
@@ -816,7 +910,7 @@ export class OrdersService {
       include: ORDER_DETAIL_INCLUDE,
     });
     if (!order) throw new NotFoundException('Pedido no encontrado');
-    return order;
+    return this.withRatesHistory(order);
   }
 
   /** Actualiza datos editables y recalcula totales sobre los items existentes. */
@@ -862,7 +956,7 @@ export class OrdersService {
           ? PaymentStatus.PAID
           : PaymentStatus.PARTIAL;
 
-    return this.prisma.order.update({
+    const updated = await this.prisma.order.update({
       where: { id, ...tenantWhere(companyId) },
       data: {
         ...(dto.customerId !== undefined
@@ -878,6 +972,8 @@ export class OrdersService {
       },
       include: ORDER_DETAIL_INCLUDE,
     });
+
+    return this.withRatesHistory(updated);
   }
 
   // =========================================================================
@@ -890,6 +986,10 @@ export class OrdersService {
    *   2. crea el CashMovement (ingreso por venta, con el metodo elegido)
    *   3. crea el OrderPayment apuntando al movimiento
    *   4. actualiza paidAmount / paymentStatus / cashSessionId
+   *
+   * El cobro guarda ademas el HISTORIAL DE TASAS del dia: la tasa de cobro
+   * elegida (`rateKey`) y la foto de TODAS las tasas vigentes en ese momento
+   * (`ratesHistory`), para poder auditar el cobro despues aunque las tasas cambien.
    */
   async addPayment(
     companyId: string,
@@ -913,25 +1013,37 @@ export class OrdersService {
 
       // `amount` viene en la moneda del pago; el saldo del pedido esta en la
       // moneda base (USD), por eso se compara con el equivalente convertido.
+      // `rateKey` es la tasa de cobro elegida por el operador (el cajero envia la
+      // configurada por la empresa); sin ella se usa la activa del sistema.
       const amount = toMoney(dto.amount);
+      const rateKey = normalizeRateKey(dto.rateKey);
       const conversion = await this.rates.resolvePayment(
         companyId,
         amount,
         dto.currency,
+        rateKey,
       );
       const { currency, exchangeRate } = conversion;
 
-      // Se ajusta al saldo cuando el exceso es solo el redondeo de convertir a
-      // otra moneda (ej. pagar el total en bolivares).
-      const baseAmount = fitToBalance(conversion.baseAmount, balance);
+      // El cajero cobra el precio que ve en pantalla: con la tasa de cobro el cobro
+      // en divisas (o en bolivares, el precio de la pantalla) puede valer mas que el
+      // total del pedido —que esta en dolares— sin que sea un exceso real. Se ajusta
+      // al saldo cuando el exceso es solo el redondeo de convertir a otra moneda.
+      const limit = await this.rates.chargeBalance(companyId, balance, rateKey);
+      const baseAmount = fitToBalance(conversion.baseAmount, limit);
       if (baseAmount === null) {
         throw new BadRequestException(
-          `El monto (${conversion.baseAmount} USD) excede el saldo pendiente (${balance} USD)`,
+          `El monto (${conversion.baseAmount} USD) excede el saldo pendiente (${limit} USD)`,
         );
       }
 
       // Toda venta debe poder asociarse a una sesion de caja abierta.
       const session = await this.cash.getOpenSessionOrThrow(companyId, tx);
+
+      // Foto de TODAS las tasas vigentes al cobrar (BCV dolar, BCV euro y la
+      // personalizada del local), no solo la aplicada: asi el cobro queda
+      // auditable con las tasas que existian ese dia.
+      const ratesHistory = await this.rates.ratesHistory(companyId);
 
       const movement = await this.cash.registerMovement(
         companyId,
@@ -959,6 +1071,10 @@ export class OrdersService {
           method: dto.method,
           currency,
           exchangeRate,
+          // Tasa elegida por el cajero (`null` = la activa del sistema) y la
+          // foto de todas las tasas del dia, en JSON de texto.
+          rateKey,
+          ratesHistory: encodeRatesHistory(ratesHistory),
           baseAmount,
           cashMovementId: movement.id,
           note: dto.note,
@@ -972,7 +1088,7 @@ export class OrdersService {
           ? PaymentStatus.PAID
           : PaymentStatus.PARTIAL;
 
-      return tx.order.update({
+      const updated = await tx.order.update({
         where: { id: order.id, ...tenantWhere(companyId) },
         data: {
           paidAmount,
@@ -985,6 +1101,8 @@ export class OrdersService {
         },
         include: ORDER_DETAIL_INCLUDE,
       });
+
+      return this.withRatesHistory(updated);
     });
   }
 
@@ -1023,11 +1141,13 @@ export class OrdersService {
       return this.restockAndSetCancelled(companyId, order, userId);
     }
 
-    return this.prisma.order.update({
+    const updated = await this.prisma.order.update({
       where: { id, ...tenantWhere(companyId) },
       data: { status: dto.status },
       include: ORDER_DETAIL_INCLUDE,
     });
+
+    return this.withRatesHistory(updated);
   }
 
   /** Elimina un pedido sin pagos, devolviendo el stock consumido. */
@@ -1080,10 +1200,12 @@ export class OrdersService {
 
       await this.restockItems(companyId, tx, order, userId);
 
-      return tx.order.findUniqueOrThrow({
+      const updated = await tx.order.findUniqueOrThrow({
         where: { id: order.id },
         include: ORDER_DETAIL_INCLUDE,
       });
+
+      return this.withRatesHistory(updated);
     });
   }
 
@@ -1385,7 +1507,7 @@ export class OrdersService {
         );
       }
 
-      return updated;
+      return this.withRatesHistory(updated);
     });
   }
 

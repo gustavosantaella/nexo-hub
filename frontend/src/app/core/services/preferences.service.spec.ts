@@ -9,7 +9,10 @@ import type { CompanyPreferences } from '../models/api.model';
 import {
   DEFAULT_TIP_PERCENT,
   PreferencesService,
+  normalizeChargeRateKey,
+  normalizeConversionCurrencies,
   normalizePriceCurrency,
+  normalizeShowBcvPrice,
   normalizeTipPercent,
 } from './preferences.service';
 
@@ -25,6 +28,15 @@ const TIP_PERCENT_KEY = 'nexo-hub.tip-percent';
 /** Clave de `localStorage` de la moneda en la que el cajero ve los precios. */
 const PRICE_CURRENCY_KEY = 'nexo-hub.price-currency';
 
+/** Clave de `localStorage` de las conversiones que ve el cajero. */
+const CONVERSION_CURRENCIES_KEY = 'nexo-hub.conversion-currencies';
+
+/** Clave de `localStorage` del precio en dólares del BCV. */
+const SHOW_BCV_PRICE_KEY = 'nexo-hub.show-bcv-price';
+
+/** Clave de `localStorage` de la tasa con la que cobra el cajero. */
+const CHARGE_RATE_KEY = 'nexo-hub.charge-rate';
+
 /** Monta el doble de `HttpClient` y devuelve el controlador de peticiones. */
 function configureHttp(): HttpTestingController {
   TestBed.configureTestingModule({
@@ -35,13 +47,16 @@ function configureHttp(): HttpTestingController {
 
 /**
  * Respuesta de `GET/PATCH /preferences` tal como la manda el API: el servidor
- * devuelve siempre los tres campos (`null` = sin configurar).
+ * devuelve siempre los cinco campos (`null` = sin configurar).
  */
 function prefs(overrides: Partial<CompanyPreferences> = {}): CompanyPreferences {
   return {
     tipPercent: DEFAULT_TIP_PERCENT,
     dialogView: 'modal',
     priceCurrency: null,
+    conversionCurrencies: null,
+    showBcvPrice: null,
+    chargeRateKey: null,
     ...overrides,
   };
 }
@@ -99,6 +114,9 @@ describe('PreferencesService (propina y formularios de la empresa)', () => {
       tipPercent: DEFAULT_TIP_PERCENT,
       dialogView: 'sidebar',
       priceCurrency: null,
+      conversionCurrencies: null,
+      showBcvPrice: false,
+      chargeRateKey: null,
     });
     request.flush(prefs({ dialogView: 'sidebar' }));
   });
@@ -257,9 +275,11 @@ describe('PreferencesService (propina y formularios de la empresa)', () => {
     expect(preferences.tipPercent()).toBe(DEFAULT_TIP_PERCENT);
     expect(preferences.dialogView()).toBe('modal');
     expect(preferences.priceCurrency()).toBeNull();
+    expect(preferences.conversionCurrencies()).toBeNull();
     expect(localStorage.getItem(TIP_PERCENT_KEY)).toBeNull();
     expect(localStorage.getItem(DIALOG_VIEW_KEY)).toBeNull();
     expect(localStorage.getItem(PRICE_CURRENCY_KEY)).toBeNull();
+    expect(localStorage.getItem(CONVERSION_CURRENCIES_KEY)).toBeNull();
   });
 });
 
@@ -309,6 +329,9 @@ describe('PreferencesService (moneda de los precios de la empresa)', () => {
       tipPercent: DEFAULT_TIP_PERCENT,
       dialogView: 'modal',
       priceCurrency: 'COP',
+      conversionCurrencies: null,
+      showBcvPrice: false,
+      chargeRateKey: null,
     });
     request.flush(prefs({ priceCurrency: 'COP' }));
 
@@ -356,6 +379,368 @@ describe('PreferencesService (moneda de los precios de la empresa)', () => {
 
     expect(preferences.priceCurrency()).toBeNull();
     expect(localStorage.getItem(PRICE_CURRENCY_KEY)).toBeNull();
+  });
+});
+
+describe('PreferencesService (conversiones que ve el cajero)', () => {
+  let http: HttpTestingController;
+
+  beforeEach(() => {
+    localStorage.clear();
+    http = configureHttp();
+  });
+
+  afterEach(() => {
+    localStorage.clear();
+    http.verify();
+  });
+
+  function remounted(): PreferencesService {
+    TestBed.resetTestingModule();
+    http = configureHttp();
+    return TestBed.inject(PreferencesService);
+  }
+
+  it('sin configurar el cajero no ve ninguna conversión', () => {
+    expect(TestBed.inject(PreferencesService).conversionCurrencies()).toBeNull();
+  });
+
+  it('guarda las conversiones del cajero en la empresa y en el navegador', () => {
+    const preferences = TestBed.inject(PreferencesService);
+
+    // Los códigos se normalizan (`cop` es `COP`) y los repetidos no se guardan.
+    preferences.setConversionCurrencies(['usd', 'cop', 'USD']);
+    expect(preferences.conversionCurrencies()).toEqual(['USD', 'COP']);
+    expect(localStorage.getItem(CONVERSION_CURRENCIES_KEY)).toBe('["USD","COP"]');
+
+    const request = http.expectOne({ method: 'PATCH', url: API });
+    expect(request.request.body).toEqual({
+      tipPercent: DEFAULT_TIP_PERCENT,
+      dialogView: 'modal',
+      priceCurrency: null,
+      conversionCurrencies: ['USD', 'COP'],
+      showBcvPrice: false,
+      chargeRateKey: null,
+    });
+    request.flush(prefs({ conversionCurrencies: ['USD', 'COP'] }));
+
+    // Quitar todas devuelve al cajero a su moneda (se borra la preferencia).
+    preferences.setConversionCurrencies([]);
+    expect(preferences.conversionCurrencies()).toBeNull();
+    expect(localStorage.getItem(CONVERSION_CURRENCIES_KEY)).toBeNull();
+    http.expectOne({ method: 'PATCH', url: API }).flush(prefs());
+  });
+
+  it('una lista sin códigos válidos se descarta (vuelve a `null`)', () => {
+    const preferences = TestBed.inject(PreferencesService);
+
+    preferences.setConversionCurrencies(['bolívares', 'X']);
+    expect(preferences.conversionCurrencies()).toBeNull();
+    http.expectOne({ method: 'PATCH', url: API }).flush(prefs());
+  });
+
+  it('recupera lo guardado en el navegador y descarta lo corrupto', () => {
+    localStorage.setItem(CONVERSION_CURRENCIES_KEY, '["eur"]');
+    expect(TestBed.inject(PreferencesService).conversionCurrencies()).toEqual(['EUR']);
+
+    localStorage.setItem(CONVERSION_CURRENCIES_KEY, 'no es json');
+    expect(remounted().conversionCurrencies()).toBeNull();
+  });
+
+  it('el cajero que entra desde otro navegador recibe las conversiones de la empresa', () => {
+    const preferences = TestBed.inject(PreferencesService);
+    expect(preferences.conversionCurrencies()).toBeNull();
+
+    preferences.load();
+    http
+      .expectOne({ method: 'GET', url: API })
+      .flush(prefs({ priceCurrency: 'VES', conversionCurrencies: ['USD'] }));
+
+    expect(preferences.conversionCurrencies()).toEqual(['USD']);
+    expect(localStorage.getItem(CONVERSION_CURRENCIES_KEY)).toBe('["USD"]');
+  });
+
+  it('la empresa manda: sin conversiones configuradas se borran las de este equipo', () => {
+    localStorage.setItem(CONVERSION_CURRENCIES_KEY, '["COP"]');
+
+    const preferences = TestBed.inject(PreferencesService);
+    expect(preferences.conversionCurrencies()).toEqual(['COP']);
+
+    preferences.load();
+    http
+      .expectOne({ method: 'GET', url: API })
+      .flush(prefs({ conversionCurrencies: null }));
+
+    expect(preferences.conversionCurrencies()).toBeNull();
+    expect(localStorage.getItem(CONVERSION_CURRENCIES_KEY)).toBeNull();
+  });
+});
+
+describe('PreferencesService (actualizar preferencias del cajero)', () => {
+  let http: HttpTestingController;
+
+  beforeEach(() => {
+    localStorage.clear();
+    http = configureHttp();
+  });
+
+  afterEach(() => {
+    localStorage.clear();
+    http.verify();
+  });
+
+  it('trae de nuevo lo que el admin acaba de guardar, sin cerrar sesión', () => {
+    const preferences = TestBed.inject(PreferencesService);
+    // Al entrar, la empresa no tenía nada configurado para el cajero.
+    preferences.load();
+    http.expectOne({ method: 'GET', url: API }).flush(prefs());
+    expect(preferences.conversionCurrencies()).toBeNull();
+
+    // El admin guarda desde su equipo mientras la caja sigue abierta.
+    preferences.refresh().subscribe();
+    http
+      .expectOne({ method: 'GET', url: API })
+      .flush(
+        prefs({
+          tipPercent: 15,
+          priceCurrency: 'VES',
+          conversionCurrencies: ['USD'],
+          showBcvPrice: true,
+        }),
+      );
+
+    expect(preferences.tipPercent()).toBe(15);
+    expect(preferences.priceCurrency()).toBe('VES');
+    expect(preferences.conversionCurrencies()).toEqual(['USD']);
+    expect(preferences.showBcvPrice()).toBeTrue();
+    // Y queda como copia en este navegador, que es lo que pinta el punto de venta.
+    expect(localStorage.getItem(TIP_PERCENT_KEY)).toBe('15');
+    expect(localStorage.getItem(PRICE_CURRENCY_KEY)).toBe('VES');
+    expect(localStorage.getItem(CONVERSION_CURRENCIES_KEY)).toBe('["USD"]');
+    expect(localStorage.getItem(SHOW_BCV_PRICE_KEY)).toBe('true');
+  });
+
+  it('lo del servidor manda aunque se toque algo mientras llega la respuesta', () => {
+    const preferences = TestBed.inject(PreferencesService);
+    preferences.refresh().subscribe();
+
+    // El cajero alcanza a elegir otra propina antes de que conteste el servidor:
+    // la pulsación del botón es explícita, así que se queda con lo guardado.
+    preferences.setTipPercent(20);
+    http.expectOne({ method: 'PATCH', url: API }).flush(prefs({ tipPercent: 20 }));
+
+    http.expectOne({ method: 'GET', url: API }).flush(prefs({ tipPercent: 5 }));
+
+    expect(preferences.tipPercent()).toBe(5);
+  });
+
+  it('sin conexión deja al cajero con lo que ya tenía', () => {
+    localStorage.setItem(TIP_PERCENT_KEY, '5');
+
+    const preferences = TestBed.inject(PreferencesService);
+    expect(preferences.tipPercent()).toBe(5);
+
+    preferences.refresh().subscribe({ error: () => undefined });
+    http
+      .expectOne({ method: 'GET', url: API })
+      .flush('', { status: 500, statusText: 'Server Error' });
+
+    expect(preferences.tipPercent()).toBe(5);
+  });
+});
+
+describe('PreferencesService (precio en dólares del BCV para el cajero)', () => {
+  let http: HttpTestingController;
+
+  beforeEach(() => {
+    localStorage.clear();
+    http = configureHttp();
+  });
+
+  afterEach(() => {
+    localStorage.clear();
+    http.verify();
+  });
+
+  it('sin configurar el cajero no ve el precio en dólares del BCV', () => {
+    expect(TestBed.inject(PreferencesService).showBcvPrice()).toBeFalse();
+  });
+
+  it('guarda el precio en dólares del BCV en la empresa y en el navegador', () => {
+    const preferences = TestBed.inject(PreferencesService);
+
+    preferences.setShowBcvPrice(true);
+    expect(preferences.showBcvPrice()).toBeTrue();
+    expect(localStorage.getItem(SHOW_BCV_PRICE_KEY)).toBe('true');
+
+    // Viaja a la empresa junto con el resto de preferencias del cajero.
+    const request = http.expectOne({ method: 'PATCH', url: API });
+    expect(request.request.body).toEqual({
+      tipPercent: DEFAULT_TIP_PERCENT,
+      dialogView: 'modal',
+      priceCurrency: null,
+      conversionCurrencies: null,
+      showBcvPrice: true,
+      chargeRateKey: null,
+    });
+    request.flush(prefs({ showBcvPrice: true }));
+
+    // Apagarlo vuelve a lo de fábrica y se lleva la copia local.
+    preferences.setShowBcvPrice(false);
+    expect(preferences.showBcvPrice()).toBeFalse();
+    expect(localStorage.getItem(SHOW_BCV_PRICE_KEY)).toBeNull();
+    http.expectOne({ method: 'PATCH', url: API }).flush(prefs());
+  });
+
+  it('el cajero que entra desde otro navegador recibe el de la empresa', () => {
+    const preferences = TestBed.inject(PreferencesService);
+    expect(preferences.showBcvPrice()).toBeFalse();
+
+    preferences.load();
+    http
+      .expectOne({ method: 'GET', url: API })
+      .flush(prefs({ showBcvPrice: true }));
+
+    expect(preferences.showBcvPrice()).toBeTrue();
+    expect(localStorage.getItem(SHOW_BCV_PRICE_KEY)).toBe('true');
+  });
+
+  it('la empresa manda: sin configurar se borra el de este equipo', () => {
+    localStorage.setItem(SHOW_BCV_PRICE_KEY, 'true');
+
+    const preferences = TestBed.inject(PreferencesService);
+    expect(preferences.showBcvPrice()).toBeTrue();
+
+    preferences.load();
+    http.expectOne({ method: 'GET', url: API }).flush(prefs({ showBcvPrice: null }));
+
+    expect(preferences.showBcvPrice()).toBeFalse();
+    expect(localStorage.getItem(SHOW_BCV_PRICE_KEY)).toBeNull();
+  });
+});
+
+describe('PreferencesService (tasa de cobro del cajero)', () => {
+  let http: HttpTestingController;
+
+  beforeEach(() => {
+    localStorage.clear();
+    http = configureHttp();
+  });
+
+  afterEach(() => {
+    localStorage.clear();
+    http.verify();
+  });
+
+  it('sin configurar el cajero cobra con la tasa activa del sistema', () => {
+    expect(TestBed.inject(PreferencesService).chargeRateKey()).toBeNull();
+  });
+
+  it('guarda la tasa de cobro en la empresa y en el navegador', () => {
+    const preferences = TestBed.inject(PreferencesService);
+
+    // La clave se normaliza (`bcv_usd` es `BCV_USD`).
+    preferences.setChargeRateKey('bcv_usd');
+    expect(preferences.chargeRateKey()).toBe('BCV_USD');
+    expect(localStorage.getItem(CHARGE_RATE_KEY)).toBe('BCV_USD');
+
+    const request = http.expectOne({ method: 'PATCH', url: API });
+    expect(request.request.body).toEqual({
+      tipPercent: DEFAULT_TIP_PERCENT,
+      dialogView: 'modal',
+      priceCurrency: null,
+      conversionCurrencies: null,
+      showBcvPrice: false,
+      chargeRateKey: 'BCV_USD',
+    });
+    request.flush(prefs({ chargeRateKey: 'BCV_USD' }));
+
+    // Volver a la tasa activa borra la preferencia (también en la copia local).
+    preferences.setChargeRateKey(null);
+    expect(preferences.chargeRateKey()).toBeNull();
+    expect(localStorage.getItem(CHARGE_RATE_KEY)).toBeNull();
+    http.expectOne({ method: 'PATCH', url: API }).flush(prefs());
+  });
+
+  it('una tasa que no sirve para cobrar se descarta (vuelve a la activa)', () => {
+    const preferences = TestBed.inject(PreferencesService);
+
+    preferences.setChargeRateKey('BCV_EUR');
+    expect(preferences.chargeRateKey()).toBeNull();
+    http.expectOne({ method: 'PATCH', url: API }).flush(prefs());
+  });
+
+  it('recupera lo guardado en el navegador y descarta lo inválido', () => {
+    localStorage.setItem(CHARGE_RATE_KEY, 'custom_usd');
+    expect(TestBed.inject(PreferencesService).chargeRateKey()).toBe('CUSTOM_USD');
+
+    localStorage.setItem(CHARGE_RATE_KEY, 'euros');
+    TestBed.resetTestingModule();
+    http = configureHttp();
+    expect(TestBed.inject(PreferencesService).chargeRateKey()).toBeNull();
+  });
+
+  it('el cajero que entra desde otro navegador recibe la tasa de la empresa', () => {
+    const preferences = TestBed.inject(PreferencesService);
+    expect(preferences.chargeRateKey()).toBeNull();
+
+    preferences.load();
+    http.expectOne({ method: 'GET', url: API }).flush(prefs({ chargeRateKey: 'BCV_USD' }));
+
+    expect(preferences.chargeRateKey()).toBe('BCV_USD');
+    expect(localStorage.getItem(CHARGE_RATE_KEY)).toBe('BCV_USD');
+  });
+
+  it('la empresa manda: sin configurar se borra la de este equipo', () => {
+    localStorage.setItem(CHARGE_RATE_KEY, 'CUSTOM_USD');
+
+    const preferences = TestBed.inject(PreferencesService);
+    expect(preferences.chargeRateKey()).toBe('CUSTOM_USD');
+
+    preferences.load();
+    http.expectOne({ method: 'GET', url: API }).flush(prefs({ chargeRateKey: null }));
+
+    expect(preferences.chargeRateKey()).toBeNull();
+    expect(localStorage.getItem(CHARGE_RATE_KEY)).toBeNull();
+  });
+});
+
+describe('normalizeChargeRateKey', () => {
+  it('solo acepta las tasas del dólar que pueden cobrar', () => {
+    expect(normalizeChargeRateKey('bcv_usd')).toBe('BCV_USD');
+    expect(normalizeChargeRateKey(' custom_usd ')).toBe('CUSTOM_USD');
+
+    expect(normalizeChargeRateKey('BCV_EUR')).toBeNull();
+    expect(normalizeChargeRateKey('')).toBeNull();
+    expect(normalizeChargeRateKey(null)).toBeNull();
+    expect(normalizeChargeRateKey(undefined)).toBeNull();
+  });
+});
+
+describe('normalizeShowBcvPrice', () => {
+  it('solo enciende con un `true` (o con lo que guarda el navegador)', () => {
+    expect(normalizeShowBcvPrice(true)).toBeTrue();
+    expect(normalizeShowBcvPrice('true')).toBeTrue();
+    expect(normalizeShowBcvPrice(1)).toBeTrue();
+    expect(normalizeShowBcvPrice('1')).toBeTrue();
+
+    expect(normalizeShowBcvPrice(false)).toBeFalse();
+    expect(normalizeShowBcvPrice(null)).toBeFalse();
+    expect(normalizeShowBcvPrice(undefined)).toBeFalse();
+    expect(normalizeShowBcvPrice('sí')).toBeFalse();
+  });
+});
+
+describe('normalizeConversionCurrencies', () => {
+  it('deja códigos en mayúsculas, sin repetir y descarta lo que no es una moneda', () => {
+    expect(normalizeConversionCurrencies(['cop', 'USD', 'cop'])).toEqual(['COP', 'USD']);
+    expect(normalizeConversionCurrencies([' ves '])).toEqual(['VES']);
+    expect(normalizeConversionCurrencies('["usd","cop"]')).toEqual(['USD', 'COP']);
+    expect(normalizeConversionCurrencies([])).toBeNull();
+    expect(normalizeConversionCurrencies(['Bs', 'bolívares'])).toBeNull();
+    expect(normalizeConversionCurrencies('{no es json}')).toBeNull();
+    expect(normalizeConversionCurrencies(null)).toBeNull();
+    expect(normalizeConversionCurrencies(undefined)).toBeNull();
   });
 });
 

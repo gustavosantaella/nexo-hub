@@ -1,13 +1,18 @@
 import { HttpClient } from '@angular/common/http';
 import { Injectable, computed, inject, signal } from '@angular/core';
+import { Observable, tap } from 'rxjs';
 import { environment } from '../../../environments/environment';
 import type {
+  ChargeRateKey,
   CompanyPreferences,
   DialogView,
   UpdatePreferencesPayload,
 } from '../models/api.model';
 
-export type { DialogView };
+export type { ChargeRateKey, DialogView };
+
+/** Tasas del dólar que el cajero puede fijar como tasa de cobro (igual que el API). */
+export const CHARGE_RATE_KEYS: readonly ChargeRateKey[] = ['BCV_USD', 'CUSTOM_USD'];
 
 /** Vistas soportadas (se usan también para validar lo guardado). */
 export const DIALOG_VIEWS: readonly DialogView[] = ['modal', 'sidebar'];
@@ -22,6 +27,27 @@ const TIP_PERCENT_KEY = 'nexo-hub.tip-percent';
 const PRICE_CURRENCY_KEY = 'nexo-hub.price-currency';
 
 /**
+ * Clave de `localStorage` con las conversiones que ve el cajero (JSON con los
+ * códigos de moneda).
+ */
+const CONVERSION_CURRENCIES_KEY = 'nexo-hub.conversion-currencies';
+
+/**
+ * Clave de `localStorage` con el interruptor que muestra el precio en dólares a
+ * la tasa oficial del BCV debajo de cada monto.
+ */
+const SHOW_BCV_PRICE_KEY = 'nexo-hub.show-bcv-price';
+
+/**
+ * Clave de `localStorage` con la tasa del dólar con la que el cajero cobra
+ * (`BCV_USD`, `CUSTOM_USD` o vacío = la tasa activa del sistema).
+ */
+const CHARGE_RATE_KEY = 'nexo-hub.charge-rate';
+
+/** Tope de monedas en la lista (igual que el API). */
+const MAX_CONVERSION_CURRENCIES = 24;
+
+/**
  * Deja un codigo de moneda utilizable (`null` = moneda base del sistema).
  * Cualquier otra cosa (vacio, `Bs`, un codigo incompleto) se descarta.
  */
@@ -30,6 +56,51 @@ export function normalizePriceCurrency(value: unknown): string | null {
     .trim()
     .toUpperCase();
   return /^[A-Z]{3}$/.test(code) ? code : null;
+}
+
+/**
+ * Deja la lista de conversiones del cajero en códigos ISO sin repetir, o en `null`
+ * cuando no queda ninguna (es el valor de fábrica: el cajero solo ve los precios
+ * en su moneda). Acepta también el JSON con el que se guarda en el navegador.
+ */
+export function normalizeConversionCurrencies(value: unknown): string[] | null {
+  let list: unknown = value;
+  if (typeof value === 'string') {
+    try {
+      list = JSON.parse(value);
+    } catch {
+      return null;
+    }
+  }
+  if (!Array.isArray(list)) return null;
+  const codes = list
+    .map((item) => String(item ?? '').trim().toUpperCase())
+    .filter((code) => /^[A-Z]{3}$/.test(code));
+  const unique = [...new Set(codes)].slice(0, MAX_CONVERSION_CURRENCIES);
+  return unique.length ? unique : null;
+}
+
+/**
+ * Deja el interruptor del precio en dólares del BCV en `true` o `false`. Solo un
+ * booleano lo enciende (o el texto con el que queda guardado en el navegador);
+ * cualquier otra cosa —incluido `null`— lo apaga.
+ */
+export function normalizeShowBcvPrice(value: unknown): boolean {
+  return value === true || value === 'true' || value === 1 || value === '1';
+}
+
+/**
+ * Deja la tasa de cobro del cajero en una de las tasas del dólar permitidas o en
+ * `null` para cobrar con la tasa activa del sistema. Cualquier otro valor se
+ * descarta, igual que en el API.
+ */
+export function normalizeChargeRateKey(value: unknown): ChargeRateKey | null {
+  const key = String(value ?? '')
+    .trim()
+    .toUpperCase();
+  return (CHARGE_RATE_KEYS as readonly string[]).includes(key)
+    ? (key as ChargeRateKey)
+    : null;
 }
 
 /** Propina sugerida de fábrica (porcentaje): el 10 % de la venta. */
@@ -87,6 +158,47 @@ function storedPriceCurrency(): string | null {
   }
 }
 
+/**
+ * Copia local de las conversiones que ve el cajero (`null` = ninguna). El arranque
+ * pinta con ella antes de que conteste el servidor; al iniciar sesión, lo que
+ * responde el servidor manda.
+ */
+function storedConversionCurrencies(): string[] | null {
+  try {
+    return normalizeConversionCurrencies(
+      localStorage.getItem(CONVERSION_CURRENCIES_KEY),
+    );
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Copia local del interruptor que muestra el precio en dólares del BCV
+ * (`false` por defecto). El arranque pinta con ella antes de que conteste el
+ * servidor; al iniciar sesión, lo que responde el servidor manda.
+ */
+function storedShowBcvPrice(): boolean {
+  try {
+    return normalizeShowBcvPrice(localStorage.getItem(SHOW_BCV_PRICE_KEY));
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Copia local de la tasa de cobro del cajero (`null` = la tasa activa del
+ * sistema). El arranque pinta con ella antes de que conteste el servidor; al
+ * iniciar sesión, lo que responde el servidor manda.
+ */
+function storedChargeRateKey(): ChargeRateKey | null {
+  try {
+    return normalizeChargeRateKey(localStorage.getItem(CHARGE_RATE_KEY));
+  } catch {
+    return null;
+  }
+}
+
 /** Vista que llega del servidor: `null` cuando la empresa no la ha configurado. */
 function serverDialogView(value: unknown): DialogView | null {
   return DIALOG_VIEWS.includes(value as DialogView) ? (value as DialogView) : null;
@@ -103,13 +215,15 @@ function serverTipPercent(value: unknown): number | null {
  * Preferencias de interfaz de la **empresa activa**.
  *
  * La **propina** del punto de venta, la **moneda en la que el cajero ve los
- * precios** y la **presentación de los formularios** de caja y pedidos viven en
- * el servidor (`GET/PATCH /preferences`, una fila por empresa): son configuración
- * del local, no de cada persona, así que las comparte todo el personal y el
- * cajero que entra desde otro navegador recibe al iniciar sesión lo mismo que ve
- * el resto del equipo. El navegador guarda una copia para pintar de inmediato al
- * abrir la aplicación y para seguir funcionando si el servidor no responde; al
- * hacer login manda lo que responde el servidor.
+ * precios** —con las **conversiones** que puede ver debajo de cada monto y el
+ * **precio en dólares del BCV**— y la **presentación de los formularios** de caja
+ * y pedidos viven en el servidor
+ * (`GET/PATCH /preferences`, una fila por empresa): son configuración del local,
+ * no de cada persona, así que las comparte todo el personal y el cajero que entra
+ * desde otro navegador recibe al iniciar sesión lo mismo que ve el resto del
+ * equipo. El navegador guarda una copia para pintar de inmediato al abrir la
+ * aplicación y para seguir funcionando si el servidor no responde; al hacer login
+ * manda lo que responde el servidor.
  *
  * (El tema y el menú lateral sí son preferencias de cada navegador.)
  */
@@ -158,6 +272,52 @@ export class PreferencesService {
    */
   readonly priceCurrency = this._priceCurrency.asReadonly();
 
+  private readonly _conversionCurrencies = signal<string[] | null>(
+    storedConversionCurrencies(),
+  );
+
+  /**
+   * Monedas cuyas conversiones ve el cajero debajo de cada monto
+   * (`null` = ninguna: solo ve los precios en la moneda de arriba).
+   *
+   * Es una preferencia de la **empresa**: el admin la configura en
+   * Configuración → Cajero y el personal de caja la comparte, así que el cajero
+   * que entra desde otro equipo la recibe al iniciar sesión. `RatesService` la
+   * aplica a los montos que ve quien **no** administra el local; ADMIN y MANAGER
+   * siguen viendo todas las conversiones.
+   */
+  readonly conversionCurrencies = this._conversionCurrencies.asReadonly();
+
+  private readonly _showBcvPrice = signal<boolean>(storedShowBcvPrice());
+
+  /**
+   * `true` cuando el cajero ve, debajo de cada monto, **el precio en dólares a la
+   * tasa oficial del BCV** (además de las conversiones de arriba).
+   *
+   * Es una preferencia de la **empresa**, como las conversiones: el admin la
+   * configura en Configuración → Cajero y el personal de caja la comparte, así
+   * que el cajero que entra desde otro equipo la recibe al iniciar sesión.
+   * `RatesService` la aplica a los montos que ve quien **no** administra el
+   * local; la vista de ADMIN y MANAGER no cambia.
+   */
+  readonly showBcvPrice = this._showBcvPrice.asReadonly();
+
+  private readonly _chargeRateKey = signal<ChargeRateKey | null>(storedChargeRateKey());
+
+  /**
+   * Tasa del dólar con la que el cajero cobra (`BCV_USD`, `CUSTOM_USD` o `null`
+   * = la tasa activa del sistema).
+   *
+   * Es una preferencia de la **empresa**, como la propina y las conversiones: el
+   * admin la configura en Configuración → Cajero y el punto de venta la aplica a
+   * todo el personal que cobra (el cajero que entra desde otro equipo la recibe al
+   * iniciar sesión). Con ella, el cajero cobra el precio que **lee en pantalla**
+   * pasado a la moneda del cobro: con la tasa de cobro en el BCV y los precios
+   * mostrados con la personalizada del local, el cobro en divisas vale más que el
+   * monto guardado en dólares.
+   */
+  readonly chargeRateKey = this._chargeRateKey.asReadonly();
+
   /**
    * Trae las preferencias de la empresa activa (login, registro, cambio de
    * empresa o sesión recuperada al abrir la aplicación), las aplica y las deja
@@ -176,6 +336,29 @@ export class PreferencesService {
   }
 
   /**
+   * Vuelve a traer las preferencias de la empresa activa, las aplica y las deja
+   * como copia en este navegador.
+   *
+   * Lo usa el botón **Actualizar preferencias** del cajero: el admin puede
+   * guardar en Configuración → Cajero mientras la caja está abierta, así que con
+   * esto lo recién guardado se ve al instante, sin cerrar sesión ni recargar la
+   * aplicación (el `load()` del arranque solo corre al entrar).
+   *
+   * A diferencia del `load()`, aquí lo que responde el servidor manda aunque se
+   * haya tocado una preferencia mientras se pedía: es una acción explícita del
+   * cajero y lo que busca es lo último que se guardó.
+   */
+  refresh(): Observable<CompanyPreferences> {
+    return this.http.get<CompanyPreferences>(this.baseUrl).pipe(
+      tap((preferences) => {
+        // Descarta cualquier `load()` que venga en camino con datos anteriores.
+        this.revision += 1;
+        this.applyServer(preferences);
+      }),
+    );
+  }
+
+  /**
    * Olvida las preferencias de la empresa que acaba de salir, para que en un
    * equipo compartido quien entre después no herede nada antes de que el
    * servidor conteste (el `load()` del siguiente login las vuelve a traer).
@@ -185,10 +368,16 @@ export class PreferencesService {
     this._dialogView.set('modal');
     this._tipPercent.set(DEFAULT_TIP_PERCENT);
     this._priceCurrency.set(null);
+    this._conversionCurrencies.set(null);
+    this._showBcvPrice.set(false);
+    this._chargeRateKey.set(null);
     try {
       localStorage.removeItem(DIALOG_VIEW_KEY);
       localStorage.removeItem(TIP_PERCENT_KEY);
       localStorage.removeItem(PRICE_CURRENCY_KEY);
+      localStorage.removeItem(CONVERSION_CURRENCIES_KEY);
+      localStorage.removeItem(SHOW_BCV_PRICE_KEY);
+      localStorage.removeItem(CHARGE_RATE_KEY);
     } catch {
       /* almacenamiento no disponible (modo privado) */
     }
@@ -218,13 +407,56 @@ export class PreferencesService {
   }
 
   /**
-   * Cambia (y persiste) las dos preferencias del punto de venta de una sola vez:
-   * la propina sugerida y la moneda en la que el cajero ve los precios. Se
-   * guardan juntas para no mandar dos peticiones por una sola pulsación.
+   * Cambia (y persiste) las monedas cuyas conversiones ve el cajero. Viaja a la
+   * empresa, así que el cajero que entra desde otro equipo la recibe al iniciar
+   * sesión. Una lista vacía (o `null`) deja al cajero con los precios solo en su
+   * moneda.
    */
-  setPosPreferences(tipPercent: number, priceCurrency: string | null): void {
+  setConversionCurrencies(codes: readonly string[] | null): void {
+    this._conversionCurrencies.set(normalizeConversionCurrencies(codes));
+    this.save();
+  }
+
+  /**
+   * Cambia (y persiste) el interruptor que muestra el precio en dólares del BCV
+   * debajo de cada monto. Viaja a la empresa, así que el cajero que entra desde
+   * otro equipo lo recibe al iniciar sesión.
+   */
+  setShowBcvPrice(show: boolean): void {
+    this._showBcvPrice.set(normalizeShowBcvPrice(show));
+    this.save();
+  }
+
+  /**
+   * Cambia (y persiste) la tasa del dólar con la que el cajero cobra. Viaja a la
+   * empresa, así que el cajero que entra desde otro equipo la recibe al iniciar
+   * sesión. Con `null` o con una clave inválida se cobra con la tasa activa del
+   * sistema.
+   */
+  setChargeRateKey(key: string | null): void {
+    this._chargeRateKey.set(normalizeChargeRateKey(key));
+    this.save();
+  }
+
+  /**
+   * Cambia (y persiste) las preferencias del punto de venta de una sola vez: la
+   * propina sugerida, la moneda en la que el cajero ve los precios, las
+   * conversiones que puede ver debajo de cada monto, si además ve el precio en
+   * dólares del BCV y la tasa con la que cobra. Se guardan juntas para no mandar
+   * dos peticiones por una sola pulsación.
+   */
+  setPosPreferences(
+    tipPercent: number,
+    priceCurrency: string | null,
+    conversionCurrencies: readonly string[] | null = null,
+    showBcvPrice = false,
+    chargeRateKey: ChargeRateKey | null = null,
+  ): void {
     this._tipPercent.set(normalizeTipPercent(tipPercent));
     this._priceCurrency.set(normalizePriceCurrency(priceCurrency));
+    this._conversionCurrencies.set(normalizeConversionCurrencies(conversionCurrencies));
+    this._showBcvPrice.set(normalizeShowBcvPrice(showBcvPrice));
+    this._chargeRateKey.set(normalizeChargeRateKey(chargeRateKey));
     this.save();
   }
 
@@ -243,6 +475,11 @@ export class PreferencesService {
       serverTipPercent(preferences?.tipPercent) ?? DEFAULT_TIP_PERCENT,
     );
     this._priceCurrency.set(normalizePriceCurrency(preferences?.priceCurrency));
+    this._conversionCurrencies.set(
+      normalizeConversionCurrencies(preferences?.conversionCurrencies),
+    );
+    this._showBcvPrice.set(normalizeShowBcvPrice(preferences?.showBcvPrice));
+    this._chargeRateKey.set(normalizeChargeRateKey(preferences?.chargeRateKey));
     this.cache();
   }
 
@@ -259,6 +496,9 @@ export class PreferencesService {
       tipPercent: this._tipPercent(),
       dialogView: this._dialogView(),
       priceCurrency: this._priceCurrency(),
+      conversionCurrencies: this._conversionCurrencies(),
+      showBcvPrice: this._showBcvPrice(),
+      chargeRateKey: this._chargeRateKey(),
     };
     this.http
       .patch<CompanyPreferences>(this.baseUrl, payload)
@@ -273,6 +513,20 @@ export class PreferencesService {
       const code = this._priceCurrency();
       if (code) localStorage.setItem(PRICE_CURRENCY_KEY, code);
       else localStorage.removeItem(PRICE_CURRENCY_KEY);
+      const conversions = this._conversionCurrencies();
+      if (conversions) {
+        localStorage.setItem(CONVERSION_CURRENCIES_KEY, JSON.stringify(conversions));
+      } else {
+        localStorage.removeItem(CONVERSION_CURRENCIES_KEY);
+      }
+      if (this._showBcvPrice()) {
+        localStorage.setItem(SHOW_BCV_PRICE_KEY, 'true');
+      } else {
+        localStorage.removeItem(SHOW_BCV_PRICE_KEY);
+      }
+      const chargeRate = this._chargeRateKey();
+      if (chargeRate) localStorage.setItem(CHARGE_RATE_KEY, chargeRate);
+      else localStorage.removeItem(CHARGE_RATE_KEY);
     } catch {
       /* almacenamiento no disponible (modo privado) */
     }

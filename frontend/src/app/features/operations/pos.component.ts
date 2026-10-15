@@ -10,7 +10,7 @@ import {
 } from '@angular/core';
 import { FormsModule } from '@angular/forms';
 import { firstValueFrom } from 'rxjs';
-import { BASE_CURRENCY } from '../../core/constants/currency';
+import { BASE_CURRENCY, RATE_META } from '../../core/constants/currency';
 import {
   ORDER_TYPE_LABELS,
   ORDER_STATUS_LABELS,
@@ -59,6 +59,7 @@ import { ToastService } from '../../core/services/toast.service';
 import { categoryOptionLabel, categoryScopeIds } from '../../core/utils/category-tree';
 import {
   apiErrorMessage,
+  displayBaseCode,
   divMoney,
   money,
   moneyIn,
@@ -280,6 +281,19 @@ interface BillTotals {
               <app-icon name="wallet" size="h-3.5 w-3.5" />
               {{ cashOpen() ? 'Caja abierta' : 'Caja cerrada' }}
             </span>
+            <!-- El admin configura la propina, la moneda de los precios y las
+                 conversiones de la empresa: con esto el cajero trae lo que acaba
+                 de guardar sin cerrar sesión. -->
+            <button
+              type="button"
+              class="btn-secondary btn-sm"
+              title="Trae lo último que guardó el administrador en Configuración → Cajero"
+              [disabled]="refreshingPreferences()"
+              (click)="refreshPreferences()"
+            >
+              <app-icon name="settings" size="h-4 w-4" />
+              Actualizar preferencias
+            </button>
             <button
               type="button"
               class="btn-secondary btn-sm"
@@ -874,7 +888,10 @@ interface BillTotals {
                   <span>Total</span>
                   <app-money [amount]="bill.total" alignEnd="true" strong />
                 </div>
-                <app-rate-conversions [amount]="bill.total" [currency]="baseCurrency.code" />
+                <app-rate-conversions
+                  [amount]="displayTotal"
+                  [currency]="moneyBaseCode()"
+                />
                 @if (targetOrder() && bill.paid > 0) {
                   <div class="flex items-center justify-between">
                     <span class="text-slate-500">Ya pagado</span>
@@ -911,6 +928,7 @@ interface BillTotals {
                       label="Moneda"
                       [value]="charge.currency"
                       [amount]="chargeAmount"
+                      [rateKey]="chargeRateKey()"
                       (valueChange)="onChargeCurrencyChange($event)"
                     />
                   </div>
@@ -953,9 +971,13 @@ interface BillTotals {
                   <p class="text-xs text-slate-500">
                     Se cobrará
                     <span class="font-semibold">{{ amountIn(chargeAmount, charge.currency) }}</span>
-                    en {{ charge.currency }}.
+                    en {{ charge.currency }}@if (chargeRateLabel(); as label) { · tasa {{ label }} }.
                   </p>
-                  <app-rate-conversions [amount]="chargeAmount" [currency]="charge.currency" />
+                  <app-rate-conversions
+                    [amount]="chargeAmount"
+                    [currency]="charge.currency"
+                    [rateKey]="chargeRateKey()"
+                  />
                 }
               </div>
 
@@ -1268,6 +1290,30 @@ export class PosComponent implements OnInit, OnDestroy {
   readonly tipPresets = TIP_PERCENT_PRESETS;
   /** Moneda base del sistema (el delivery y el desglose se muestran en USD). */
   readonly baseCurrency = BASE_CURRENCY;
+  /**
+   * Moneda con la que se están mostrando los montos: la que eligió el admin para
+   * el cajero (Configuración → Cajero) o la base de la empresa. Las conversiones
+   * del total se calculan sobre lo que se lee en pantalla, no sobre los dólares
+   * guardados: si el total se ve en bolívares, el bloque de tasas también.
+   */
+  readonly moneyBaseCode = displayBaseCode;
+
+  /**
+   * **Tasa de cobro** que fijó la empresa en Configuración → Cajero (`null` = la
+   * tasa activa del sistema).
+   *
+   * Es la que convierte el precio que el cajero lee en pantalla a la moneda del
+   * cobro: con la tasa de cobro en el BCV y los precios mostrados con la
+   * personalizada del local, el cobro en divisas vale más que el monto guardado en
+   * dólares (es el precio en bolívares del cliente pasado a divisas).
+   */
+  readonly chargeRateKey = this.preferences.chargeRateKey;
+
+  /** Etiqueta de la tasa de cobro para la línea del cobro (`null` sin tasa fija). */
+  chargeRateLabel(): string | null {
+    const key = this.chargeRateKey();
+    return key ? (RATE_META[key]?.label ?? key) : null;
+  }
 
   readonly loading = signal(false);
   readonly loadingTables = signal(false);
@@ -1275,6 +1321,11 @@ export class PosComponent implements OnInit, OnDestroy {
   readonly formError = signal<string | null>(null);
   readonly tab = signal<'sale' | 'tables'>('sale');
   readonly cashOpen = signal(false);
+  /**
+   * Botón **Actualizar preferencias**: `true` mientras se están trayendo de nuevo
+   * la propina, la moneda de los precios y las conversiones de la empresa.
+   */
+  readonly refreshingPreferences = signal(false);
 
   readonly products = signal<ProductOption[]>([]);
   readonly menus = signal<MenuOption[]>([]);
@@ -1360,6 +1411,36 @@ export class PosComponent implements OnInit, OnDestroy {
   // ===========================================================================
   //  CARGA DE DATOS
   // ===========================================================================
+
+  /**
+   * Trae de nuevo lo que la empresa tiene configurado para el cajero (propina,
+   * moneda de los precios y conversiones bajo cada monto) y lo aplica sin cerrar
+   * sesión: el admin puede guardar en Configuración → Cajero mientras la caja
+   * está abierta y el cajero solo tiene que pulsar este botón.
+   *
+   * La venta en curso no se toca: la propina de la venta ya empezada y lo que hay
+   * en el carrito se quedan como están; lo que cambia es cómo se ven los montos.
+   */
+  refreshPreferences(): void {
+    if (this.refreshingPreferences()) return;
+
+    this.refreshingPreferences.set(true);
+    this.preferences.refresh().subscribe({
+      next: () => {
+        this.refreshingPreferences.set(false);
+        // Las conversiones y la moneda de los precios se pintan con las tasas en
+        // curso: se vuelven a aplicar con la preferencia recién traída y se
+        // refrescan por si el admin tocó la moneda base o alguna tasa.
+        this.rates.applyDisplayPreference();
+        this.rates.load();
+        this.toast.success(
+          'Ya ves la propina, la moneda y las conversiones que dejó el admin',
+          'Preferencias actualizadas',
+        );
+      },
+      error: () => this.refreshingPreferences.set(false),
+    });
+  }
 
   /** Recarga catálogos, caja y pedidos activos (mesas). */
   reload(): void {
@@ -2106,14 +2187,29 @@ export class PosComponent implements OnInit, OnDestroy {
 
   /**
    * Monto a cobrar en la moneda elegida: la cuenta del carrito (que ya incluye
-   * los productos de la mesa) menos lo que el cliente ya pagó.
+   * los productos de la mesa) menos lo que el cliente ya pagó, pasado a la moneda
+   * del cobro con la **tasa de cobro** de la empresa.
+   *
+   * El precio que el cajero cobra es el que lee en pantalla (en su moneda de
+   * precios), no los dólares guardados: por eso el cobro en divisas puede valer
+   * más que el monto del pedido y el backend lo acepta con la misma tasa.
    */
   get chargeAmount(): number {
     const bill = this.bill;
-    const base = sumMoney([bill.total, -bill.paid]);
-    const currency = this.charge.currency || BASE_CURRENCY.code;
-    if (currency === BASE_CURRENCY.code) return base;
-    return this.rates.fromBase(base, currency) ?? base;
+    return this.rates.chargeAmount(
+      sumMoney([bill.total, -bill.paid]),
+      this.charge.currency,
+      this.chargeRateKey(),
+    );
+  }
+
+  /**
+   * Total de la cuenta tal como se está mostrando (la moneda de los precios del
+   * cajero): el bloque de conversiones del total tiene que hablar de la misma
+   * moneda que el total que se lee arriba.
+   */
+  get displayTotal(): number {
+    return this.rates.displayAmount(this.bill.total);
   }
 
   /** Vuelto a entregar en efectivo (en la moneda del cobro). */
@@ -2286,11 +2382,11 @@ export class PosComponent implements OnInit, OnDestroy {
   /** Cobra el saldo pendiente del pedido en la moneda elegida. */
   private payOrder(order: Order): void {
     const currency = this.charge.currency || BASE_CURRENCY.code;
-    const balance = this.balance(order);
-    const amount =
-      currency === BASE_CURRENCY.code
-        ? balance
-        : (this.rates.fromBase(balance, currency) ?? balance);
+    const rateKey = this.chargeRateKey();
+    // El cobro es el precio que el cajero lee en pantalla pasado a la moneda del
+    // cobro con la tasa de cobro: el backend hace la misma conversión con
+    // `rateKey` antes de compararlo con el saldo del pedido.
+    const amount = this.rates.chargeAmount(this.balance(order), currency, rateKey);
 
     if (!(amount > 0)) {
       this.toast.info(`El pedido ${order.code} ya está pagado en su totalidad`);
@@ -2298,7 +2394,15 @@ export class PosComponent implements OnInit, OnDestroy {
       return;
     }
 
-    this.orders.pay(order.id, { amount, method: this.charge.method, currency }).subscribe({
+    this.orders
+      .pay(order.id, {
+        amount,
+        method: this.charge.method,
+        currency,
+        // La tasa de cobro solo viaja cuando la empresa tiene una fijada.
+        ...(rateKey ? { rateKey } : {}),
+      })
+      .subscribe({
       next: () => {
         this.toast.success(
           `Pedido ${order.code} cobrado con ${this.methodLabels[this.charge.method]}`,

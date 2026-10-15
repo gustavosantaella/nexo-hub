@@ -151,6 +151,20 @@ export const DialogView = {
 export type DialogView = (typeof DialogView)[keyof typeof DialogView];
 export const DIALOG_VIEWS: DialogView[] = Object.values(DialogView);
 
+/**
+ * Tasas del dolar (bolivares por 1 USD) que el administrador puede fijar como
+ * **tasa de cobro** del cajero (Configuracion > Cajero).
+ *
+ * Con una elegida, el punto de venta convierte el saldo del pedido, el efectivo
+ * recibido y el vuelto con ESA tasa, sin preguntar nada al operador; sin eleccion
+ * (`null`) se usa la tasa activa del sistema (la personalizada del dolar o, si no
+ * existe, la del BCV), que es como funcionaba antes de esta preferencia.
+ *
+ * Son las dos tasas que expresan bolivares por dolar: la del BCV y la del local.
+ */
+export const CHARGE_RATE_KEYS = ['BCV_USD', 'CUSTOM_USD'] as const;
+export type ChargeRateKey = (typeof CHARGE_RATE_KEYS)[number];
+
 /** Categorias que implican sacar efectivo de la caja (egreso por defecto). */
 export const CASH_OUT_CATEGORIES: string[] = [
   CashMovementCategory.EXPENSE,

@@ -5,11 +5,103 @@ import { environment } from '../../../environments/environment';
 import type { ProductOption } from '../../core/models/api.model';
 import type { MenuOption } from '../../core/models/api.model';
 import type { Order, OrderItem } from '../../core/models/operations.model';
+import type { RatesSnapshot } from '../../core/models/rates.model';
+import { RatesService } from '../../core/services/rates.service';
 import { money, setDisplayCurrency } from '../../core/utils/format';
 import { unitPriceOf } from '../../core/utils/product-pricing';
 import { PosComponent } from './pos.component';
 
 const API = environment.apiUrl;
+
+/** Clave de `localStorage` de las conversiones que ve el cajero. */
+const CONVERSION_CURRENCIES_KEY = 'nexo-hub.conversion-currencies';
+
+/** Clave de `localStorage` del precio en dólares del BCV. */
+const SHOW_BCV_PRICE_KEY = 'nexo-hub.show-bcv-price';
+
+/** Clave de `localStorage` de la tasa de cobro del cajero. */
+const CHARGE_RATE_KEY = 'nexo-hub.charge-rate';
+
+/**
+ * Tasas de la empresa del punto de venta: los precios se ven en BOLÍVARES con la
+ * tasa personalizada del local (950) activa, mientras el BCV (876,7976) marca
+ * 876,7976 Bs por dólar. Es el caso del cajero que cobra al BCV.
+ */
+const RATES: RatesSnapshot = {
+  bcv: {
+    current: { date: '2026-10-13', usd: 876.7976, eur: 982.00454402 },
+    previous: { date: '2026-10-09', usd: 875.6505, eur: 980.61472543 },
+    changePercentage: { usd: 0.131, eur: 0.1417 },
+    fetchedAt: '2026-10-13T12:00:00.000Z',
+    expiresAt: '2026-10-13T12:15:00.000Z',
+    stale: false,
+    sourceUrl: 'https://rates.dolarvzla.com/bcv/current.json',
+  },
+  custom: { usd: 950, updatedAt: '2026-10-13T12:00:00.000Z', updatedBy: null },
+  rates: [
+    {
+      key: 'BCV_USD',
+      currency: 'USD',
+      source: 'BCV',
+      rate: 876.7976,
+      date: '2026-10-13',
+      previousRate: 875.6505,
+      changePercentage: 0.131,
+    },
+    {
+      key: 'BCV_EUR',
+      currency: 'EUR',
+      source: 'BCV',
+      rate: 982.00454402,
+      date: '2026-10-13',
+      previousRate: 980.61472543,
+      changePercentage: 0.1417,
+    },
+    {
+      key: 'CUSTOM_USD',
+      currency: 'USD',
+      source: 'CUSTOM',
+      rate: 950,
+      date: null,
+      previousRate: null,
+      changePercentage: null,
+    },
+  ],
+  activeKey: 'CUSTOM_USD',
+  currencies: [
+    {
+      code: 'USD',
+      label: 'Dólares',
+      symbol: '$',
+      enabled: true,
+      bsPerUnit: 950,
+      source: 'CUSTOM',
+      isBase: true,
+      isDisplayBase: false,
+      bsPerUsd: 950,
+    },
+    {
+      code: 'VES',
+      label: 'Bolívares',
+      symbol: 'Bs',
+      enabled: true,
+      bsPerUnit: 1,
+      source: 'BASE',
+      isBase: false,
+      isDisplayBase: true,
+      bsPerUsd: 950,
+    },
+  ],
+  baseCurrency: {
+    code: 'VES',
+    label: 'Bolívares',
+    symbol: 'Bs',
+    decimals: 2,
+    bsPerUnit: 1,
+    bsPerUsd: 950,
+  },
+  reference: null,
+};
 
 /** Catalogo de la venta: un producto suelto y una caja de 24 a $ 24. */
 const PRODUCTS: ProductOption[] = [
@@ -472,6 +564,45 @@ describe('PosComponent (vista de cajero)', () => {
     expect(pos.total).toBe(35.4);
   });
 
+  /**
+   * Botón **Actualizar preferencias**: el admin puede guardar la propina, la
+   * moneda de los precios, las conversiones y el precio en dólares del BCV
+   * mientras la caja está abierta, así que el cajero las trae sin cerrar sesión.
+   * La venta en curso no se toca.
+   */
+  it('trae las preferencias que guardó el admin sin cerrar sesión', () => {
+    const { fixture, pos } = mount();
+    expect(pos.form.tipRate).toBe(10);
+
+    pos.refreshPreferences();
+    fixture.detectChanges();
+    // Mientras trae, el botón queda bloqueado para no pedirlo dos veces.
+    expect(pos.refreshingPreferences()).toBeTrue();
+
+    http.expectOne({ method: 'GET', url: `${API}/preferences` }).flush({
+      tipPercent: 15,
+      dialogView: 'modal',
+      priceCurrency: 'VES',
+      conversionCurrencies: ['USD'],
+      showBcvPrice: true,
+    });
+    // La moneda de los precios y las conversiones se pintan con las tasas en curso.
+    http.expectOne({ method: 'GET', url: `${API}/rates` }).flush({
+      rates: [],
+      currencies: [],
+      baseCurrency: null,
+    });
+    fixture.detectChanges();
+
+    expect(pos.refreshingPreferences()).toBeFalse();
+    // Lo que dejó el admin queda en el navegador, que es lo que pinta el POS…
+    expect(localStorage.getItem(CONVERSION_CURRENCIES_KEY)).toBe('["USD"]');
+    // …incluido el precio en dólares del BCV…
+    expect(localStorage.getItem(SHOW_BCV_PRICE_KEY)).toBe('true');
+    // …y la propina de la venta ya empezada se queda como estaba.
+    expect(pos.form.tipRate).toBe(10);
+  });
+
   it('cobra la venta con la propina incluida en el total', () => {
     const { fixture, pos } = mount();
 
@@ -497,6 +628,63 @@ describe('PosComponent (vista de cajero)', () => {
     expect(pos.saving()).toBeFalse();
     expect(pos.lines().length).toBe(0);
 
+    flushReload();
+  });
+
+  /**
+   * Configuración → Cajero permite fijar la **tasa de cobro** de la empresa (el
+   * BCV): el cajero cobra el precio que LEE en pantalla —los bolívares— pasado a
+   * esa tasa, no los dólares guardados del catálogo. El cobro viaja con la tasa
+   * para que el backend haga la misma cuenta contra el saldo del pedido.
+   */
+  it('cobra el precio que se ve en pantalla con la tasa de cobro del cajero', () => {
+    // El admin fijó el BCV como tasa de cobro (Configuración → Cajero).
+    localStorage.setItem(CHARGE_RATE_KEY, 'BCV_USD');
+    const { fixture, pos } = mount();
+
+    // Las tasas llegan (con los precios en bolívares y la personalizada activa).
+    TestBed.inject(RatesService).load();
+    http.expectOne(`${API}/rates`).flush(RATES);
+    fixture.detectChanges();
+
+    pos.setTipRate(0);
+    pos.addProduct(PRODUCTS[0]);
+
+    // 30 USD se ven como Bs 28.500,00 (personalizada 950) y esos bolívares, al
+    // cambio del BCV (876,7976), son 32,50 USD: eso cobra el cajero.
+    expect(pos.chargeAmount).toBe(32.5);
+    // Pagando en bolívares el cliente entrega el precio de la pantalla, tal cual.
+    pos.charge.currency = 'VES';
+    expect(pos.chargeAmount).toBe(28500);
+    // La ayuda del cobro dice el mismo equivalente que el API va a registrar: los
+    // bolívares de la pantalla (28.500,00), al cambio del BCV, son $ 32,50.
+    fixture.detectChanges();
+    expect(fixture.nativeElement.textContent as string).toContain(
+      '= $ 32.50 · Bs 28,500.00 · tasa BCV',
+    );
+
+    pos.charge.currency = 'USD';
+
+    pos.submitSale(true);
+    fixture.detectChanges();
+
+    const createRequest = http.expectOne(
+      (request) => request.method === 'POST' && request.url === `${API}/orders`,
+    );
+    createRequest.flush(order({ total: 30 }));
+
+    const payRequest = http.expectOne(`${API}/orders/o1/payments`);
+    expect(payRequest.request.body).toEqual({
+      amount: 32.5,
+      method: 'CASH',
+      currency: 'USD',
+      rateKey: 'BCV_USD',
+    });
+    payRequest.flush(
+      order({ total: 30, paidAmount: 32.5, paymentStatus: 'PAID', status: 'COMPLETED' }),
+    );
+
+    expect(pos.saving()).toBeFalse();
     flushReload();
   });
 

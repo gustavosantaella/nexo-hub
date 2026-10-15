@@ -599,6 +599,68 @@ describe('RatesService', () => {
     });
   });
 
+  /**
+   * Tasa de cobro del cajero (Configuracion > Cajero): el punto de venta cobra el
+   * precio que el operador lee en pantalla, y lo lee en la **moneda base de la
+   * empresa** (los bolivares, por ejemplo), no en dolares. Por eso el cobro puede
+   * valer mas que el total del pedido —que esta en dolares— sin ser un exceso.
+   */
+  describe('saldo que cubre un cobro (tasa de cobro del cajero)', () => {
+    /** Empresa con la tasa personalizada activa y los precios mostrados en Bs. */
+    const customCompany = () =>
+      buildService({
+        fetchImpl: fetchMock,
+        baseCurrency: 'VES',
+        setting: {
+          key: CUSTOM_RATE_KEY,
+          value: '905.5',
+          updatedAt: new Date('2026-10-13T12:00:00.000Z'),
+          updatedBy: null,
+        },
+      });
+
+    it('sin tasa de cobro deja el saldo tal cual', async () => {
+      const { service } = customCompany();
+
+      await expect(service.chargeBalance(COMPANY_ID, 100)).resolves.toBe(100);
+    });
+
+    it('convierte el saldo con la tasa de cobro (el precio que se ve en Bs)', async () => {
+      const { service } = customCompany();
+
+      // 100 USD se ven como Bs 90.550 (personalizada 905,5) y esos bolivares, al
+      // cambio del BCV (876,7976), valen 103,27 USD: eso es lo que cobra el cajero
+      // cuando el cliente paga en divisas.
+      await expect(
+        service.chargeBalance(COMPANY_ID, 100, 'BCV_USD'),
+      ).resolves.toBe(103.27);
+    });
+
+    it('deja el saldo igual cuando la tasa de cobro es la activa', async () => {
+      const { service } = customCompany();
+
+      await expect(
+        service.chargeBalance(COMPANY_ID, 100, 'CUSTOM_USD'),
+      ).resolves.toBe(100);
+    });
+
+    it('no cambia nada cuando la empresa muestra los precios en dolares', async () => {
+      const { service } = buildService({ fetchImpl: fetchMock });
+
+      await expect(
+        service.chargeBalance(COMPANY_ID, 100, 'BCV_USD'),
+      ).resolves.toBe(100);
+    });
+
+    it('descarta una tasa inventada', async () => {
+      const { service } = customCompany();
+
+      await expect(
+        service.chargeBalance(COMPANY_ID, 100, 'MALA'),
+      ).resolves.toBe(100);
+    });
+  });
+
   describe('moneda base (lo que se muestra primero)', () => {
     it('usa el dolar cuando el local no ha elegido otra moneda', async () => {
       const { service } = buildService({ fetchImpl: fetchMock });
@@ -650,6 +712,115 @@ describe('RatesService', () => {
 
       expect(snapshot.baseCurrency.code).toBe('USD');
       expect(snapshot.currencies.some((item) => item.isDisplayBase)).toBe(true);
+    });
+  });
+
+  describe('ratesHistory (historial de tasas del cobro)', () => {
+    it('guarda TODAS las tasas del dia, no solo la activa', async () => {
+      const { service } = buildService({
+        fetchImpl: fetchMock,
+        setting: {
+          key: CUSTOM_RATE_KEY,
+          value: '905.5',
+          updatedAt: new Date('2026-10-13T12:00:00.000Z'),
+        },
+      });
+
+      const history = await service.ratesHistory(COMPANY_ID);
+
+      expect(history.rates.map((rate) => rate.key)).toEqual([
+        'BCV_USD',
+        'BCV_EUR',
+        'CUSTOM_USD',
+      ]);
+      expect(history.rates[0]).toEqual({
+        key: 'BCV_USD',
+        currency: 'USD',
+        source: 'BCV',
+        rate: 876.7976,
+        date: '2026-10-13',
+      });
+      expect(history.rates[2]).toEqual({
+        key: 'CUSTOM_USD',
+        currency: 'USD',
+        source: 'CUSTOM',
+        rate: 905.5,
+        date: null,
+      });
+      expect(history.bcvDate).toBe('2026-10-13');
+      expect(history.activeKey).toBe('CUSTOM_USD');
+      expect(history.stale).toBe(false);
+      expect(Date.parse(history.capturedAt)).not.toBeNaN();
+      // La serie del BCV se consulta una sola vez (la cache sirve al cobro).
+      expect(callsTo('bcv')).toHaveLength(1);
+    });
+
+    it('guarda las 2 tasas del BCV cuando el local no tiene personalizada', async () => {
+      const { service } = buildService({ fetchImpl: fetchMock });
+
+      const history = await service.ratesHistory(COMPANY_ID);
+
+      expect(history.rates.map((rate) => rate.key)).toEqual([
+        'BCV_USD',
+        'BCV_EUR',
+      ]);
+      expect(history.activeKey).toBe('BCV_USD');
+      expect(history.bcvDate).toBe('2026-10-13');
+    });
+
+    it('marca la serie del BCV como stale cuando el endpoint falla y ya hay tasa previa', async () => {
+      // TTL 0: la cache caduca al instante y cada lectura vuelve a consultar.
+      const { service } = buildService({
+        fetchImpl: fetchMock,
+        cacheTtlSeconds: 0,
+      });
+      await service.ratesHistory(COMPANY_ID);
+
+      fetchMock.mockRejectedValueOnce(new Error('timeout'));
+      const history = await service.ratesHistory(COMPANY_ID);
+
+      expect(history.stale).toBe(true);
+      expect(history.rates[0].rate).toBe(876.7976);
+    });
+
+    /**
+     * El cobro ya se convirtio bien: perder la foto de las tasas no puede
+     * impedir registrarlo, asi que el historial degrada a lo que si se pudo leer.
+     */
+    it('no lanza y devuelve el historial vacio si el BCV no responde', async () => {
+      const { service } = buildService({ fetchImpl: fetchMock });
+      fetchMock.mockRejectedValue(new Error('timeout'));
+
+      const history = await service.ratesHistory(COMPANY_ID);
+
+      expect(history.rates).toEqual([]);
+      expect(history.bcvDate).toBeNull();
+      expect(history.activeKey).toBe('BCV_USD');
+    });
+
+    it('conserva la tasa personalizada cuando el BCV no responde', async () => {
+      const { service } = buildService({
+        fetchImpl: fetchMock,
+        setting: {
+          key: CUSTOM_RATE_KEY,
+          value: '905.5',
+          updatedAt: new Date('2026-10-13T12:00:00.000Z'),
+        },
+      });
+      fetchMock.mockRejectedValue(new Error('timeout'));
+
+      const history = await service.ratesHistory(COMPANY_ID);
+
+      expect(history.rates).toEqual([
+        {
+          key: 'CUSTOM_USD',
+          currency: 'USD',
+          source: 'CUSTOM',
+          rate: 905.5,
+          date: null,
+        },
+      ]);
+      expect(history.activeKey).toBe('CUSTOM_USD');
     });
   });
 });
