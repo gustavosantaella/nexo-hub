@@ -1,7 +1,6 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { Type } from 'class-transformer';
 import {
-  ArrayMinSize,
   IsArray,
   IsBoolean,
   IsIn,
@@ -141,13 +140,14 @@ export class CreateMenuDto {
   @IsBoolean()
   active?: boolean;
 
-  @ApiProperty({
+  @ApiPropertyOptional({
     type: [MenuIngredientDto],
-    description: 'Receta: productos que consume una unidad del menu',
+    description:
+      'Receta: productos que consume una unidad del menu. Opcional: sin receta el menu no descuenta inventario.',
   })
+  @IsOptional()
   @IsArray()
-  @ArrayMinSize(1, { message: 'El menu debe tener al menos un ingrediente' })
   @ValidateNested({ each: true })
   @Type(() => MenuIngredientDto)
-  ingredients!: MenuIngredientDto[];
+  ingredients?: MenuIngredientDto[];
 }

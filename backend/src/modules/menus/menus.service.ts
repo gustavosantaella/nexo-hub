@@ -203,8 +203,12 @@ export class MenusService {
     await this.assertCodeAvailable(companyId, code);
     await this.assertCategoryInCompany(companyId, dto.categoryId);
 
-    const ingredients = await this.resolveIngredients(companyId, dto.ingredients);
+    const ingredients = await this.resolveIngredients(
+      companyId,
+      dto.ingredients ?? [],
+    );
     const price = await this.priceColumns(companyId, dto.price, dto.priceCurrency);
+    const ingredientRows = this.ingredientRows(ingredients);
 
     const menu = await this.prisma.menu.create({
       data: {
@@ -222,12 +226,14 @@ export class MenusService {
         preparationMinutes: dto.preparationMinutes ?? null,
         categoryId: normalizeNullableId(dto.categoryId),
         active: dto.active ?? true,
-        ingredients: {
-          create: this.ingredientRows(ingredients).map((row) => ({
-            companyId,
-            ...row,
-          })),
-        },
+        // Un menu sin receta no crea lineas: no descuenta inventario.
+        ...(ingredientRows.length > 0
+          ? {
+              ingredients: {
+                create: ingredientRows.map((row) => ({ companyId, ...row })),
+              },
+            }
+          : {}),
       },
       include: MENU_DETAIL_INCLUDE,
     });
@@ -358,16 +364,18 @@ export class MenusService {
       });
 
       if (ingredients) {
+        // Enviar la receta (aunque venga vacia) la reemplaza: se borran las
+        // lineas actuales y, si queda algo, se vuelve a crear. Con `[]` el menu
+        // queda sin receta (no descuenta inventario).
         await tx.menuIngredient.deleteMany({
           where: { menuId: id, ...tenantWhere(companyId) },
         });
-        await tx.menuIngredient.createMany({
-          data: this.ingredientRows(ingredients).map((row) => ({
-            companyId,
-            menuId: id,
-            ...row,
-          })),
-        });
+        const rows = this.ingredientRows(ingredients);
+        if (rows.length > 0) {
+          await tx.menuIngredient.createMany({
+            data: rows.map((row) => ({ companyId, menuId: id, ...row })),
+          });
+        }
       }
     });
 
@@ -515,9 +523,8 @@ export class MenusService {
     companyId: string,
     lines: MenuIngredientDto[],
   ): Promise<ResolvedIngredient[]> {
-    if (lines.length === 0) {
-      throw new BadRequestException('El menu debe tener al menos un ingrediente');
-    }
+    // La receta es opcional: sin ingredientes el menu no descuenta inventario.
+    if (lines.length === 0) return [];
 
     const productIds = [...new Set(lines.map((line) => line.productId))];
     if (productIds.length !== lines.length) {

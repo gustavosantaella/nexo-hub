@@ -291,6 +291,20 @@ describe('MenusService.create', () => {
     expect(created[0].data.code).toMatch(/^MEN-\d{8}-\d{4}$/);
   });
 
+  it('crea un menu sin receta (costo 0 y sin lineas)', async () => {
+    const { service, created } = createService();
+
+    await service.create(COMPANY_ID, {
+      name: 'Agua embotellada',
+      price: 2,
+      ingredients: [],
+    });
+
+    // Sin receta no hay costo ni lineas: el menu no descuenta inventario.
+    expect(created[0].data.cost).toBe(0);
+    expect(created[0].data.ingredients).toBeUndefined();
+  });
+
   it('rechaza un producto repetido en la receta', async () => {
     const { service } = createService();
 
@@ -383,6 +397,20 @@ describe('MenusService.update', () => {
     });
     expect(prisma.menu.update).toHaveBeenCalledWith(
       expect.objectContaining({ data: expect.objectContaining({ cost: 6 }) }),
+    );
+  });
+
+  it('elimina la receta cuando se envia vacia', async () => {
+    const { service, prisma } = createService();
+
+    await service.update(COMPANY_ID, 'm1', { ingredients: [] });
+
+    expect(prisma.menuIngredient.deleteMany).toHaveBeenCalledWith({
+      where: { menuId: 'm1', companyId: COMPANY_ID },
+    });
+    expect(prisma.menuIngredient.createMany).not.toHaveBeenCalled();
+    expect(prisma.menu.update).toHaveBeenCalledWith(
+      expect.objectContaining({ data: expect.objectContaining({ cost: 0 }) }),
     );
   });
 

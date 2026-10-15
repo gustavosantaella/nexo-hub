@@ -267,7 +267,7 @@ interface CategoryForm {
                     <td class="text-right text-slate-600">{{ money(item.cost) }}</td>
                     <td class="text-right">
                       <span class="font-medium" [class]="item.margin >= 0 ? 'text-emerald-600' : 'text-rose-600'">
-                        {{ money(item.margin) }}
+                        <app-money [amount]="item.margin" alignEnd="true" />
                       </span>
                     </td>
                     <td class="text-center">
@@ -452,24 +452,48 @@ interface CategoryForm {
             <label class="label">Preparación (minutos)</label>
             <input class="input" type="number" min="1" max="600" name="preparationMinutes" [(ngModel)]="form.preparationMinutes" />
           </div>
-          <div>
-            <label class="label">Foto</label>
-            <div class="flex items-center gap-2">
-              <label class="btn-secondary btn-sm cursor-pointer" for="menu-image">
-                <app-icon name="image" size="h-4 w-4" />
-                {{ imageReading() ? 'Leyendo…' : 'Subir foto' }}
-              </label>
-              @if (form.imageUrl) {
-                <button type="button" class="btn-ghost btn-sm text-rose-600" (click)="clearImage()">Quitar</button>
-              }
+          <div class="sm:col-span-2">
+            <span class="label">Foto</span>
+            <div class="flex flex-wrap items-center gap-3">
+              <div class="flex h-20 w-20 shrink-0 items-center justify-center overflow-hidden rounded-xl border border-dashed border-slate-300 bg-slate-50">
+                @if (form.imageUrl) {
+                  <img [src]="form.imageUrl" alt="Foto del menú" class="h-full w-full object-cover" />
+                } @else {
+                  <app-icon name="image" size="h-7 w-7" class="text-slate-400" />
+                }
+              </div>
+              <div class="flex flex-col gap-2">
+                <div class="flex flex-wrap gap-2">
+                  <label class="btn-secondary btn-sm cursor-pointer" for="menu-image">
+                    <app-icon name="image" size="h-4 w-4" />
+                    {{ imageReading() ? 'Leyendo…' : 'Subir foto' }}
+                  </label>
+                  <input
+                    id="menu-image"
+                    type="file"
+                    class="hidden"
+                    accept="image/png,image/jpeg,image/webp"
+                    (change)="onImageSelected($event)"
+                  />
+                  @if (form.imageUrl) {
+                    <button type="button" class="btn-ghost btn-sm text-rose-600" (click)="clearImage()">
+                      <app-icon name="trash" size="h-4 w-4" />
+                      Quitar
+                    </button>
+                  }
+                </div>
+                <input
+                  name="imageUrl"
+                  class="input w-72"
+                  placeholder="…o pega la URL de la imagen"
+                  [(ngModel)]="form.imageUrl"
+                />
+              </div>
             </div>
-            <input
-              id="menu-image"
-              type="file"
-              class="hidden"
-              accept="image/png,image/jpeg,image/webp"
-              (change)="onImageSelected($event)"
-            />
+            <p class="mt-1 text-xs text-slate-400">
+              Sube un archivo (se reduce a {{ productImageMaxSize }} px para que la carta cargue
+              rápido) o pega la URL de una imagen ya publicada.
+            </p>
             @if (imageError(); as error) {
               <p class="field-error">{{ error }}</p>
             }
@@ -483,7 +507,9 @@ interface CategoryForm {
         <section class="rounded-xl border border-slate-200 p-3">
           <div class="mb-2 flex flex-wrap items-center justify-between gap-2">
             <div>
-              <h3 class="text-sm font-semibold text-slate-800">Receta</h3>
+              <h3 class="text-sm font-semibold text-slate-800">
+                Receta <span class="font-normal text-slate-400">(opcional)</span>
+              </h3>
               <p class="text-xs text-slate-500">
                 Cuánto consume UNA unidad del menú, en la unidad del producto
                 (0.1 = 100 g si el producto se mide en kilos).
@@ -497,7 +523,7 @@ interface CategoryForm {
 
           @if (form.ingredients.length === 0) {
             <p class="rounded-lg border border-dashed border-slate-300 px-3 py-4 text-center text-sm text-slate-400">
-              Sin ingredientes. Agrega al menos uno para que el menú descuente inventario.
+              Sin ingredientes. El menú no descontará inventario; agrega productos si quieres costearlo.
             </p>
           } @else {
             <div class="space-y-2">
@@ -565,7 +591,7 @@ interface CategoryForm {
             <p>
               <span class="text-slate-500">Margen:</span>
               <span class="font-semibold" [class]="margin() >= 0 ? 'text-emerald-600' : 'text-rose-600'">
-                {{ money(margin()) }}
+                <app-money [amount]="margin()" />
               </span>
             </p>
             <p>
@@ -954,11 +980,9 @@ export class MenusPage implements OnInit {
   save(): void {
     if (this.saving()) return;
 
+    // La receta es opcional: se descartan las lineas sin producto, pero el menu
+    // se puede guardar sin ingredientes (no descuenta inventario).
     const ingredients = this.form.ingredients.filter((line) => !!line.productId);
-    if (ingredients.length === 0) {
-      this.toast.error('Agrega al menos un ingrediente a la receta del menú.');
-      return;
-    }
     if (ingredients.some((line) => !(Number(line.quantity) > 0))) {
       this.toast.error('Cada ingrediente necesita una cantidad mayor a 0.');
       return;
