@@ -13,7 +13,8 @@
  *
  * Las CANTIDADES (`Float` con 3 decimales: existencias y movimientos de stock)
  * se declaran en `QUANTITY_COLUMNS` y no pasan por ningun codec: el motor de
- * inventario las redondea al escribir.
+ * inventario las redondea al escribir. Los PORCENTAJES (`Float` que no son
+ * dinero: la propina sugerida) se declaran en `PERCENT_COLUMNS`.
  *
  * El nombre del modelo es el de Prisma en PascalCase (tal como lo entrega
  * `Prisma.dmmf` y los hooks de las extensiones).
@@ -69,6 +70,15 @@ export const RATE_COLUMNS = {
   ReceivablePayment: ['exchangeRate'],
   CashMovement: ['exchangeRate'],
   CashSession: ['openingRate', 'countedRate'],
+} as const;
+
+/**
+ * Columnas `Float` que NO son dinero, tasas ni cantidades: son PORCENTAJES
+ * (ej. la propina sugerida del punto de venta). No se suman ni representan
+ * dinero, asi que se guardan como decimal y no pasan por ningun codec.
+ */
+export const PERCENT_COLUMNS = {
+  CompanyPreference: ['tipPercent'],
 } as const;
 
 /** Columnas `Int` que no son dinero (conteos, existencias y orden). */

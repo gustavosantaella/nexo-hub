@@ -19,6 +19,9 @@ import type {
   ReferenceRate,
 } from '../models/rates.model';
 import { bs, money, moneyIn, setDisplayCurrency } from '../utils/format';
+import type { DisplayCurrency } from '../utils/format';
+import { storedCanManage } from '../auth/session';
+import { PreferencesService } from './preferences.service';
 
 /** Redondeo monetario (2 decimales) equivalente al del backend. */
 function round2(value: number): number {
@@ -59,6 +62,7 @@ function storedConversions(): boolean {
 @Injectable({ providedIn: 'root' })
 export class RatesService {
   private readonly http = inject(HttpClient);
+  private readonly preferences = inject(PreferencesService);
   private readonly baseUrl = `${environment.apiUrl}/rates`;
 
   private readonly _snapshot = signal<RatesSnapshot | null>(null);
@@ -152,9 +156,9 @@ export class RatesService {
   }
 
   /**
-   * Sincroniza el formateo global de montos (`format.money()`) con la moneda
-   * base de la empresa: así tarjetas, listados y reportes muestran primero esa
-   * moneda sin cambiar de dónde salen los datos (que siguen en USD).
+   * Sincroniza el formateo global de montos (`format.money()`) con la moneda que
+   * **este** usuario debe ver: la base de la empresa o la que el cajero eligió en
+   * Configuración → Cajero. Los montos siguen guardándose en dólares.
    */
   private applyDisplayBase(snapshot: RatesSnapshot): void {
     const base = snapshot.baseCurrency;
@@ -163,14 +167,63 @@ export class RatesService {
       setDisplayCurrency(null);
       return;
     }
-    setDisplayCurrency({
+    setDisplayCurrency(this.displayFor(snapshot, base));
+  }
+
+  /**
+   * Vuelve a aplicar la moneda de visualización con las tasas en curso.
+   *
+   * Lo llama Configuración → Cajero al guardar la moneda de los precios: la
+   * preferencia se aplica sin recargar las tasas, así que sin esto el formateo
+   * seguiría con la moneda anterior hasta la próxima carga.
+   */
+  applyDisplayPreference(): void {
+    const snapshot = this._snapshot();
+    if (snapshot) this.applyDisplayBase(snapshot);
+  }
+
+  /**
+   * Moneda con la que ESTE usuario ve los precios del sistema.
+   *
+   * ADMIN y MANAGER ven siempre el precio **con el que se registró** cada
+   * artículo (la moneda base de la empresa) y su conversión: la preferencia del
+   * cajero no aplica a esos roles. El resto —el cajero y cualquier rol nuevo con
+   * acceso al punto de venta— ve los precios en la moneda que la empresa tiene
+   * configurada en Configuración → Cajero y, sin elección o sin tasa configurada,
+   * en la moneda base del sistema.
+   */
+  private displayFor(
+    snapshot: RatesSnapshot,
+    base: BaseCurrencyInfo,
+  ): DisplayCurrency {
+    const companyBase: DisplayCurrency = {
       code: base.code,
       label: base.label,
       symbol: base.symbol,
       decimals: base.decimals ?? 2,
       bsPerUnit: base.bsPerUnit,
       bsPerUsd: base.bsPerUsd,
-    });
+    };
+    if (storedCanManage()) return companyBase;
+
+    const code = this.preferences.priceCurrency();
+    if (!code || code === companyBase.code) return companyBase;
+
+    const option = snapshot.currencies.find((item) => item.code === code);
+    // Sin tasa no hay conversión posible: se ven en la moneda base (Configuración
+    // avisa de que falta la tasa de esa moneda).
+    if (!option?.bsPerUnit) return companyBase;
+
+    const meta = currencyMeta(option.code);
+    return {
+      code: option.code,
+      label: option.label || meta.label,
+      symbol: option.symbol || meta.symbol,
+      decimals: meta.decimals,
+      // La conversión usa el puente (bolívares por USD) de la moneda base.
+      bsPerUnit: option.bsPerUnit,
+      bsPerUsd: companyBase.bsPerUsd,
+    };
   }
 
   /** Guarda la tasa personalizada; con `null` la elimina. */

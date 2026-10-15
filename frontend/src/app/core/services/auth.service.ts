@@ -17,6 +17,7 @@ import {
   saveSession,
   storedSession,
 } from '../auth/session';
+import { PreferencesService } from './preferences.service';
 import { RatesService } from './rates.service';
 
 /**
@@ -30,8 +31,17 @@ export class AuthService {
   private readonly http = inject(HttpClient);
   private readonly router = inject(Router);
   private readonly rates = inject(RatesService);
+  private readonly preferences = inject(PreferencesService);
 
   private readonly _session = signal<SessionResponse | null>(storedSession());
+
+  constructor() {
+    // La sesión puede venir restaurada del navegador: la propina y la
+    // presentación de los formularios son de la empresa activa y viven en el
+    // servidor, así que se traen al arrancar (y con `load()` en cada
+    // login/registro/cambio de empresa).
+    if (this._session()) this.preferences.load();
+  }
 
   readonly session = this._session.asReadonly();
   readonly token = computed<string | null>(
@@ -94,16 +104,20 @@ export class AuthService {
   logout(options: { redirect?: boolean } = {}): void {
     clearSession();
     this._session.set(null);
+    // Lo que la empresa tenía configurado no se queda en un equipo compartido.
+    this.preferences.clear();
     if (options.redirect !== false) void this.router.navigate(['/login']);
   }
 
   /**
-   * Persiste la sesion, repinta los signals y (por defecto) recarga las tasas:
-   * son POR EMPRESA, por lo que hay que traerlas tras login/registro/cambio.
+   * Persiste la sesion, repinta los signals, trae las preferencias de la empresa
+   * activa y (por defecto) recarga las tasas: unas y otras son POR EMPRESA, por
+   * lo que hay que traerlas tras login/registro/cambio.
    */
   private applySession(response: SessionResponse, reloadRates = true): void {
     saveSession(response);
     this._session.set(response);
+    this.preferences.load();
     if (reloadRates) this.rates.load(true);
   }
 

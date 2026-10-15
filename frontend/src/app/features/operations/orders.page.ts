@@ -1471,7 +1471,7 @@ export class OrdersPage implements OnInit {
 
   /**
    * Presentación de los formularios (ventana modal o panel lateral), según la
-   * preferencia del usuario en Configuración.
+   * preferencia de la empresa en Configuración.
    */
   readonly dialogView = this.preferences.dialogView;
 

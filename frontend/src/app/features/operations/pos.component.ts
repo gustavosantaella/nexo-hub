@@ -1242,7 +1242,7 @@ export class PosComponent implements OnInit, OnDestroy {
   /** Cierra la vista de cajero y vuelve al arqueo de Caja. */
   @Output() exit = new EventEmitter<void>();
 
-  /** Presentación de los diálogos según la preferencia del usuario. */
+  /** Presentación de los diálogos según la preferencia de la empresa. */
   readonly dialogView = this.preferences.dialogView;
 
   readonly money = money;

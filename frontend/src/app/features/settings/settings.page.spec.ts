@@ -1,9 +1,16 @@
 import { signal } from '@angular/core';
+import { provideHttpClient } from '@angular/common/http';
+import {
+  HttpTestingController,
+  provideHttpClientTesting,
+} from '@angular/common/http/testing';
 import { ComponentFixture, TestBed } from '@angular/core/testing';
 import { provideRouter } from '@angular/router';
 import { EMPTY, of } from 'rxjs';
+import { environment } from '../../../environments/environment';
 import type { Company, User } from '../../core/models/api.model';
 import type { CatalogDocument, CatalogImportResult } from '../../core/models/data-transfer.model';
+import type { CurrencyRateOption } from '../../core/models/rates.model';
 import { AuthService } from '../../core/services/auth.service';
 import { CompaniesService } from '../../core/services/companies.service';
 import { CurrenciesService } from '../../core/services/currencies.service';
@@ -15,8 +22,17 @@ import { SettingsPage } from './settings.page';
 /** Tema guardado por otra prueba: se limpia antes de montar la pantalla. */
 const THEME_KEY = 'nexo-hub.theme';
 
-/** Propina sugerida guardada en el navegador (preferencia del cajero). */
+/** Copia local en el navegador de la propina que tiene configurada la empresa. */
 const TIP_PERCENT_KEY = 'nexo-hub.tip-percent';
+
+/** Copia local en el navegador de la presentación de los formularios. */
+const DIALOG_VIEW_KEY = 'nexo-hub.dialog-view';
+
+/**
+ * Copia local en el navegador de la moneda de los precios que tiene configurada
+ * la empresa.
+ */
+const PRICE_CURRENCY_KEY = 'nexo-hub.price-currency';
 
 /** Doble mínimo de `RatesService`: aquí solo importa la navegación por pestañas. */
 const ratesStub = {
@@ -26,7 +42,7 @@ const ratesStub = {
   custom: signal(null),
   hasCustom: signal(false),
   rates: signal([]),
-  currencies: signal([]),
+  currencies: signal<CurrencyRateOption[]>([]),
   baseCurrency: signal({
     code: 'USD',
     label: 'Dólares',
@@ -44,6 +60,15 @@ const ratesStub = {
   ensureLoaded: () => undefined,
   load: () => undefined,
   setConversions: () => undefined,
+  /** Etiqueta de una moneda configurada (como el servicio real). */
+  currencyLabel: (code: string) =>
+    code === 'COP' ? 'Pesos colombianos (COP)' : `Dólares (${code})`,
+  /** Los $ 10 de la vista previa: aquí basta con una tasa fija. */
+  fromBase: jasmine
+    .createSpy('fromBase')
+    .and.callFake((amount: number) => Number(amount) * 3985.44),
+  /** Lo llama la pantalla al guardar la moneda de los precios. */
+  applyDisplayPreference: jasmine.createSpy('applyDisplayPreference'),
 };
 
 /** Doble mínimo de `AuthService` (los effects de la pantalla leen estos signals). */
@@ -134,9 +159,14 @@ describe('SettingsPage (pestañas de configuración)', () => {
   beforeEach(async () => {
     localStorage.removeItem(THEME_KEY);
     localStorage.removeItem(TIP_PERCENT_KEY);
+    localStorage.removeItem(DIALOG_VIEW_KEY);
+    localStorage.removeItem(PRICE_CURRENCY_KEY);
 
     // Cada prueba arranca sin permiso de administración y con los dobles limpios.
     authStub.canManage.set(false);
+    ratesStub.currencies.set([]);
+    ratesStub.applyDisplayPreference.calls.reset();
+    ratesStub.fromBase.calls.reset();
     dataTransferStub.exportCatalog.calls.reset();
     dataTransferStub.importCatalog.calls.reset();
 
@@ -144,6 +174,10 @@ describe('SettingsPage (pestañas de configuración)', () => {
       imports: [SettingsPage],
       providers: [
         provideRouter([]),
+        // La propina y la presentación de los formularios se guardan para la
+        // empresa (`PreferencesService`): aquí las peticiones quedan simuladas.
+        provideHttpClient(),
+        provideHttpClientTesting(),
         { provide: RatesService, useValue: ratesStub },
         { provide: AuthService, useValue: authStub },
         { provide: CompaniesService, useValue: companiesStub },
@@ -160,7 +194,10 @@ describe('SettingsPage (pestañas de configuración)', () => {
     document.documentElement.classList.remove('dark');
     localStorage.removeItem(THEME_KEY);
     localStorage.removeItem(TIP_PERCENT_KEY);
+    localStorage.removeItem(DIALOG_VIEW_KEY);
+    localStorage.removeItem(PRICE_CURRENCY_KEY);
     authStub.canManage.set(false);
+    ratesStub.currencies.set([]);
   });
 
   function tabs(): HTMLButtonElement[] {
@@ -281,7 +318,7 @@ describe('SettingsPage (pestañas de configuración)', () => {
     expect(panelButton('Panel lateral').getAttribute('aria-pressed')).toBe('true');
   });
 
-  it('configura la propina sugerida del cajero y la guarda en el navegador', () => {
+  it('guarda la propina sugerida de la empresa solo al pulsar «Guardar cambios»', () => {
     tab('Cajero').click();
     fixture.detectChanges();
 
@@ -294,16 +331,170 @@ describe('SettingsPage (pestañas de configuración)', () => {
     panelButton('15 %').click();
     fixture.detectChanges();
 
+    // Elegir no cambia nada todavía: la propina de la empresa sigue en 10 %.
     expect(panelButton('15 %').getAttribute('aria-pressed')).toBe('true');
     expect(panelButton('10 %').getAttribute('aria-pressed')).toBe('false');
+    expect(localStorage.getItem(TIP_PERCENT_KEY)).toBeNull();
+
+    panelButton('Guardar cambios').click();
+    fixture.detectChanges();
+
     expect(localStorage.getItem(TIP_PERCENT_KEY)).toBe('15');
 
     // La propina es opcional: cero también es una opción válida.
     panelButton('Sin propina').click();
     fixture.detectChanges();
 
+    expect(localStorage.getItem(TIP_PERCENT_KEY)).toBe('15');
+
+    panelButton('Guardar cambios').click();
+    fixture.detectChanges();
+
     expect(panelButton('Sin propina').getAttribute('aria-pressed')).toBe('true');
     expect(localStorage.getItem(TIP_PERCENT_KEY)).toBe('0');
+  });
+
+  const COP: CurrencyRateOption = {
+    code: 'COP',
+    label: 'Pesos colombianos',
+    symbol: 'COL$',
+    enabled: true,
+    bsPerUnit: 0.22,
+    source: 'MANUAL',
+    isBase: false,
+    isDisplayBase: false,
+    bsPerUsd: 876.7976,
+  };
+
+  /** Selector de la moneda en la que el cajero ve los precios. */
+  function priceCurrencySelect(): HTMLSelectElement {
+    const found = panel().querySelector('#price-currency') as HTMLSelectElement | null;
+    if (!found) throw new Error('No se encontró el selector de la moneda de los precios');
+    return found;
+  }
+
+  /** Elige una moneda ('' = moneda base del sistema) como lo hace el usuario. */
+  function pickPriceCurrency(code: string): void {
+    const select = priceCurrencySelect();
+    select.value = code;
+    select.dispatchEvent(new Event('change'));
+    fixture.detectChanges();
+  }
+
+  it('guarda la moneda de los precios del cajero al pulsar «Guardar cambios»', () => {
+    const http = TestBed.inject(HttpTestingController);
+    ratesStub.currencies.set([COP]);
+    tab('Cajero').click();
+    fixture.detectChanges();
+
+    expect(panel().textContent).toContain('Moneda de los precios');
+
+    // Por defecto los precios se ven en la moneda base configurada en Tasas.
+    expect(priceCurrencySelect().value).toBe('');
+    expect(panel().textContent).toContain('Moneda base (Dólares)');
+
+    pickPriceCurrency('COP');
+
+    // La vista previa adelanta cómo quedarían los precios, pero no se guarda nada.
+    expect(localStorage.getItem(PRICE_CURRENCY_KEY)).toBeNull();
+    expect(ratesStub.applyDisplayPreference).not.toHaveBeenCalled();
+    expect(panel().textContent).toContain('Pesos colombianos (COP)');
+
+    // La vista previa muestra cómo queda un precio con esa moneda.
+    expect(panel().textContent).toContain('Un producto de $ 10.00 se ve COL$ 39,854.40');
+
+    panelButton('Guardar cambios').click();
+    fixture.detectChanges();
+
+    expect(localStorage.getItem(PRICE_CURRENCY_KEY)).toBe('COP');
+    // La pantalla avisa al servicio para que repinte los montos ya mismo.
+    expect(ratesStub.applyDisplayPreference).toHaveBeenCalled();
+
+    // Y la preferencia viaja a la empresa: la comparte todo el personal de caja.
+    const guardado = http.expectOne({
+      method: 'PATCH',
+      url: `${environment.apiUrl}/preferences`,
+    });
+    expect(guardado.request.body).toEqual({
+      tipPercent: 10,
+      dialogView: 'modal',
+      priceCurrency: 'COP',
+    });
+    guardado.flush({ tipPercent: 10, dialogView: 'modal', priceCurrency: 'COP' });
+
+    // Volver a la moneda base borra la preferencia (también al guardar).
+    pickPriceCurrency('');
+
+    expect(localStorage.getItem(PRICE_CURRENCY_KEY)).toBe('COP');
+
+    panelButton('Guardar cambios').click();
+    fixture.detectChanges();
+
+    expect(localStorage.getItem(PRICE_CURRENCY_KEY)).toBeNull();
+    expect(panel().textContent).toContain('Moneda base (Dólares)');
+
+    // En la empresa queda sin moneda configurada: se vuelve a la moneda base.
+    const borrado = http.expectOne({
+      method: 'PATCH',
+      url: `${environment.apiUrl}/preferences`,
+    });
+    expect(borrado.request.body).toEqual({
+      tipPercent: 10,
+      dialogView: 'modal',
+      priceCurrency: null,
+    });
+    borrado.flush({ tipPercent: 10, dialogView: 'modal', priceCurrency: null });
+  });
+
+  it('descarta lo elegido en la pestaña Cajero sin tocar lo guardado', async () => {
+    ratesStub.currencies.set([COP]);
+    tab('Cajero').click();
+    fixture.detectChanges();
+
+    // Sin cambios, el botón de guardar está apagado.
+    expect(panelButton('Guardar cambios').disabled).toBe(true);
+
+    panelButton('20 %').click();
+    pickPriceCurrency('COP');
+
+    expect(panelButton('Guardar cambios').disabled).toBe(false);
+    expect(panel().textContent).toContain('Tienes cambios sin guardar');
+
+    panelButton('Descartar').click();
+    fixture.detectChanges();
+
+    // El <select> recibe lo guardado en el turno siguiente: `NgModel` escribe en el
+    // DOM desde un microtask.
+    await esperar(() => priceCurrencySelect().value === '');
+
+    expect(panelButton('10 %').getAttribute('aria-pressed')).toBe('true');
+    expect(priceCurrencySelect().value).toBe('');
+    expect(panelButton('Guardar cambios').disabled).toBe(true);
+    expect(localStorage.getItem(TIP_PERCENT_KEY)).toBeNull();
+    expect(localStorage.getItem(PRICE_CURRENCY_KEY)).toBeNull();
+  });
+
+  it('solo ofrece monedas habilitadas y con tasa para los precios del cajero', () => {
+    ratesStub.currencies.set([
+      COP,
+      { ...COP, code: 'EUR', label: 'Euros', enabled: false },
+      { ...COP, code: 'PEN', label: 'Soles', enabled: true, bsPerUnit: null },
+    ]);
+    tab('Cajero').click();
+    fixture.detectChanges();
+
+    const codes = Array.from(priceCurrencySelect().options).map((option) => option.value);
+
+    expect(codes).toEqual(['', 'COP']);
+  });
+
+  it('avisa a los roles que administran que la preferencia no aplica a ellos', () => {
+    authStub.canManage.set(true);
+    tab('Cajero').click();
+    fixture.detectChanges();
+
+    expect(panel().textContent).toContain('Tu rol siempre ve el precio');
+    expect(panel().textContent).toContain('esta preferencia la aplica el personal de caja');
   });
 
   it('recorre las pestañas con las flechas, Inicio y Fin', () => {

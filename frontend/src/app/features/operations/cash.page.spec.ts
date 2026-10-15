@@ -8,6 +8,7 @@ import { provideRouter } from '@angular/router';
 import { environment } from '../../../environments/environment';
 import type { PaginationMeta } from '../../core/models/api.model';
 import type {
+  CashMovement,
   CashSession,
   CashSummary,
 } from '../../core/models/operations.model';
@@ -16,6 +17,7 @@ import type {
   RatesSnapshot,
 } from '../../core/models/rates.model';
 import { RatesService } from '../../core/services/rates.service';
+import { setDisplayCurrency } from '../../core/utils/format';
 import { ConfirmService } from '../../shared/services/confirm.service';
 import { CashPage } from './cash.page';
 
@@ -138,7 +140,13 @@ describe('CashPage (fondo inicial multimoneda)', () => {
     confirm = TestBed.inject(ConfirmService);
   });
 
-  afterEach(() => http.verify());
+  afterEach(() => {
+    // Las preferencias del navegador viven en el almacenamiento y la moneda de
+    // visualización en un signal global: ninguna debe filtrarse a otra prueba.
+    localStorage.clear();
+    setDisplayCurrency(null);
+    http.verify();
+  });
 
   /** Monta la pagina con la caja cerrada y las tasas configuradas. */
   function mount(withRates = true): CashPage {
@@ -401,5 +409,48 @@ describe('CashPage (fondo inicial multimoneda)', () => {
     expect(page.tipsTotal).toBe(0);
     // Sin propinas, lo cobrado por ventas es la venta tal cual.
     expect(page.salesGrossTotal).toBe(25);
+  });
+
+  /**
+   * El efectivo de la caja se sigue viendo en la moneda en la que entró: si el
+   * cajero mira los precios en bolívares, un cobro en dólares se muestra en
+   * dólares y solo la columna del equivalente (contable) usa la moneda con la que
+   * se ven los montos. Sin esto, el arqueo mostraría un "entrada de efectivo" que
+   * no corresponde a los billetes que hay en el cajón.
+   */
+  it('muestra el efectivo en la moneda en la que entró, no en la de los precios', () => {
+    const page = mount();
+    // El cajero ve los precios en bolívares (Configuración → Cajero).
+    setDisplayCurrency({
+      code: 'VES',
+      label: 'Bolívares',
+      symbol: 'Bs',
+      decimals: 2,
+      bsPerUnit: 1,
+      bsPerUsd: BS_PER_USD,
+    });
+
+    page.movItems.set([
+      {
+        id: 'mv1',
+        sessionId: 's1',
+        type: 'IN',
+        category: 'SALE',
+        paymentMethod: 'CASH',
+        amount: 20,
+        currency: 'USD',
+        baseAmount: 20,
+        createdAt: '2026-10-13T10:00:00.000Z',
+      } satisfies CashMovement,
+    ]);
+    fixture.detectChanges();
+
+    const table = fixture.nativeElement.querySelector('table.table') as HTMLElement;
+
+    // La moneda del movimiento y su monto, tal como entraron al cajón.
+    expect(table.textContent).toContain('USD');
+    expect(table.textContent).toContain('$ 20.00');
+    // Y el equivalente contable en la moneda de visualización (20 USD * 905).
+    expect(table.textContent).toContain('Bs 18,100.00');
   });
 });

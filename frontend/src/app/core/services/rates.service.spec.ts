@@ -5,8 +5,11 @@ import {
 } from '@angular/common/http/testing';
 import { TestBed } from '@angular/core/testing';
 import { environment } from '../../../environments/environment';
+import { clearSession, saveSession } from '../auth/session';
+import type { Role, SessionResponse } from '../models/api.model';
 import type { RatesSnapshot } from '../models/rates.model';
-import { money, setDisplayCurrency } from '../utils/format';
+import { displayBaseCode, money, setDisplayCurrency } from '../utils/format';
+import { PreferencesService } from './preferences.service';
 import { RatesService } from './rates.service';
 
 const API = environment.apiUrl;
@@ -395,5 +398,132 @@ describe('RatesService (conversión de monedas)', () => {
     expect(lines.map((item) => item.label)).toEqual(['USD · BCV', 'COP · manual']);
     // Los 8.767,98 Bs del monto son 10,00 USD con el dolar del BCV.
     expect(lines.map((item) => item.text)).toEqual(['$ 10.00', 'COL$ 39,854.44']);
+  });
+});
+
+/**
+ * La moneda con la que se ven los precios depende del rol: ADMIN y MANAGER ven
+ * siempre el precio REGISTRADO (la moneda base de la empresa) con su conversión;
+ * el cajero ve la moneda que eligió en Configuración → Cajero y, sin preferencia
+ * o sin tasa, la moneda base del sistema.
+ */
+describe('RatesService (moneda de los precios por rol)', () => {
+  let http: HttpTestingController;
+  let rates: RatesService;
+  let preferences: PreferencesService;
+
+  beforeEach(() => {
+    localStorage.clear();
+    TestBed.configureTestingModule({
+      providers: [provideHttpClient(), provideHttpClientTesting()],
+    });
+
+    http = TestBed.inject(HttpTestingController);
+    rates = TestBed.inject(RatesService);
+    preferences = TestBed.inject(PreferencesService);
+  });
+
+  afterEach(() => {
+    setDisplayCurrency(null);
+    clearSession();
+    localStorage.clear();
+    http.verify();
+  });
+
+  /** Deja una sesión guardada con ese rol (es lo que lee el formateo de montos). */
+  function sessionWith(role: Role): void {
+    saveSession({ accessToken: 'token', role } as SessionResponse);
+  }
+
+  /** Carga las tasas del snapshot (moneda base de la empresa: el dólar). */
+  function load(): void {
+    rates.load();
+    http.expectOne(`${API}/rates`).flush(SNAPSHOT);
+  }
+
+  /** Vuelve a pedir las tasas ignorando la caché (cambio de rol o de empresa). */
+  function reload(): void {
+    rates.load(true);
+    http.expectOne(`${API}/rates?refresh=true`).flush(SNAPSHOT);
+  }
+
+  /**
+   * Deja la moneda de los precios con ese codigo como preferencia de la empresa:
+   * el guardado (`PATCH /preferences`) se responde al vuelo, que aqui solo
+   * importa con que moneda se formatean los montos.
+   */
+  function preferCurrency(code: string | null): void {
+    preferences.setPriceCurrency(code);
+    http
+      .expectOne({ method: 'PATCH', url: `${API}/preferences` })
+      .flush({ tipPercent: 10, dialogView: 'modal', priceCurrency: code });
+  }
+
+  it('muestra la moneda base al cajero que no eligió ninguna', () => {
+    sessionWith('CASHIER');
+    load();
+
+    expect(money(10)).toBe('$ 10.00');
+    expect(displayBaseCode()).toBe('USD');
+  });
+
+  it('muestra los precios en la moneda que eligió el cajero', () => {
+    sessionWith('CASHIER');
+    preferCurrency('VES');
+    load();
+
+    // 10 USD * 876,7976 = 8 767,98 Bs.
+    expect(money(10)).toBe('Bs 8,767.98');
+    expect(displayBaseCode()).toBe('VES');
+    // La moneda base CONTABLE no cambia: los montos se siguen guardando en USD.
+    expect(rates.baseCode()).toBe('USD');
+    expect(rates.convertsBase()).toBe(false);
+  });
+
+  it('convierte con la tasa de la moneda elegida (no solo cambia el símbolo)', () => {
+    sessionWith('CASHIER');
+    preferCurrency('COP');
+    load();
+
+    // 10 USD = 8 767,98 Bs / 0,22 = 39 854,44 COP.
+    expect(money(10)).toBe('COL$ 39,854.44');
+  });
+
+  it('vuelve a la moneda base cuando falta la tasa de la moneda elegida', () => {
+    sessionWith('CASHIER');
+    preferCurrency('XXX');
+    load();
+
+    expect(money(10)).toBe('$ 10.00');
+  });
+
+  it('no aplica la preferencia del cajero a ADMIN ni a MANAGER', () => {
+    preferCurrency('COP');
+
+    sessionWith('ADMIN');
+    load();
+    expect(money(10)).toBe('$ 10.00');
+
+    sessionWith('MANAGER');
+    reload();
+    expect(money(10)).toBe('$ 10.00');
+
+    // …pero sí para un cajero, con la preferencia que la empresa tiene guardada.
+    sessionWith('CASHIER');
+    reload();
+    expect(money(10)).toBe('COL$ 39,854.44');
+  });
+
+  it('reaplica la moneda de los precios cuando Configuración la cambia', () => {
+    sessionWith('CASHIER');
+    load();
+    expect(money(10)).toBe('$ 10.00');
+
+    // La preferencia se acaba de guardar en la empresa: Configuración avisa al
+    // servicio para que vuelva a formatear sin esperar a la próxima carga de tasas.
+    preferCurrency('VES');
+    rates.applyDisplayPreference();
+
+    expect(money(10)).toBe('Bs 8,767.98');
   });
 });

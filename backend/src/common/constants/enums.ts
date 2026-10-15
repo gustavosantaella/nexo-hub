@@ -140,6 +140,17 @@ export type CashMovementCategory =
   (typeof CashMovementCategory)[keyof typeof CashMovementCategory];
 export const CASH_MOVEMENT_CATEGORIES = Object.values(CashMovementCategory);
 
+// ------------------------------ Preferencias -------------------------------
+// Preferencias personales de la interfaz (Configuracion). No son de la empresa
+// ni cambian ningun dato de dominio: cada usuario elige como quiere ver el
+// sistema y su eleccion lo sigue a cualquier equipo.
+export const DialogView = {
+  MODAL: 'modal',
+  SIDEBAR: 'sidebar',
+} as const;
+export type DialogView = (typeof DialogView)[keyof typeof DialogView];
+export const DIALOG_VIEWS: DialogView[] = Object.values(DialogView);
+
 /** Categorias que implican sacar efectivo de la caja (egreso por defecto). */
 export const CASH_OUT_CATEGORIES: string[] = [
   CashMovementCategory.EXPENSE,

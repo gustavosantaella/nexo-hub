@@ -1,4 +1,4 @@
-import type { SessionResponse } from '../models/api.model';
+import type { Role, SessionResponse } from '../models/api.model';
 
 /**
  * Persistencia de la sesion (JWT + usuario + empresa activa) en `localStorage`.
@@ -25,6 +25,23 @@ export function storedSession(): SessionResponse | null {
   } catch {
     return null;
   }
+}
+
+/** Rol del usuario **en la empresa activa**, leido de la sesion guardada. */
+export function storedRole(): Role | null {
+  return storedSession()?.role ?? null;
+}
+
+/**
+ * `true` cuando la sesion activa administra el local (ADMIN o MANAGER).
+ *
+ * Igual que el token, se lee del almacenamiento y no del `AuthService`: asi el
+ * `RatesService` puede decidir como mostrar los montos sin crear la dependencia
+ * circular `AuthService -> RatesService -> AuthService`.
+ */
+export function storedCanManage(): boolean {
+  const role = storedRole();
+  return role === 'ADMIN' || role === 'MANAGER';
 }
 
 export function saveSession(session: SessionResponse): void {

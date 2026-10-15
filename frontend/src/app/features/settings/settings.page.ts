@@ -46,12 +46,13 @@ import {
 import {
   PreferencesService,
   TIP_PERCENT_PRESETS,
+  normalizeTipPercent,
   type DialogView,
 } from '../../core/services/preferences.service';
 import { ThemeService, type Theme } from '../../core/services/theme.service';
 import { RatesService } from '../../core/services/rates.service';
 import { ToastService } from '../../core/services/toast.service';
-import { bs, dateTime, money, rate, signedPercent, apiErrorMessage } from '../../core/utils/format';
+import { bs, dateTime, money, moneyIn, rate, signedPercent, apiErrorMessage } from '../../core/utils/format';
 import { toLogoDataUrl } from '../../core/utils/image';
 import { EmptyStateComponent, LoaderComponent } from '../../shared/components/feedback.component';
 import { IconComponent } from '../../shared/components/icon.component';
@@ -64,7 +65,8 @@ import { ConfirmService } from '../../shared/services/confirm.service';
  * Pestañas de Configuración: cada una agrupa una de las secciones de la pantalla.
  *
  * `rates` muestra el estado de las tasas, `appearance` las preferencias de
- * interfaz, `pos` las del punto de venta (propina sugerida), `company` los datos
+ * interfaz, `pos` las del punto de venta (propina sugerida y moneda de los
+ * precios), `company` los datos
  * de la empresa activa, `profile` los del usuario y `data` el respaldo del
  * catálogo (exportar / importar), que solo ven ADMIN y MANAGER.
  */
@@ -216,7 +218,9 @@ interface CurrencyRow {
                 Formularios de caja y pedidos
               </h2>
               <p class="mt-0.5 text-xs text-slate-500">
-                Cómo se abren los formularios de caja y de pedidos. Se guarda en este navegador.
+                Cómo se abren los formularios de caja y de pedidos. Se guarda para toda
+                la empresa: el cajero que entra desde otro equipo la recibe al iniciar
+                sesión.
               </p>
             </div>
             <span class="badge bg-slate-100 text-slate-600">{{ dialogViewLabel() }}</span>
@@ -256,6 +260,53 @@ interface CurrencyRow {
       <!-- Sección: Cajero -->
       @if (section() === 'pos') {
 
+        <!-- Moneda en la que el cajero ve los precios: el sistema los convierte
+             con las tasas configuradas y los muestra en esa moneda. -->
+        <section class="card mb-4">
+          <div class="card-header">
+            <div>
+              <h2 class="text-sm font-semibold text-slate-900">Moneda de los precios</h2>
+              <p class="mt-0.5 text-xs text-slate-500">
+                Moneda en la que el punto de venta muestra los precios del catálogo. El
+                sistema los convierte con las tasas de Tasas → Monedas y la preferencia se
+                guarda para toda la empresa al pulsar «Guardar cambios».
+              </p>
+            </div>
+            <span class="badge bg-slate-100 text-slate-600">{{ priceCurrencyLabel() }}</span>
+          </div>
+
+          <div class="card-body space-y-4">
+            <div>
+              <label class="label" for="price-currency">Moneda</label>
+              <select
+                id="price-currency"
+                class="input"
+                [ngModel]="priceCurrencyDraft() ?? ''"
+                (ngModelChange)="pickPriceCurrency($event)"
+              >
+                <option value="">Moneda base ({{ displayBase().label }})</option>
+                @for (currency of priceCurrencyOptions(); track currency.code) {
+                  <option [value]="currency.code">
+                    {{ currency.label || currency.code }} ({{ currency.code }})
+                  </option>
+                }
+              </select>
+              <p class="mt-1 text-xs text-slate-500">{{ pricePreview() }}</p>
+            </div>
+
+            @if (canManage()) {
+              <p class="flex items-start gap-2 rounded-lg bg-slate-50 px-3 py-2 text-xs text-slate-500">
+                <app-icon name="alert" size="h-3.5 w-3.5 shrink-0" />
+                <span>
+                  Tu rol siempre ve el precio con el que se registró cada artículo y su
+                  conversión: esta preferencia la aplica el personal de caja del local,
+                  también el que entra desde otro equipo.
+                </span>
+              </p>
+            }
+          </div>
+        </section>
+
         <!-- Propina sugerida: el POS la propone en cada venta y es opcional. -->
         <section class="card mb-4">
           <div class="card-header">
@@ -264,7 +315,8 @@ interface CurrencyRow {
               <p class="mt-0.5 text-xs text-slate-500">
                 Porcentaje que el punto de venta propone al cobrar. La propina siempre es
                 opcional: en el cajero se puede cambiar, escribir otro monto o dejarla en
-                cero. Se guarda en este navegador.
+                cero. Al pulsar «Guardar cambios» se guarda para toda la empresa: el
+                cajero que entra desde otro equipo la recibe al iniciar sesión.
               </p>
             </div>
             <span class="badge bg-slate-100 text-slate-600">{{ tipPercentLabel() }}</span>
@@ -276,10 +328,10 @@ interface CurrencyRow {
                 <button
                   type="button"
                   [class]="
-                    tipPercent() === option ? 'btn-primary btn-sm' : 'btn-secondary btn-sm'
+                    tipDraft() === option ? 'btn-primary btn-sm' : 'btn-secondary btn-sm'
                   "
-                  [attr.aria-pressed]="tipPercent() === option"
-                  (click)="setTipPercent(option)"
+                  [attr.aria-pressed]="tipDraft() === option"
+                  (click)="pickTipPercent(option)"
                 >
                   {{ option === 0 ? 'Sin propina' : option + ' %' }}
                 </button>
@@ -303,8 +355,46 @@ interface CurrencyRow {
             <p class="text-xs text-slate-500">
               En una venta de <span class="font-semibold">{{ money(100) }}</span> el cajero
               propondría una propina de
-              <span class="font-semibold">{{ money(tipPercent()) }}</span>.
+              <span class="font-semibold">{{ money(tipDraft()) }}</span>.
             </p>
+          </div>
+        </section>
+
+        <!-- Acciones de la pestaña: lo elegido arriba no se aplica ni se guarda
+             hasta pulsar el botón, para no cambiar la moneda ni la propina de todo
+             el local con un clic de más. -->
+        <section class="card">
+          <div class="card-body flex flex-wrap items-center gap-3">
+            <p
+              class="flex items-start gap-2 rounded-lg bg-slate-50 px-3 py-2 text-xs text-slate-500"
+            >
+              <app-icon name="alert" size="h-3.5 w-3.5 shrink-0" />
+              <span>
+                {{ posDirty()
+                  ? 'Tienes cambios sin guardar: la propina y la moneda de los precios se guardan para toda la empresa.'
+                  : 'La propina y la moneda de los precios se guardan para toda la empresa.' }}
+              </span>
+            </p>
+
+            <div class="ml-auto flex gap-2">
+              <button
+                type="button"
+                class="btn-secondary"
+                [disabled]="!posDirty()"
+                (click)="discardPos()"
+              >
+                Descartar
+              </button>
+              <button
+                type="button"
+                class="btn-primary"
+                [disabled]="!posDirty()"
+                (click)="savePosPreferences()"
+              >
+                <app-icon name="check" size="h-4 w-4" />
+                Guardar cambios
+              </button>
+            </div>
           </div>
         </section>
 
@@ -1418,7 +1508,7 @@ export class SettingsPage implements OnInit {
       value: 'pos',
       label: 'Cajero',
       icon: 'shopping-cart',
-      hint: 'Propina sugerida y atajos del punto de venta.',
+      hint: 'Propina sugerida, moneda de los precios y atajos del punto de venta.',
     },
     {
       value: 'company',
@@ -1527,19 +1617,78 @@ export class SettingsPage implements OnInit {
   );
 
   // ------------------------------- Cajero (POS) ------------------------------
-  /** Propina sugerida en porcentaje: el POS la propone en cada venta nueva. */
+  /**
+   * Propina sugerida guardada en la empresa: la que el POS propone en cada venta
+   * nueva. Lo que se elige en la pantalla vive en `tipDraft` hasta pulsar «Guardar
+   * cambios», para que recorrer las opciones no cambie la propina de todo el local.
+   */
   readonly tipPercent = this.preferences.tipPercent;
 
   /** Propinas de atajo que ofrece la pantalla (0 % = sin propina). */
   readonly tipPercentPresets = TIP_PERCENT_PRESETS;
+
+  /** Propina elegida en la pantalla, todavía sin guardar. */
+  readonly tipDraft = signal(this.preferences.tipPercent());
 
   /** Texto editable del porcentaje (se normaliza al salir del campo). */
   tipInput = String(this.preferences.tipPercent());
 
   /** Nombre de la propina elegida (chip de la cabecera). */
   readonly tipPercentLabel = computed(() =>
-    this.tipPercent() === 0 ? 'Sin propina' : `${this.tipPercent()} %`,
+    this.tipDraft() === 0 ? 'Sin propina' : `${this.tipDraft()} %`,
   );
+
+  /**
+   * Moneda en la que el cajero ve los precios (`null` = moneda base del sistema).
+   * Es una preferencia de la **empresa**, como la propina: la comparte todo el
+   * personal de caja. `RatesService` la aplica a los montos de quien **no**
+   * administra el local.
+   */
+  readonly priceCurrency = this.preferences.priceCurrency;
+
+  /** Moneda elegida en la pantalla, todavía sin guardar. */
+  readonly priceCurrencyDraft = signal<string | null>(this.preferences.priceCurrency());
+
+  /**
+   * `true` cuando hay algo elegido en la pestaña Cajero sin guardar: es lo que
+   * habilita «Guardar cambios» y lo que permite descartar sin dejar rastro.
+   */
+  readonly posDirty = computed(
+    () =>
+      this.tipDraft() !== this.tipPercent() ||
+      this.priceCurrencyDraft() !== this.priceCurrency(),
+  );
+
+  /** Monedas elegibles: las habilitadas y con tasa configurada. */
+  readonly priceCurrencyOptions = computed(() =>
+    this.ratesService
+      .currencies()
+      .filter((item) => item.enabled && item.bsPerUnit !== null),
+  );
+
+  /** Nombre de la moneda elegida (chip de la cabecera). */
+  readonly priceCurrencyLabel = computed(() => {
+    const code = this.priceCurrencyDraft();
+    if (!code) return `Moneda base (${this.displayBase().code})`;
+    return this.ratesService.currencyLabel(code);
+  });
+
+  /**
+   * Cómo se ve un precio de $ 10.00 con la moneda elegida: el ejemplo que la
+   * pantalla muestra para comprobar la conversión antes de guardarla.
+   */
+  readonly pricePreview = computed(() => {
+    const base = this.displayBase();
+    const code = this.priceCurrencyDraft();
+    if (!code || code === base.code) {
+      return `Los precios se ven en ${base.label}: un producto de $ 10.00 se muestra ${money(10)}.`;
+    }
+    const converted = this.ratesService.fromBase(10, code);
+    if (converted === null) {
+      return `Falta la tasa de ${code}: los precios se ven en ${base.label}.`;
+    }
+    return `Un producto de $ 10.00 se ve ${moneyIn(converted, code)}.`;
+  });
 
   // ----------------------------- Monedas aceptadas ---------------------------
   readonly currencySaving = this.currenciesService.saving;
@@ -1998,8 +2147,10 @@ export class SettingsPage implements OnInit {
   }
 
   /**
-   * Cambia la presentación de los formularios de caja y pedidos. Como el resto
-   * de las preferencias de interfaz, se guarda solo en este navegador.
+   * Cambia la presentación de los formularios de caja y pedidos: como el tema, se
+   * aplica al instante. Se guarda para la empresa activa —la comparte todo el
+   * personal y viaja al servidor— sin pasar por el botón de la pestaña Cajero, que
+   * solo cubre la propina sugerida y la moneda de los precios.
    */
   setDialogView(view: DialogView): void {
     if (this.dialogView() === view) return;
@@ -2008,21 +2159,58 @@ export class SettingsPage implements OnInit {
 
   // --------------------------------- Cajero ----------------------------------
 
-  /** Cambia la propina sugerida del punto de venta (se guarda en este navegador). */
-  setTipPercent(percent: number): void {
-    this.preferences.setTipPercent(percent);
+  /**
+   * Elige una propina en la pantalla. Todavía no se guarda: la pestaña espera al
+   * botón «Guardar cambios» para que recorrer las opciones no cambie la propina
+   * que comparte todo el local.
+   */
+  pickTipPercent(percent: number): void {
+    this.tipDraft.set(normalizeTipPercent(percent));
+    this.tipInput = String(this.tipDraft());
+  }
+
+  /** Normaliza el porcentaje escrito a mano (0-100) en lo elegido en pantalla. */
+  applyTipInput(): void {
+    this.pickTipPercent(Number(this.tipInput));
+  }
+
+  /** Elige la moneda de los precios en la pantalla (`''` = moneda base). */
+  pickPriceCurrency(code: string | null): void {
+    this.priceCurrencyDraft.set(code || null);
+  }
+
+  /** Deshace lo elegido en la pestaña Cajero y vuelve a lo que está guardado. */
+  discardPos(): void {
+    this.tipDraft.set(this.tipPercent());
+    this.priceCurrencyDraft.set(this.priceCurrency());
     this.tipInput = String(this.tipPercent());
   }
 
-  /** Normaliza el porcentaje escrito a mano (0-100) y refleja el valor guardado. */
-  applyTipInput(): void {
-    this.setTipPercent(Number(this.tipInput));
+  /**
+   * Guarda las preferencias del cajero. Las dos **viajan a la empresa**
+   * (`PATCH /preferences`): la propina sugerida y la moneda en la que se ven los
+   * precios las comparte todo el personal, así que el cajero que entra desde otro
+   * equipo las recibe al iniciar sesión. Los montos de esta sesión se repintan con
+   * la moneda nueva sin esperar a la próxima carga de tasas.
+   */
+  savePosPreferences(): void {
+    if (!this.posDirty()) return;
+
+    this.preferences.setPosPreferences(this.tipDraft(), this.priceCurrencyDraft());
+    this.ratesService.applyDisplayPreference();
+
+    // El servicio normaliza lo guardado: la pantalla refleja eso, no el borrador.
+    this.tipInput = String(this.tipPercent());
+    this.toast.success(
+      'La propina y la moneda de los precios se guardan para toda la empresa.',
+      'Preferencias guardadas',
+    );
   }
 
   /**
    * Cambia entre modo claro y oscuro. El tema se aplica de inmediato a todo el
-   * sistema (la clase `dark` en <html> reescribe los colores) y, como el resto
-   * de las preferencias de interfaz, se guarda solo en este navegador.
+   * sistema (la clase `dark` en <html> reescribe los colores) y, como el menú
+   * lateral, se guarda solo en este navegador.
    */
   setTheme(theme: Theme): void {
     if (this.theme() === theme) return;

@@ -898,6 +898,12 @@ describe('OrdersPage (formulario del cajero)', () => {
   /** Elige la presentación de los formularios antes de montar la página. */
   function preferForms(view: 'modal' | 'sidebar'): void {
     TestBed.inject(PreferencesService).setDialogView(view);
+    // La preferencia es de la empresa: la petición se responde al vuelo.
+    http
+      .expectOne(
+        (request) => request.method === 'PATCH' && request.url === `${API}/preferences`,
+      )
+      .flush({ tipPercent: 10, dialogView: view, priceCurrency: null });
   }
 
   it('abre el nuevo pedido en una ventana modal por defecto', () => {

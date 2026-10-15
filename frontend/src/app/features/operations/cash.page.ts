@@ -30,6 +30,7 @@ import {
   apiErrorMessage,
   dateTime,
   displayBaseCode,
+  displayBaseLabel,
   money,
   moneyIn,
   rate,
@@ -288,7 +289,7 @@ const EMPTY_META: PaginationMeta = {
               </h2>
               <p class="mt-0.5 text-xs text-slate-500">
                 Cuánto entró y salió en cada moneda y su equivalente en
-                {{ baseCurrency.label }}.
+                {{ moneyBaseLabel() }}.
               </p>
             </div>
           </div>
@@ -648,7 +649,7 @@ const EMPTY_META: PaginationMeta = {
             <app-money [amount]="expectedCash" alignEnd="true" />
           </div>
           <p class="text-xs text-slate-500">
-            Fondo inicial + entradas − salidas, en {{ baseCurrency.label }}.
+            Fondo inicial + entradas − salidas, en {{ moneyBaseLabel() }}.
             Incluye las propinas del turno.
           </p>
         </div>
@@ -906,6 +907,8 @@ export class CashPage implements OnInit {
   readonly money = money;
   /** Código de la moneda base con la que se muestran los montos (USD por defecto). */
   readonly moneyBaseCode = displayBaseCode;
+  /** Nombre de esa moneda: los equivalentes que pinta la pantalla van en ella. */
+  readonly moneyBaseLabel = displayBaseLabel;
   readonly rate = rate;
   readonly baseCurrency = BASE_CURRENCY;
   /**

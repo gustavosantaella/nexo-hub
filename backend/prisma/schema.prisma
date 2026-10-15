@@ -48,6 +48,7 @@ model Company {
 
   memberships        Membership[]
   settings           Setting[]
+  preferences        CompanyPreference?
   categories         Category[]
   suppliers          Supplier[]
   customers          Customer[]
@@ -120,6 +121,24 @@ model User {
   settingsUpdated    Setting[]           @relation("SettingUpdatedBy")
 
   @@map("users")
+}
+
+// Preferencias de INTERFAZ de la empresa (Configuracion): la propina que el
+// punto de venta propone al cobrar y la presentacion de los formularios de caja
+// y pedidos. Es una sola fila por empresa, compartida por todo su personal: el
+// cajero que entra desde otro navegador la recibe al iniciar sesion. `null` en
+// una columna significa "sin configurar": la interfaz usa entonces su valor de
+// fabrica (10 % de propina y formularios en ventana modal).
+model CompanyPreference {
+  companyId     String   @id
+  tipPercent    Float? // Propina sugerida (%) que el punto de venta propone al cobrar
+  dialogView    String? // modal | sidebar: como se abren los formularios de caja/pedidos
+  priceCurrency String? // Moneda (ISO, ej. VES) en la que el cajero ve los precios; null = moneda base
+  updatedAt     DateTime @updatedAt
+
+  company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+
+  @@map("company_preferences")
 }
 
 // ============================== Catalogo ===================================

@@ -500,6 +500,42 @@ describe('PosComponent (vista de cajero)', () => {
     flushReload();
   });
 
+  /**
+   * El cobro en efectivo se pide y se valida en la MONEDA DEL COBRO: si el cajero
+   * ve los precios en bolívares, los billetes que recibe siguen siendo los de la
+   * moneda elegida al cobrar (dólares por defecto) y el vuelto se calcula en ella.
+   */
+  it('valida el efectivo recibido en la moneda del cobro, no en la de los precios', () => {
+    const { pos } = mount();
+    // El cajero mira los precios en bolívares (Configuración → Cajero): el
+    // formateo de montos cambia, el cobro sigue en su moneda.
+    setDisplayCurrency({
+      code: 'VES',
+      label: 'Bolívares',
+      symbol: 'Bs',
+      decimals: 2,
+      bsPerUnit: 1,
+      bsPerUsd: 905,
+    });
+
+    pos.setTipRate(0);
+    pos.addProduct(PRODUCTS[0]);
+
+    expect(pos.charge.currency).toBe('USD');
+    expect(pos.chargeAmount).toBe(30);
+
+    // Con $ 10 en la mano no alcanza: la comparación es en dólares, no en Bs.
+    pos.charge.received = 10;
+    pos.submitSale(true);
+
+    expect(pos.formError()).toContain('menor al total a cobrar');
+    expect(pos.saving()).toBeFalse();
+
+    // El vuelto también va en la moneda del cobro.
+    pos.charge.received = 40;
+    expect(pos.change).toBe(10);
+  });
+
   it('no aplica propina nueva al agregar productos a un pedido abierto', () => {
     const { fixture, pos } = mount();
 

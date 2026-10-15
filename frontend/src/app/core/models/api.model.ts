@@ -127,6 +127,36 @@ export interface UpdateProfilePayload {
   currentPassword?: string;
 }
 
+/** Presentación de los formularios de caja y pedidos (configuración de la empresa). */
+export type DialogView = 'modal' | 'sidebar';
+
+/**
+ * Respuesta de `GET /preferences`: preferencias de interfaz de la **empresa
+ * activa**, que se guardan en la base de datos y comparte todo el personal. El
+ * cajero que entra desde otro navegador recibe las mismas al iniciar sesión.
+ *
+ * `null` significa "sin configurar": la interfaz aplica su valor de fábrica
+ * (10 % de propina, formularios en ventana modal y la moneda base del sistema).
+ */
+export interface CompanyPreferences {
+  /** Propina sugerida (%) que el punto de venta propone al cobrar. */
+  tipPercent: number | null;
+  /** Cómo se abren los formularios de caja y pedidos. */
+  dialogView: DialogView | null;
+  /**
+   * Moneda (código ISO de 3 letras, ej. `VES`) en la que el personal de caja ve
+   * los precios del catálogo. `null` = la moneda base del sistema.
+   */
+  priceCurrency: string | null;
+}
+
+/** Cuerpo de `PATCH /preferences`: `null` borra la preferencia de la empresa. */
+export interface UpdatePreferencesPayload {
+  tipPercent?: number | null;
+  dialogView?: DialogView | null;
+  priceCurrency?: string | null;
+}
+
 /** Cuerpo de `POST /companies` y `PATCH /companies/current`. */
 export interface CompanyPayload {
   name: string;

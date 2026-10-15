@@ -19,6 +19,7 @@ import { InventoryModule } from './modules/inventory/inventory.module';
 import { MenusModule } from './modules/menus/menus.module';
 import { OrdersModule } from './modules/orders/orders.module';
 import { PayablesModule } from './modules/payables/payables.module';
+import { PreferencesModule } from './modules/preferences/preferences.module';
 import { ProductsModule } from './modules/products/products.module';
 import { RatesModule } from './modules/rates/rates.module';
 import { ReceivablesModule } from './modules/receivables/receivables.module';
@@ -44,6 +45,7 @@ import { PrismaModule } from './prisma/prisma.module';
     HealthModule,
     AuthModule,
     UsersModule,
+    PreferencesModule,
     CompaniesModule,
     CategoriesModule,
     SuppliersModule,

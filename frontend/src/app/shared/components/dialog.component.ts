@@ -15,7 +15,7 @@ import { SidebarComponent } from './sidebar.component';
  *
  * Recibe el cuerpo y el pie como plantillas (`TemplateRef`) y los dibuja en una
  * **ventana modal** o en un **panel lateral** según `variant`. Así una pantalla
- * respeta la preferencia del usuario (Configuración → Preferencias de la
+ * respeta la preferencia de la empresa (Configuración → Preferencias de la
  * interfaz) sin duplicar el formulario ni sus validaciones.
  *
  * ```html
@@ -25,8 +25,8 @@ import { SidebarComponent } from './sidebar.component';
  * <ng-template #movementFooter>…</ng-template>
  * ```
  *
- * `dialogView` es la preferencia del usuario en Configuración, compartida por la
- * caja y los pedidos.
+ * `dialogView` es la preferencia de la empresa en Configuración, compartida por
+ * la caja y los pedidos.
  */
 @Component({
   selector: 'app-dialog',

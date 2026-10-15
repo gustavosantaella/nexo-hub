@@ -3,6 +3,7 @@ import { resolve } from 'path';
 import {
   MONEY_COLUMNS,
   NON_MONEY_INT_COLUMNS,
+  PERCENT_COLUMNS,
   QUANTITY_COLUMNS,
   RATE_COLUMNS,
   clientKeyOf,
@@ -58,6 +59,14 @@ function isQuantityColumn(model: string, field: string): boolean {
   return quantities?.includes(field) ?? false;
 }
 
+/** `true` cuando la columna decimal es un porcentaje (no dinero ni tasa). */
+function isPercentColumn(model: string, field: string): boolean {
+  const percents = (PERCENT_COLUMNS as Record<string, readonly string[]>)[
+    model
+  ];
+  return percents?.includes(field) ?? false;
+}
+
 describe('money-columns (inventario vs esquema de Prisma)', () => {
   const ints = columnsOfType('Int');
   const floats = columnsOfType('Float');
@@ -73,8 +82,14 @@ describe('money-columns (inventario vs esquema de Prisma)', () => {
   );
   const actualRates = [...floats.entries()].flatMap(([model, fields]) =>
     fields
-      .filter((field) => !isQuantityColumn(model, field))
+      .filter((field) => !isQuantityColumn(model, field) && !isPercentColumn(model, field))
       .map((f) => `${model}.${f}`),
+  );
+  const declaredPercents = Object.entries(PERCENT_COLUMNS).flatMap(
+    ([model, fields]) => fields.map((field) => `${model}.${field}`),
+  );
+  const actualPercents = [...floats.entries()].flatMap(([model, fields]) =>
+    fields.filter((field) => isPercentColumn(model, field)).map((f) => `${model}.${f}`),
   );
   const declaredQuantities = Object.entries(QUANTITY_COLUMNS).flatMap(
     ([model, fields]) => fields.map((field) => `${model}.${field}`),
@@ -111,7 +126,11 @@ describe('money-columns (inventario vs esquema de Prisma)', () => {
     expect(declaredQuantities.length).toBeGreaterThan(0);
   });
 
-  it('dinero, tasas y cantidades no comparten columnas', () => {
+  it('el inventario de porcentajes coincide con las columnas Float de porcentaje', () => {
+    expect([...declaredPercents].sort()).toEqual([...actualPercents].sort());
+  });
+
+  it('dinero, tasas, cantidades y porcentajes no comparten columnas', () => {
     const sharedRates = declaredMoney.filter((column) =>
       declaredRates.includes(column),
     );
@@ -124,6 +143,13 @@ describe('money-columns (inventario vs esquema de Prisma)', () => {
     expect(sharedRates).toEqual([]);
     expect(sharedQuantities).toEqual([]);
     expect(mixedRates).toEqual([]);
+
+    // Un porcentaje tampoco puede estar declarado como tasa ni como cantidad.
+    expect(declaredPercents.filter((column) => declaredRates.includes(column))).toEqual([]);
+    expect(
+      declaredPercents.filter((column) => declaredQuantities.includes(column)),
+    ).toEqual([]);
+    expect(declaredPercents.filter((column) => declaredMoney.includes(column))).toEqual([]);
   });
 
   it('la clave del cliente es el nombre del modelo en camelCase', () => {
