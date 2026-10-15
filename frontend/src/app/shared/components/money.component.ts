@@ -27,6 +27,11 @@ import {
  *   - 2 tasas cuando el local no definió una personalizada (BCV $ y BCV €).
  *   - 3 tasas cuando existe la personalizada.
  *
+ * Con la moneda base en otra moneda (por ejemplo el bolívar) la línea de abajo
+ * lista las demás monedas aceptadas y **de dónde sale su tasa**, para que el
+ * dólar del BCV no se confunda con el personalizado del local ni con una moneda
+ * de tasa manual: `USD · BCV $ 10.00`, `COP · manual COL$ 39,854.44`.
+ *
  * El interruptor global (`RatesService.showConversions`, visible en
  * Configuración) permite ocultar las conversiones sin perder las tasas.
  */
@@ -104,7 +109,8 @@ export class MoneyComponent {
 
   /**
    * Conversiones del monto: con la moneda base en dólares, el equivalente en
-   * bolívares de cada tasa activa; con otra moneda base, cada moneda aceptada.
+   * bolívares de cada tasa activa; con otra moneda base, cada moneda aceptada con
+   * el origen de su tasa (`USD · BCV`, `USD · personalizada`, `COP · manual`).
    * En modo compacto también se abrevian.
    */
   get conversions(): RateConversion[] {

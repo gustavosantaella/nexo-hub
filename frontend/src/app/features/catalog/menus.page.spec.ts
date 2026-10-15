@@ -125,6 +125,59 @@ const RATES_WITH_CUSTOM: RatesSnapshot = {
 };
 
 /**
+ * Tasas con la moneda base en bolívares: es lo que ve un local que decidió
+ * mostrar los montos en Bs. Debajo del margen se listan las demás monedas
+ * aceptadas (USD y EUR), cada una con el origen de su propia tasa.
+ */
+const RATES_BASE_BOLIVARES: RatesSnapshot = {
+  ...RATES_WITH_CUSTOM,
+  baseCurrency: {
+    code: 'VES',
+    label: 'Bolívares',
+    symbol: 'Bs',
+    decimals: 2,
+    bsPerUnit: 1,
+    bsPerUsd: 905.42,
+  },
+  currencies: [
+    {
+      code: 'USD',
+      label: 'Dólares',
+      symbol: '$',
+      enabled: true,
+      bsPerUnit: 905.42,
+      // El local definió su propio precio del dólar.
+      source: 'CUSTOM',
+      isBase: true,
+      isDisplayBase: false,
+      bsPerUsd: 905.42,
+    },
+    {
+      code: 'VES',
+      label: 'Bolívares',
+      symbol: 'Bs',
+      enabled: true,
+      bsPerUnit: 1,
+      source: 'BASE',
+      isBase: false,
+      isDisplayBase: true,
+      bsPerUsd: 905.42,
+    },
+    {
+      code: 'EUR',
+      label: 'Euros',
+      symbol: '€',
+      enabled: true,
+      bsPerUnit: 982.00454402,
+      source: 'BCV',
+      isBase: false,
+      isDisplayBase: false,
+      bsPerUsd: 905.42,
+    },
+  ],
+};
+
+/**
  * Formulario de menús: costeo de la receta, disponibilidad y validaciones antes
  * de guardar. La matemática de la receta es la misma que aplica el backend.
  */
@@ -311,6 +364,29 @@ describe('MenusPage (receta y costos)', () => {
     // …y la personalizada del local (905,42 Bs por dólar).
     expect(margin).toContain('Personalizada');
     expect(margin).toContain('Bs 9,054.20');
+  });
+
+  /**
+   * Con la moneda base en bolívares el listado mostraba "USD" y "EUR" a secas
+   * debajo del margen: no había forma de saber con qué tasa se convirtió cada
+   * moneda (el dólar del BCV y el personalizado del local se veían iguales).
+   */
+  it('rotula cada moneda del margen con el origen de su tasa', () => {
+    const { fixture } = mount([MARGIN_MENU], RATES_BASE_BOLIVARES);
+
+    const cells = Array.from(
+      (fixture.nativeElement as HTMLElement).querySelectorAll('tbody tr td'),
+    ).filter((cell) => cell.querySelector('app-money'));
+
+    expect(cells.length).toBe(1);
+    const margin = cells[0].textContent as string;
+
+    // Margen del menú: precio 20 - costo 10 = $ 10, en Bs con la personalizada.
+    expect(margin).toContain('Bs 9,054.20');
+    // Debajo, cada moneda aceptada con SU tasa: el dólar local y el euro del BCV.
+    expect(margin).toContain('USD · personalizada');
+    expect(margin).toContain('EUR · BCV');
+    expect(margin).not.toContain('USD · BCV');
   });
 
   it('muestra el margen "al cambio" del formulario con la tasa personalizada', () => {

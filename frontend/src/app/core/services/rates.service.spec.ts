@@ -42,7 +42,8 @@ const SNAPSHOT: RatesSnapshot = {
       symbol: '$',
       enabled: true,
       bsPerUnit: 876.7976,
-      source: 'BASE',
+      // Sin tasa personalizada el dólar queda conectado a la API del BCV.
+      source: 'BCV',
       isBase: true,
       isDisplayBase: true,
       bsPerUsd: 876.7976,
@@ -299,5 +300,37 @@ describe('RatesService (conversión de monedas)', () => {
     expect(conversions[0].text).toBe('$ 10.00');
     // 10 USD * 876.7976 = 8 767,98 Bs / 0,22 = 39 854,44 COP.
     expect(conversions[1].text).toBe('COL$ 39,854.44');
+    // Cada línea dice de dónde sale la tasa de la moneda: sin eso el dólar del
+    // BCV y el del local, o una moneda con tasa escrita a mano, se ven iguales.
+    expect(conversions[0].label).toBe('USD · BCV');
+    expect(conversions[1].label).toBe('COP · manual');
+  });
+
+  it('rotula el dólar con la tasa personalizada cuando el local la define', () => {
+    // El local puso su propio precio del dólar: la moneda es la misma (`USD`),
+    // pero la conversión ya no sale del BCV.
+    rates.load(true);
+    http.expectOne(`${API}/rates?refresh=true`).flush({
+      ...THREE_RATES,
+      baseCurrency: {
+        code: 'VES',
+        label: 'Bolívares',
+        symbol: 'Bs',
+        decimals: 2,
+        bsPerUnit: 1,
+        bsPerUsd: 876.7976,
+      },
+      currencies: THREE_RATES.currencies.map((item) =>
+        item.code === 'USD' ? { ...item, source: 'CUSTOM' as const } : item,
+      ),
+    });
+
+    const usd = rates.currencyConversions(10)[0];
+
+    expect(usd.label).toBe('USD · personalizada');
+    // La moneda local (Bs) no lleva origen: siempre vale 1 Bs por 1 Bs.
+    expect(rates.currencyConversions(10).map((item) => item.label)).not.toContain(
+      'VES',
+    );
   });
 });

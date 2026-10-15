@@ -28,7 +28,7 @@ const BCV: RatesSnapshot['bcv'] = {
   sourceUrl: 'https://rates.dolarvzla.com/bcv/current.json',
 };
 
-/** Monedas configuradas para las pruebas (USD base + VES local). */
+/** Monedas configuradas para las pruebas (USD con la tasa del sistema + VES local). */
 function currenciesFor(bsPerUsd: number): RatesSnapshot['currencies'] {
   return [
     {
@@ -37,7 +37,8 @@ function currenciesFor(bsPerUsd: number): RatesSnapshot['currencies'] {
       symbol: '$',
       enabled: true,
       bsPerUnit: bsPerUsd,
-      source: 'BASE',
+      // El dólar queda conectado al BCV mientras el local no defina su propia tasa.
+      source: 'BCV',
       isBase: true,
       isDisplayBase: true,
       bsPerUsd,
@@ -175,6 +176,20 @@ function withBase(code: 'VES' | 'EUR'): RatesSnapshot {
   };
 }
 
+/**
+ * Snapshot con la moneda base en bolívares y el dólar convertido con la tasa
+ * personalizada del local: la misma moneda (`USD`) con otro origen de tasa.
+ */
+function withCustomDollar(): RatesSnapshot {
+  const snapshot = withBase('VES');
+  return {
+    ...snapshot,
+    currencies: snapshot.currencies.map((item) =>
+      item.code === 'USD' ? { ...item, source: 'CUSTOM' as const } : item,
+    ),
+  };
+}
+
 /** Montos "al cambio": equivalente en bolívares con cada tasa activa. */
 describe('MoneyComponent (montos al cambio)', () => {
   let http: HttpTestingController;
@@ -270,10 +285,21 @@ describe('MoneyComponent (montos al cambio)', () => {
 
     // 10 USD * 876.7976 = 8 767,98 Bs (la moneda base ahora es el bolivar).
     expect(text).toContain('Bs 8,767.98');
-    // Debajo, la otra moneda configurada (el dolar) con su equivalente.
-    expect(text).toContain('USD');
+    // Debajo, la otra moneda configurada (el dolar) con su equivalente y el
+    // origen de su tasa: sin eso "USD" no dice si es el dolar del BCV o el local.
+    expect(text).toContain('USD · BCV');
     expect(text).toContain('$ 10.00');
-    expect(text).not.toContain('BCV $');
+    expect(text).not.toContain('Personalizada');
+  });
+
+  it('distingue el dolar del BCV del dolar personalizado del local', () => {
+    const text = load(withCustomDollar());
+
+    // Listado con la moneda base en bolívares: el dolar se lista, pero rotulado
+    // con la tasa con la que se convierte (la personalizada, no la del BCV).
+    expect(text).toContain('Bs 8,767.98');
+    expect(text).toContain('USD · personalizada $ 10.00');
+    expect(text).not.toContain('USD · BCV');
   });
 
   it('abrevia la moneda base y sus conversiones cuando no caben', () => {
@@ -289,7 +315,7 @@ describe('MoneyComponent (montos al cambio)', () => {
 
     expect(base?.textContent?.trim()).toBe('Bs 1.1b');
     expect(base?.getAttribute('title')).toBe('Bs 1,095,997,000.00');
-    expect(text).toContain('USD $ 1.3m');
+    expect(text).toContain('USD · BCV $ 1.3m');
   });
 });
 
@@ -368,8 +394,9 @@ describe('MoneyComponent (monto tal como se cargó)', () => {
 
     expect(base?.textContent?.trim()).toBe('Bs 350.00');
     expect(text).not.toContain('Bs 349.20');
-    // Debajo queda el equivalente contable que se guardó (0,36 USD).
-    expect(text).toContain('USD $ 0.36');
+    // Debajo queda el equivalente contable que se guardó (0,36 USD), con el
+    // origen de la tasa con la que se convierte el dólar.
+    expect(text).toContain('USD · BCV $ 0.36');
   });
 
   it('abrevia el monto cargado y deja el exacto en el tooltip', () => {
@@ -397,6 +424,6 @@ describe('MoneyComponent (monto tal como se cargó)', () => {
 
     // Se cargó en dólares: no hay nada que recuperar, manda la conversión.
     expect(base?.textContent?.trim()).toBe('Bs 8,767.98');
-    expect(text).toContain('USD $ 10.00');
+    expect(text).toContain('USD · BCV $ 10.00');
   });
 });

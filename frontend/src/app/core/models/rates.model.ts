@@ -136,6 +136,10 @@ export interface RatesSnapshot {
 export interface RateConversion {
   /** Clave de la tasa (`BCV_USD`) o código de la moneda (`EUR`). */
   key: string;
+  /**
+   * Etiqueta de la línea: la tasa (`BCV $`, `BCV €`, `Personalizada`) o la moneda
+   * con el origen de su tasa (`USD · BCV`, `EUR · BCV`, `COP · manual`).
+   */
   label: string;
   rate: number;
   amount: number;

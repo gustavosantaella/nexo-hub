@@ -7,6 +7,7 @@ import {
   LOCAL_CURRENCY_CODE,
   RATE_META,
   currencyMeta,
+  rateSourceLabel,
 } from '../constants/currency';
 import type {
   BaseCurrencyInfo,
@@ -229,6 +230,11 @@ export class RatesService {
    * Convierte un monto (en moneda base contable, USD) a las demás monedas
    * configuradas: es la lista que se muestra debajo del monto cuando la moneda
    * base elegida no es el dólar.
+   *
+   * Cada línea va rotulada con la moneda **y el origen de su tasa**
+   * (`USD · BCV`, `EUR · BCV`, `COP · manual`, `USD · personalizada`): con solo el
+   * código, el dólar del BCV y el del local se ven iguales, y en un listado no hay
+   * forma de saber con qué tasa se convirtió el monto.
    */
   currencyConversions(amount: number | null | undefined): RateConversion[] {
     const usd = Number(amount ?? 0);
@@ -241,10 +247,11 @@ export class RatesService {
       .map((item) => {
         const bsPerUnit = item.bsPerUnit as number;
         const value = round2((usd * bsPerUsd) / bsPerUnit);
+        const source = rateSourceLabel(item.source);
         return {
           key: item.code,
           code: item.code,
-          label: item.code,
+          label: source ? `${item.code} · ${source}` : item.code,
           rate: bsPerUnit,
           amount: value,
           text: moneyIn(value, item.code),
