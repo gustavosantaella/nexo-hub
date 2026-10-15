@@ -2,12 +2,14 @@ import { provideHttpClient } from '@angular/common/http';
 import { provideHttpClientTesting } from '@angular/common/http/testing';
 import { Component } from '@angular/core';
 import { ComponentFixture, TestBed } from '@angular/core/testing';
+import { By } from '@angular/platform-browser';
 import { provideRouter, Router } from '@angular/router';
 import { of } from 'rxjs';
 import { AppComponent } from './app.component';
 import { saveSession, storedToken } from './core/auth/session';
 import { AuthService } from './core/services/auth.service';
 import { CashService } from './core/services/cash.service';
+import { LayoutService } from './core/services/layout.service';
 import { MainLayoutComponent } from './layout/main-layout.component';
 
 @Component({ standalone: true, template: 'login-stub' })
@@ -87,6 +89,24 @@ describe('AppComponent (shell global)', () => {
     return Array.from(found).find((button) => (button.textContent ?? '').includes(text));
   }
 
+  /** Botón de la cabecera que despliega y repliega el menú lateral. */
+  function sidebarToggle(): HTMLButtonElement | null {
+    return fixture.nativeElement.querySelector(
+      'button[aria-label="Abrir menú"], button[aria-label="Cerrar menú"]',
+    );
+  }
+
+  /** Panel de navegación del shell (no confundir con el lateral de formularios). */
+  function sidebar(): HTMLElement | null {
+    return fixture.nativeElement.querySelector('app-main-layout aside');
+  }
+
+  /** Componente del shell, para disparar sus manejadores sin navegar. */
+  function shell(): MainLayoutComponent {
+    return fixture.debugElement.query(By.directive(MainLayoutComponent))
+      .componentInstance as MainLayoutComponent;
+  }
+
   it('monta los hosts globales de notificaciones y confirmacion', () => {
     expect(fixture.nativeElement.querySelector('app-toast-host')).not.toBeNull();
     expect(fixture.nativeElement.querySelector('app-confirm-host')).not.toBeNull();
@@ -109,6 +129,80 @@ describe('AppComponent (shell global)', () => {
 
     expect(document.documentElement.classList.contains('dark')).toBeFalse();
     expect(themeButton('Activar modo oscuro')).not.toBeNull();
+  });
+
+  it('abre y cierra el menú lateral desde la cabecera', () => {
+    const aside = sidebar();
+    expect(aside).withContext('menú lateral del shell').not.toBeNull();
+    const replegado = aside!.classList.contains('-translate-x-full');
+
+    sidebarToggle()!.click();
+    fixture.detectChanges();
+
+    expect(aside!.classList.contains('-translate-x-full'))
+      .withContext('el panel se despliega')
+      .toBe(!replegado);
+    expect(sidebarToggle()!.getAttribute('aria-expanded')).toBe('true');
+    expect(sidebarToggle()!.getAttribute('aria-label')).toBe('Cerrar menú');
+
+    sidebarToggle()!.click();
+    fixture.detectChanges();
+
+    expect(aside!.classList.contains('-translate-x-full'))
+      .withContext('el panel se repliega')
+      .toBe(replegado);
+    expect(sidebarToggle()!.getAttribute('aria-expanded')).toBe('false');
+    expect(sidebarToggle()!.getAttribute('aria-label')).toBe('Abrir menú');
+  });
+
+  it('el menú lateral se despliega con animación y sin deformar el contenido', () => {
+    const aside = sidebar()!;
+
+    // Anima ancho (escritorio) y posición (móvil) durante 300 ms.
+    const estilo = getComputedStyle(aside);
+    expect(estilo.transitionProperty).toContain('width');
+    expect(estilo.transitionProperty).toContain('transform');
+    expect(estilo.transitionDuration).toContain('0.3s');
+
+    // Al replegarse recorta el contenido en vez de comprimirlo.
+    expect(estilo.overflowX).toBe('hidden');
+
+    // La navegación conserva el ancho de la barra abierta (16rem): no se deforma.
+    const nav = aside.querySelector('nav');
+    expect(nav).withContext('navegación del panel').not.toBeNull();
+    expect(getComputedStyle(nav!).width).toBe('256px');
+  });
+
+  it('recuerda el menú lateral entre visitas', () => {
+    sidebarToggle()!.click();
+    fixture.detectChanges();
+
+    expect(localStorage.getItem('nexo-hub.sidebar-open')).toBe(
+      String(TestBed.inject(LayoutService).sidebarOpen()),
+    );
+  });
+
+  it('el enlace del menú sólo repliega el panel en pantalla pequeña', () => {
+    const layout = TestBed.inject(LayoutService);
+    const aside = sidebar()!;
+
+    // Escritorio: el panel se queda abierto para saltar de una sección a otra.
+    layout.desktopViewport.set(true);
+    layout.setSidebarOpen(true);
+    fixture.detectChanges();
+    shell().onNavClick();
+    fixture.detectChanges();
+
+    expect(layout.sidebarOpen()).toBeTrue();
+    expect(aside.classList.contains('-translate-x-full')).toBeFalse();
+
+    // Móvil: al elegir la sección el panel se repliega (taparía el contenido).
+    layout.desktopViewport.set(false);
+    shell().onNavClick();
+    fixture.detectChanges();
+
+    expect(layout.sidebarOpen()).toBeFalse();
+    expect(aside.classList.contains('-translate-x-full')).toBeTrue();
   });
 
   it('el dialogo de confirmacion aparece al pulsar Cerrar sesión', () => {

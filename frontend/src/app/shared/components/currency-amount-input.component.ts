@@ -11,6 +11,7 @@ import {
   CurrencyMeta,
   RATE_META,
   currencyMeta,
+  rateSourceLabel,
 } from '../../core/constants/currency';
 import type { RateKey, RateOption } from '../../core/models/rates.model';
 import { RatesService } from '../../core/services/rates.service';
@@ -39,7 +40,9 @@ import { RateConversionsComponent } from './rate-conversions.component';
  * (no con `[value]` en el `select`): las monedas del local llegan junto con las
  * tasas, asi que al crear el campo la lista puede estar vacia todavia; el
  * navegador se quedaria con la primera opcion y mostraria una moneda o una tasa
- * distinta a la que el monto realmente usa.
+ * distinta a la que el monto realmente usa. Cada moneda se lista con el origen de
+ * su tasa (`USD · BCV`, `EUR · personalizada`) para no confundir el dolar del BCV
+ * con el del local.
  */
 @Component({
   selector: 'app-currency-amount-input',
@@ -64,13 +67,13 @@ import { RateConversionsComponent } from './rate-conversions.component';
         (input)="onAmount($event)"
       />
       <select
-        class="input w-28 shrink-0"
+        class="input w-40 shrink-0"
         [disabled]="disabled"
         (change)="onCurrency($event)"
       >
         @for (option of currencyOptions(); track option.code) {
           <option [value]="option.code" [selected]="option.code === code()">
-            {{ option.code }}
+            {{ currencyOptionLabel(option) }}
           </option>
         }
       </select>
@@ -145,6 +148,17 @@ export class CurrencyAmountInputComponent {
     const enabled = this.rates.enabledCurrencies();
     const list = enabled.length ? enabled : [currencyMeta(BASE_CURRENCY_CODE)];
     return list.map((item) => currencyMeta(item.code));
+  }
+
+  /**
+   * Etiqueta de una moneda en la lista: `USD · BCV`, `EUR · personalizada`. El
+   * origen de la tasa va junto al codigo para que el operador sepa con cual se
+   * calcula el monto al cambio (la del BCV, la personalizada del local o una
+   * manual) antes de escribirlo.
+   */
+  currencyOptionLabel(option: CurrencyMeta): string {
+    const tag = rateSourceLabel(this.rates.currencyOf(option.code)?.source);
+    return tag ? `${option.code} · ${tag}` : option.code;
   }
 
   /**

@@ -92,6 +92,25 @@ const SNAPSHOT: RatesSnapshot = {
   reference: null,
 };
 
+/**
+ * Snapshot con la tasa personalizada del local activa: el dolar ya no se
+ * convierte con el BCV sino con la tasa que definio el local.
+ */
+const CUSTOM_SNAPSHOT: RatesSnapshot = {
+  ...SNAPSHOT,
+  custom: { usd: 905.5, updatedAt: '2026-10-13T12:30:00.000Z', updatedBy: 'Ana' },
+  currencies: [
+    {
+      ...SNAPSHOT.currencies[0],
+      bsPerUnit: 905.5,
+      bsPerUsd: 905.5,
+      source: 'CUSTOM',
+    },
+    ...SNAPSHOT.currencies.slice(1),
+  ],
+  baseCurrency: { ...SNAPSHOT.baseCurrency, bsPerUnit: 905.5, bsPerUsd: 905.5 },
+};
+
 @Component({
   standalone: true,
   imports: [CurrencySelectComponent],
@@ -169,6 +188,30 @@ describe('CurrencySelectComponent', () => {
 
     expect(select().value).toBe('VES');
     expect(options().length).toBe(3);
+  });
+
+  /**
+   * Cada moneda de la lista dice con que tasa se convierte: la del BCV, la
+   * personalizada del local o una manual. Sin eso, "USD" y "EUR" parecen la misma
+   * cosa aunque una use la tasa del local.
+   */
+  it('dice con qué tasa se convierte cada moneda', () => {
+    expect(options()[0].textContent).toContain('Dólares (USD)');
+    expect(options()[2].textContent).toContain(
+      'Pesos colombianos (COP) · tasa manual',
+    );
+    // El bolívar vale 1 Bs: no hay tasa que aclarar.
+    expect(options()[1].textContent?.trim()).toBe('Bolívares (VES)');
+  });
+
+  it('avisa cuando el dólar se convierte con la tasa personalizada', () => {
+    rates.load(true);
+    http.expectOne(`${API}/rates?refresh=true`).flush(CUSTOM_SNAPSHOT);
+    fixture.detectChanges();
+
+    expect(options()[0].textContent).toContain(
+      'Dólares (USD) · tasa personalizada',
+    );
   });
 
   it('emite el cambio de moneda', () => {

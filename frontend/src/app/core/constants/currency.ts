@@ -5,7 +5,7 @@
  * cambio" siempre se expresa en bolivares (Bs) usando las tasas del BCV y, si
  * el local la definio, la tasa personalizada.
  */
-import type { RateKey } from '../models/rates.model';
+import type { CurrencyRateSource, RateKey } from '../models/rates.model';
 
 export const BASE_CURRENCY = {
   code: 'USD',
@@ -93,6 +93,29 @@ export function currencyMeta(code: string | null | undefined): CurrencyMeta {
     symbol: `${normalized} `,
     decimals: 2,
   };
+}
+
+/**
+ * Etiqueta corta del origen de la tasa de una moneda (`BCV`, `personalizada`,
+ * `manual`). Vacia para el bolivar (vale 1 Bs) y para las monedas sin tasa.
+ *
+ * Se usa en las listas de monedas de los campos de monto: sin esto, dos monedas
+ * con el mismo codigo se ven iguales aunque una se convierta con la tasa del BCV
+ * y la otra con la personalizada del local.
+ */
+export function rateSourceLabel(
+  source: CurrencyRateSource | null | undefined,
+): string {
+  switch (source) {
+    case 'BCV':
+      return 'BCV';
+    case 'CUSTOM':
+      return 'personalizada';
+    case 'MANUAL':
+      return 'manual';
+    default:
+      return '';
+  }
 }
 
 export interface RateMeta {

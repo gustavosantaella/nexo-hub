@@ -177,6 +177,17 @@ describe('CurrencyAmountInputComponent', () => {
   });
 
   /**
+   * La lista de monedas dice con que tasa se calcula cada una (`USD · BCV`,
+   * `EUR · personalizada`): el operador ya no confunde el dolar del BCV con el del
+   * local al cargar un precio.
+   */
+  it('dice con qué tasa se calcula cada moneda', () => {
+    expect(
+      Array.from(select().options).map((option) => option.textContent?.trim()),
+    ).toEqual(['USD · BCV', 'VES', 'EUR']);
+  });
+
+  /**
    * Las monedas del local llegan junto con las tasas: el campo puede existir
    * cuando la lista se puebla y aun asi debe mostrar la moneda del monto. Con
    * `[value]` en el `select` se quedaba en la primera opcion, asi que el operador

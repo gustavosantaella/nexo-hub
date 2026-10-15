@@ -41,11 +41,16 @@ interface NavGroup {
   changeDetection: ChangeDetectionStrategy.OnPush,
   template: `    <div class="flex min-h-screen bg-slate-100">
       @if (!fullscreen()) {
+      <!-- Menú lateral del shell: se abre y se cierra con animación. En móvil se
+           desliza por encima del contenido; en escritorio va fijo al lado y se
+           repliega a ancho cero dejando sitio. Los bloques internos conservan el
+           ancho de la barra abierta ('w-64') para no deformarse al replegarse: el
+           panel recorta lo que sobresale ('overflow-hidden'). -->
       <aside
-        class="fixed inset-y-0 left-0 z-40 flex w-64 flex-col border-r border-slate-200 bg-white transition-transform lg:static lg:translate-x-0"
-        [class.-translate-x-full]="!sidebarOpen()"
+        class="fixed inset-y-0 left-0 z-40 flex w-64 flex-col overflow-hidden border-r border-slate-200 bg-white transition-[width,transform] duration-300 ease-in-out lg:static lg:translate-x-0"
+        [class]="sidebarClasses()"
       >
-        <div class="flex h-16 items-center gap-2 border-b border-slate-200 px-5">
+        <div class="flex h-16 w-64 items-center gap-2 border-b border-slate-200 px-5">
           <span class="flex h-9 w-9 items-center justify-center rounded-xl bg-brand-600 text-white">
             <app-icon name="building" size="h-5 w-5" />
           </span>
@@ -55,7 +60,7 @@ interface NavGroup {
           </div>
         </div>
 
-        <nav class="flex-1 overflow-y-auto px-3 py-2">
+        <nav class="w-64 flex-1 overflow-y-auto px-3 py-2">
           @for (group of groups(); track group.title) {
             <p class="px-3 pb-1 pt-4 text-[11px] font-semibold uppercase tracking-wide text-slate-400">
               {{ group.title }}
@@ -66,7 +71,7 @@ interface NavGroup {
                 routerLinkActive="bg-brand-50 text-brand-700"
                 [routerLinkActiveOptions]="{ exact: item.route === '/panel' }"
                 class="mb-0.5 flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium text-slate-600 transition hover:bg-slate-100"
-                (click)="closeSidebarOnMobile()"
+                (click)="onNavClick()"
               >
                 <app-icon [name]="item.icon" size="h-5 w-5" />
                 <span class="flex-1">{{ item.label }}</span>
@@ -75,7 +80,7 @@ interface NavGroup {
           }
         </nav>
 
-        <div class="border-t border-slate-200 p-3">
+        <div class="w-64 border-t border-slate-200 p-3">
           <div class="mb-2 flex items-center gap-3 rounded-lg px-2 py-2">
             <span
               class="flex h-9 w-9 items-center justify-center rounded-full bg-slate-200 text-sm font-semibold text-slate-600"
@@ -98,7 +103,7 @@ interface NavGroup {
       @if (!fullscreen() && sidebarOpen()) {
         <div
           class="fixed inset-0 z-30 bg-slate-900/40 lg:hidden"
-          (click)="sidebarOpen.set(false)"
+          (click)="closeSidebar()"
         ></div>
       }
 
@@ -109,9 +114,11 @@ interface NavGroup {
         >
           <button
             type="button"
-            class="btn-ghost px-2 lg:hidden"
-            (click)="sidebarOpen.set(!sidebarOpen())"
-            aria-label="Abrir menú"
+            class="btn-ghost px-2"
+            [attr.aria-label]="sidebarOpen() ? 'Cerrar menú' : 'Abrir menú'"
+            [attr.aria-expanded]="sidebarOpen()"
+            [title]="sidebarOpen() ? 'Cerrar menú' : 'Abrir menú'"
+            (click)="toggleSidebar()"
           >
             <app-icon name="menu" size="h-5 w-5" />
           </button>
@@ -215,9 +222,21 @@ export class MainLayoutComponent {
    */
   private readonly layout = inject(LayoutService);
   readonly fullscreen = this.layout.fullscreen;
-
-  readonly sidebarOpen = signal(false);
   readonly showConversions = this.rates.showConversions;
+
+  /**
+   * Menú lateral de navegación (ver `LayoutService`). El botón de la cabecera lo
+   * abre y lo cierra con animación, y la elección se recuerda en el navegador.
+   */
+  readonly sidebarOpen = this.layout.sidebarOpen;
+
+  /**
+   * Clases del menú replegado: fuera de pantalla en móvil (donde se desliza por
+   * encima del contenido) y a ancho cero en escritorio (donde va fijo al lado).
+   */
+  readonly sidebarClasses = computed(() =>
+    this.sidebarOpen() ? '' : '-translate-x-full lg:w-0 lg:border-r-0',
+  );
 
   // ------------------------------- Apariencia --------------------------------
   private readonly theme = inject(ThemeService);
@@ -362,8 +381,22 @@ export class MainLayoutComponent {
     });
   }
 
-  closeSidebarOnMobile(): void {
-    this.sidebarOpen.set(false);
+  /** Abre o cierra el menú lateral: el panel se despliega con animación. */
+  toggleSidebar(): void {
+    this.layout.toggleSidebar();
+  }
+
+  /** Cierra el menú lateral (fondo oscurecido o botón del panel). */
+  closeSidebar(): void {
+    this.layout.setSidebarOpen(false);
+  }
+
+  /**
+   * El enlace del menú sólo lo cierra en móvil, donde tapa el contenido: en
+   * escritorio se queda abierto para saltar de una sección a otra.
+   */
+  onNavClick(): void {
+    if (!this.layout.desktopViewport()) this.closeSidebar();
   }
 
   /** Alterna el modo claro/oscuro desde la cabecera (misma preferencia que Configuración). */

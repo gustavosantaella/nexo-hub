@@ -6,7 +6,12 @@ import {
   Output,
   inject,
 } from '@angular/core';
-import { BASE_CURRENCY_CODE, currencyMeta } from '../../core/constants/currency';
+import {
+  BASE_CURRENCY_CODE,
+  currencyMeta,
+  rateSourceLabel,
+} from '../../core/constants/currency';
+import type { CurrencyRateOption } from '../../core/models/rates.model';
 import { RatesService } from '../../core/services/rates.service';
 import { bs, moneyIn } from '../../core/utils/format';
 import { IconComponent } from './icon.component';
@@ -14,10 +19,12 @@ import { IconComponent } from './icon.component';
 /**
  * Selector de la moneda de un pago.
  *
- * Lista únicamente las monedas habilitadas en Configuración → Monedas y, cuando
- * se conoce el monto, muestra debajo el equivalente en la moneda base (USD) o,
- * si se cobra en la moneda base, su equivalente al cambio en bolívares,
- * indicando si la tasa viene del BCV (API) o es la personalizada del local.
+ * Lista únicamente las monedas habilitadas en Configuración → Monedas, cada una
+ * con la tasa con la que se convierte (la del BCV, la personalizada del dólar o
+ * una manual) y, cuando se conoce el monto, muestra debajo el equivalente en la
+ * moneda base (USD) o, si se cobra en la moneda base, su equivalente al cambio en
+ * bolívares, indicando si la tasa viene del BCV (API) o es la personalizada del
+ * local.
  *
  * Se usa con doble binding: `<app-currency-select [(value)]="form.currency" />`.
  *
@@ -43,7 +50,7 @@ import { IconComponent } from './icon.component';
     >
       @for (option of options(); track option.code) {
         <option [value]="option.code" [selected]="option.code === code()">
-          {{ option.label }} ({{ option.code }})
+          {{ optionLabel(option) }}
         </option>
       }
     </select>
@@ -80,6 +87,18 @@ export class CurrencySelectComponent {
     return this.rates.enabledCurrencies;
   }
 
+  /**
+   * Etiqueta de una moneda en la lista: `Dólares (USD) · tasa BCV`. El origen de
+   * la tasa va en la propia opcion para que el operador sepa, sin escribir el
+   * monto, si la conversion usa la tasa del BCV, la personalizada del local o una
+   * tasa manual.
+   */
+  optionLabel(option: CurrencyRateOption): string {
+    const tag = rateSourceLabel(option.source);
+    const name = `${option.label ?? option.code} (${option.code})`;
+    return tag ? `${name} · tasa ${tag}` : name;
+  }
+
   get missingRate(): boolean {
     const code = this.code();
     if (code === BASE_CURRENCY_CODE) return false;
@@ -111,16 +130,8 @@ export class CurrencySelectComponent {
    * (personalizada del dólar / manual de la moneda).
    */
   private sourceHint(code: string): string {
-    switch (this.rates.currencyOf(code)?.source) {
-      case 'BCV':
-        return ' · tasa BCV';
-      case 'CUSTOM':
-        return ' · tasa personalizada del dólar';
-      case 'MANUAL':
-        return ' · tasa manual';
-      default:
-        return '';
-    }
+    const tag = rateSourceLabel(this.rates.currencyOf(code)?.source);
+    return tag ? ` · tasa ${tag}` : '';
   }
 
   /** Moneda del pago, normalizada (vacio = moneda base). */
