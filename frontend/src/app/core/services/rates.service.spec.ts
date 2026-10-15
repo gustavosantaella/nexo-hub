@@ -333,4 +333,67 @@ describe('RatesService (conversión de monedas)', () => {
       'VES',
     );
   });
+
+  it('lista las tres tasas y las demas monedas cuando la base no es el dolar', () => {
+    // Con la moneda base en bolivares la linea \"al cambio\" no puede perder las
+    // tasas del sistema: el dolar del BCV, el euro del BCV y la personalizada.
+    rates.load(true);
+    http.expectOne(`${API}/rates?refresh=true`).flush({
+      ...THREE_RATES,
+      baseCurrency: {
+        code: 'VES',
+        label: 'Bolívares',
+        symbol: 'Bs',
+        decimals: 2,
+        bsPerUnit: 1,
+        bsPerUsd: 876.7976,
+      },
+    });
+
+    const lines = rates.conversionLines(10);
+
+    expect(lines.map((item) => item.label)).toEqual([
+      'USD · BCV',
+      'EUR · BCV',
+      'USD · personalizada',
+      // El peso no sale de ninguna de esas tasas: se lista en su propia moneda.
+      'COP · manual',
+    ]);
+    // El monto base ya esta en bolivares (8.767,98): la linea de cada tasa es ese
+    // monto vuelto a divisa. Al BCV son $ 10,00, al euro del BCV € 8,93 y a la
+    // tasa personalizada del local $ 9,23; el peso va en su propia moneda.
+    expect(lines.map((item) => item.text)).toEqual([
+      '$ 10.00',
+      '€ 8.93',
+      '$ 9.23',
+      'COL$ 39,854.44',
+    ]);
+    // Cada linea lleva la moneda de su tasa: ninguna repite los bolivares del
+    // monto base (por eso `<app-money>` no las abrevia con `bsCompact`).
+    expect(lines.map((item) => item.code)).toEqual(['USD', 'EUR', 'USD', 'COP']);
+    expect(lines.some((item) => item.inBs)).toBe(false);
+  });
+
+  it('no repite una moneda cuando su tasa ya es una de las tasas listadas', () => {
+    rates.load(true);
+    http.expectOne(`${API}/rates?refresh=true`).flush({
+      ...SNAPSHOT,
+      baseCurrency: {
+        code: 'VES',
+        label: 'Bolívares',
+        symbol: 'Bs',
+        decimals: 2,
+        bsPerUnit: 1,
+        bsPerUsd: 876.7976,
+      },
+    });
+
+    // Sin tasa personalizada el dolar se convierte con el BCV: una sola linea.
+    const lines = rates.conversionLines(10);
+
+    expect(lines.map((item) => item.key)).toEqual(['BCV_USD', 'COP']);
+    expect(lines.map((item) => item.label)).toEqual(['USD · BCV', 'COP · manual']);
+    // Los 8.767,98 Bs del monto son 10,00 USD con el dolar del BCV.
+    expect(lines.map((item) => item.text)).toEqual(['$ 10.00', 'COL$ 39,854.44']);
+  });
 });

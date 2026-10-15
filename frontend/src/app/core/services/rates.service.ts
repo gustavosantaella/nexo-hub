@@ -223,6 +223,7 @@ export class RatesService {
       rate: option.rate,
       amount: value * option.rate,
       text: bs(value * option.rate),
+      inBs: true,
     }));
   }
 
@@ -257,6 +258,65 @@ export class RatesService {
           text: moneyIn(value, item.code),
         };
       });
+  }
+
+  /**
+   * Conversiones completas del monto cuando la moneda base mostrada no es el
+   * dólar: **cada tasa del sistema** (el dólar del BCV, el euro del BCV y la
+   * personalizada del local) con el equivalente **en la moneda de esa tasa**, más
+   * las demás monedas aceptadas cuya tasa no venga ya de una de ellas (por ejemplo
+   * el peso con tasa manual), cada una en su propia moneda.
+   *
+   * La moneda base ya está en bolívares, así que repetir bolívares abajo no
+   * aportaba nada (era el mismo monto otra vez): la línea de cada tasa es el monto
+   * **vuelto a divisa** con esa tasa. Un margen de `Bs 9.054,20` son `USD · BCV
+   * $ 10,33` al precio oficial del dólar y `USD · personalizada $ 10,00` a la tasa
+   * del local: la comparación que el local necesita para decidir a cuál cobrar.
+   *
+   * Sin esto, con la moneda base en bolívares el listado perdía las tasas: solo
+   * aparecían las monedas (`USD`, `EUR`) y no se veía el dólar del BCV.
+   */
+  conversionLines(amount: number | null | undefined): RateConversion[] {
+    const usd = Number(amount ?? 0);
+    const bsPerUsd = this.bsPerUsd();
+    const options = this.rates();
+    // Sin la tasa puente ni tasas del sistema no hay nada que rotular: quedan las
+    // monedas configuradas (`currencyConversions`).
+    if (!bsPerUsd || options.length === 0) return this.currencyConversions(amount);
+
+    // Bolívares que representa el monto (misma cuenta que `format.money()`): al
+    // dividirlos por la tasa de cada línea queda el equivalente en su moneda.
+    const bsAmount = usd * bsPerUsd;
+    const byRate: RateConversion[] = options.map((option) => {
+      const value = round2(bsAmount / option.rate);
+      return {
+        key: option.key,
+        code: option.currency,
+        label: `${option.currency} · ${rateSourceLabel(option.source)}`,
+        rate: option.rate,
+        amount: value,
+        text: moneyIn(value, option.currency),
+      };
+    });
+    // Una moneda se omite cuando su tasa ya es una de las listadas arriba (el dólar
+    // del BCV, el euro del BCV, el dólar personalizado): da la misma conversión.
+    const covered = new Set(byRate.map((item) => item.rate));
+    return [
+      ...byRate,
+      ...this.currencyConversions(amount).filter((item) => !covered.has(item.rate)),
+    ];
+  }
+
+  /**
+   * Repinta una conversión con un monto **en bolívares**: el que escribió el
+   * operador cuando el registro guarda (`priceEntered`, `unitPriceEntered`, …) con
+   * su tasa. Conserva la moneda de la línea: con la base en dólares la conversión
+   * va en bolívares y con otra base va en la divisa de la tasa.
+   */
+  conversionWithBs(item: RateConversion, bsAmount: number): RateConversion {
+    if (item.inBs) return { ...item, amount: bsAmount, text: bs(bsAmount) };
+    const value = round2(bsAmount / item.rate);
+    return { ...item, amount: value, text: moneyIn(value, item.code) };
   }
 
   /** Equivalente en bolívares con la tasa indicada (la activa por defecto). */

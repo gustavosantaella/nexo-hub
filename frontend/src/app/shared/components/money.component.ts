@@ -9,7 +9,6 @@ import { RatesService } from '../../core/services/rates.service';
 import type { RateConversion } from '../../core/models/rates.model';
 import { LOCAL_CURRENCY_CODE } from '../../core/constants/currency';
 import {
-  bs,
   bsCompact,
   money,
   moneyCompact,
@@ -27,10 +26,13 @@ import {
  *   - 2 tasas cuando el local no definió una personalizada (BCV $ y BCV €).
  *   - 3 tasas cuando existe la personalizada.
  *
- * Con la moneda base en otra moneda (por ejemplo el bolívar) la línea de abajo
- * lista las demás monedas aceptadas y **de dónde sale su tasa**, para que el
- * dólar del BCV no se confunda con el personalizado del local ni con una moneda
- * de tasa manual: `USD · BCV $ 10.00`, `COP · manual COL$ 39,854.44`.
+ * Con la moneda base en otra moneda (por ejemplo el bolívar) el monto base ya está
+ * en bolívares, así que la línea de abajo lista **cada tasa del sistema** con el
+ * equivalente **en su divisa** (`USD · BCV $ 10,33` al precio oficial del dólar,
+ * `USD · personalizada $ 10,00` a la tasa del local, `EUR · BCV € 9,22`) y, además,
+ * las demás monedas aceptadas cuya tasa no venga de una de esas tasas (`COP ·
+ * manual COL$ 41,155.45`): sin el rótulo, el dólar del BCV se confunde con el
+ * personalizado del local y con una moneda de tasa manual.
  *
  * El interruptor global (`RatesService.showConversions`, visible en
  * Configuración) permite ocultar las conversiones sin perder las tasas.
@@ -109,27 +111,29 @@ export class MoneyComponent {
 
   /**
    * Conversiones del monto: con la moneda base en dólares, el equivalente en
-   * bolívares de cada tasa activa; con otra moneda base, cada moneda aceptada con
-   * el origen de su tasa (`USD · BCV`, `USD · personalizada`, `COP · manual`).
+   * bolívares de cada tasa activa; con otra moneda base, esas MISMAS tasas y las
+   * demás monedas aceptadas, cada línea en la moneda de su tasa y rotulada con su
+   * origen (`USD · BCV $ 10,33`, `USD · personalizada $ 10,00`, `COP · manual
+   * COL$ 41,155.45`).
    * En modo compacto también se abrevian.
    */
   get conversions(): RateConversion[] {
     const byRate = !this.rates.convertsBase();
     const items = byRate
       ? this.rates.conversions(this.amount)
-      : this.rates.currencyConversions(this.amount);
+      : this.rates.conversionLines(this.amount);
     const exact = this.loadedRate;
     const resolved = exact
       ? items.map((item) =>
           item.key === exact.key
-            ? { ...item, amount: exact.amount, text: bs(exact.amount) }
+            ? this.rates.conversionWithBs(item, exact.amount)
             : item,
         )
       : items;
     if (!this.compact) return resolved;
     return resolved.map((item) => ({
       ...item,
-      text: byRate
+      text: item.inBs
         ? bsCompact(item.amount)
         : moneyInCompact(item.amount, item.code),
     }));

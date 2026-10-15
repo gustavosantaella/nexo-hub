@@ -126,8 +126,11 @@ const RATES_WITH_CUSTOM: RatesSnapshot = {
 
 /**
  * Tasas con la moneda base en bolívares: es lo que ve un local que decidió
- * mostrar los montos en Bs. Debajo del margen se listan las demás monedas
- * aceptadas (USD y EUR), cada una con el origen de su propia tasa.
+ * mostrar los montos en Bs. Debajo del margen se listan las tasas del sistema
+ * (USD y EUR del BCV, más la personalizada) y las demás monedas aceptadas (el
+ * peso con tasa manual), cada una con el origen de su propia tasa y el equivalente
+ * del monto **en la moneda de esa tasa**: el monto base ya está en bolívares, así
+ * que la línea de abajo es lo que ese monto vale en divisa.
  */
 const RATES_BASE_BOLIVARES: RatesSnapshot = {
   ...RATES_WITH_CUSTOM,
@@ -170,6 +173,18 @@ const RATES_BASE_BOLIVARES: RatesSnapshot = {
       enabled: true,
       bsPerUnit: 982.00454402,
       source: 'BCV',
+      isBase: false,
+      isDisplayBase: false,
+      bsPerUsd: 905.42,
+    },
+    {
+      code: 'COP',
+      label: 'Pesos colombianos',
+      symbol: 'COL$',
+      enabled: true,
+      bsPerUnit: 0.22,
+      // Moneda que no sale de ninguna tasa del sistema: la escribió el local.
+      source: 'MANUAL',
       isBase: false,
       isDisplayBase: false,
       bsPerUsd: 905.42,
@@ -367,11 +382,11 @@ describe('MenusPage (receta y costos)', () => {
   });
 
   /**
-   * Con la moneda base en bolívares el listado mostraba "USD" y "EUR" a secas
+   * Con la moneda base en bolívares el listado mostraba `USD` y `EUR` a secas
    * debajo del margen: no había forma de saber con qué tasa se convirtió cada
-   * moneda (el dólar del BCV y el personalizado del local se veían iguales).
+   * moneda ni dónde quedaba el dólar del BCV.
    */
-  it('rotula cada moneda del margen con el origen de su tasa', () => {
+  it('lista las tres tasas del margen aunque la base sea el bolívar', () => {
     const { fixture } = mount([MARGIN_MENU], RATES_BASE_BOLIVARES);
 
     const cells = Array.from(
@@ -383,10 +398,16 @@ describe('MenusPage (receta y costos)', () => {
 
     // Margen del menú: precio 20 - costo 10 = $ 10, en Bs con la personalizada.
     expect(margin).toContain('Bs 9,054.20');
-    // Debajo, cada moneda aceptada con SU tasa: el dólar local y el euro del BCV.
-    expect(margin).toContain('USD · personalizada');
-    expect(margin).toContain('EUR · BCV');
-    expect(margin).not.toContain('USD · BCV');
+    // Las tres tasas del sistema quedan listadas, cada una con su moneda y el
+    // origen de su tasa (el dólar del BCV no desaparece por usar el bolívar) y el
+    // equivalente del monto en esa divisa: los 9.054,20 Bs son 10,33 al BCV y
+    // 10,00 a la tasa del local.
+    expect(margin).toContain('USD · BCV $ 10.33');
+    expect(margin).toContain('EUR · BCV € 9.22');
+    expect(margin).toContain('USD · personalizada $ 10.00');
+    // Y las demás monedas configuradas siguen en su propia moneda.
+    expect(margin).toContain('COP · manual');
+    expect(margin).toContain('COL$ 41,155.45');
   });
 
   it('muestra el margen "al cambio" del formulario con la tasa personalizada', () => {

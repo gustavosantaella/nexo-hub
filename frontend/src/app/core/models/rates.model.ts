@@ -146,4 +146,10 @@ export interface RateConversion {
   text: string;
   /** Código de la moneda de la conversión (cuando es una moneda, no una tasa). */
   code?: string;
+  /**
+   * `true` cuando `amount` y `text` están en bolívares: las conversiones de la
+   * moneda base **dólar** (una línea por tasa). Con otra moneda base cada línea va
+   * en la moneda de su tasa o de su moneda (`USD · BCV $ 10,33`).
+   */
+  inBs?: boolean;
 }
