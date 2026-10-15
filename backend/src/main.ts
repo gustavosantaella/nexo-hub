@@ -2,12 +2,23 @@ import { Logger, ValidationPipe } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { NestFactory } from '@nestjs/core';
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
+import type { NestExpressApplication } from '@nestjs/platform-express';
 import helmet from 'helmet';
 import { AppModule } from './app.module';
 
+/** Tamano maximo del cuerpo de una peticion (catalogos con fotos incluidas). */
+const BODY_LIMIT = '25mb';
+
 async function bootstrap(): Promise<void> {
   const logger = new Logger('Bootstrap');
-  const app = await NestFactory.create(AppModule);
+  // El parser por defecto se desactiva para poder subirle el limite: el catalogo
+  // exportado viaja en JSON e incluye las fotos (data URL de hasta 400 KB), asi
+  // que los 100 KB por defecto de Express no alcanzan ni para un producto.
+  const app = await NestFactory.create<NestExpressApplication>(AppModule, {
+    bodyParser: false,
+  });
+  app.useBodyParser('json', { limit: BODY_LIMIT });
+  app.useBodyParser('urlencoded', { limit: BODY_LIMIT });
 
   const config = app.get(ConfigService);
   const port = config.get<number>('port') ?? 3000;

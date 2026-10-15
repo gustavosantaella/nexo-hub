@@ -19,6 +19,13 @@ import {
 } from '../../core/constants/currency';
 import type { CurrencySettingPayload } from '../../core/models/currencies.model';
 import type { CurrencyRateOption, CurrencyRateSource, RateKey } from '../../core/models/rates.model';
+import {
+  CATALOG_ENTITIES,
+  CATALOG_ENTITY_LABELS,
+  type CatalogEntity,
+  type CatalogImportMode,
+  type CatalogImportResult,
+} from '../../core/models/data-transfer.model';
 import type {
   Company,
   CompanyPayload,
@@ -27,6 +34,15 @@ import type {
 import { AuthService } from '../../core/services/auth.service';
 import { CompaniesService } from '../../core/services/companies.service';
 import { CurrenciesService } from '../../core/services/currencies.service';
+import { DataTransferService } from '../../core/services/data-transfer.service';
+import {
+  catalogFileName,
+  catalogFileOverview,
+  catalogSum,
+  downloadJson,
+  readJsonFile,
+  type CatalogFileOverview,
+} from '../../core/utils/catalog-file';
 import {
   PreferencesService,
   TIP_PERCENT_PRESETS,
@@ -49,9 +65,10 @@ import { ConfirmService } from '../../shared/services/confirm.service';
  *
  * `rates` muestra el estado de las tasas, `appearance` las preferencias de
  * interfaz, `pos` las del punto de venta (propina sugerida), `company` los datos
- * de la empresa activa y `profile` los del usuario.
+ * de la empresa activa, `profile` los del usuario y `data` el respaldo del
+ * catálogo (exportar / importar), que solo ven ADMIN y MANAGER.
  */
-export type SettingsSection = 'rates' | 'appearance' | 'pos' | 'company' | 'profile';
+export type SettingsSection = 'rates' | 'appearance' | 'pos' | 'company' | 'profile' | 'data';
 
 /**
  * Configuración del sistema, dividida en pestañas (Tasas, Apariencia, Empresa y
@@ -115,7 +132,7 @@ interface CurrencyRow {
          también cambian de pestaña (patrón tablist de ARIA). -->
     <nav class="mb-4" role="tablist" aria-label="Secciones de configuración">
       <div class="flex flex-wrap gap-1 rounded-xl border border-slate-200 bg-white p-1 shadow-card">
-        @for (tab of tabs; track tab.value) {
+        @for (tab of visibleTabs(); track tab.value) {
           <button
             type="button"
             role="tab"
@@ -1098,6 +1115,180 @@ interface CurrencyRow {
 
       }
 
+      <!-- Sección: Datos (respaldo del catálogo) -->
+      @if (section() === 'data') {
+
+        <!-- Exportar: el catálogo completo en un archivo JSON. -->
+        <section class="card mb-4">
+          <div class="card-header">
+            <div>
+              <h2 class="text-sm font-semibold text-slate-900">Exportar el catálogo</h2>
+              <p class="mt-0.5 text-xs text-slate-500">
+                Descarga las categorías, los proveedores, los productos con su stock y los
+                menús con su receta en un solo archivo JSON. Guárdalo donde quieras: sirve
+                para llevarte los datos a otro equipo y para volver a cargarlos tras un
+                borrado accidental.
+              </p>
+            </div>
+            <app-icon name="folder" size="h-5 w-5 text-slate-400" />
+          </div>
+
+          <div class="card-body flex flex-wrap items-center gap-3">
+            <button
+              type="button"
+              class="btn-primary"
+              [disabled]="exporting()"
+              (click)="exportCatalog()"
+            >
+              <app-icon name="download" size="h-4 w-4" />
+              {{ exporting() ? 'Preparando…' : 'Descargar respaldo' }}
+            </button>
+            <p class="text-xs text-slate-500">
+              El archivo se descarga con la fecha del día
+              (nexo-hub-catalogo-AAAA-MM-DD.json).
+            </p>
+          </div>
+        </section>
+
+        <!-- Importar: vuelve a cargar un archivo exportado antes. -->
+        <section class="card mb-4">
+          <div class="card-header">
+            <div>
+              <h2 class="text-sm font-semibold text-slate-900">Importar el catálogo</h2>
+              <p class="mt-0.5 text-xs text-slate-500">
+                Carga un archivo exportado antes. La importación es incremental: crea lo que
+                falta y respeta lo que ya está, y los registros del local que no vengan en el
+                archivo no se borran.
+              </p>
+            </div>
+            <span class="badge bg-slate-100 text-slate-600">{{ importModeLabel() }}</span>
+          </div>
+
+          <div class="card-body space-y-4">
+            <div class="grid gap-3 sm:grid-cols-2">
+              @for (option of importModeOptions; track option.value) {
+                <button
+                  type="button"
+                  class="flex items-start gap-3 rounded-xl border px-4 py-3 text-left transition"
+                  [class]="
+                    importMode() === option.value
+                      ? 'border-brand-300 bg-brand-50/60'
+                      : 'border-slate-200 hover:border-slate-300 hover:bg-slate-50'
+                  "
+                  [attr.aria-pressed]="importMode() === option.value"
+                  (click)="setImportMode(option.value)"
+                >
+                  <app-icon
+                    [name]="option.value === 'merge' ? 'refresh' : 'check'"
+                    size="h-5 w-5 shrink-0"
+                    [class]="importMode() === option.value ? 'text-brand-600' : 'text-slate-400'"
+                  />
+                  <span class="min-w-0">
+                    <span class="block text-sm font-semibold text-slate-900">
+                      {{ option.label }}
+                    </span>
+                    <span class="mt-0.5 block text-xs text-slate-500">{{ option.hint }}</span>
+                  </span>
+                </button>
+              }
+            </div>
+
+            <div class="flex flex-wrap items-center gap-3 border-t border-slate-200 pt-4">
+              <input
+                #catalogFileInput
+                type="file"
+                accept="application/json,.json"
+                class="hidden"
+                (change)="importCatalog($event)"
+              />
+              <button
+                type="button"
+                class="btn-secondary"
+                [disabled]="importing()"
+                (click)="catalogFileInput.click()"
+              >
+                <app-icon name="upload" size="h-4 w-4" />
+                {{ importing() ? 'Importando…' : 'Elegir archivo' }}
+              </button>
+              <p class="text-xs text-slate-500">
+                Antes de cargar nada se muestra qué trae el archivo y se pide confirmación.
+              </p>
+            </div>
+          </div>
+        </section>
+
+        <!-- Resumen de la última importación: qué entró y qué quedó fuera. -->
+        @if (importResult()) {
+          <section class="card">
+            <div class="card-header">
+              <div>
+                <h2 class="text-sm font-semibold text-slate-900">Resultado de la importación</h2>
+                <p class="mt-0.5 text-xs text-slate-500">
+                  {{ importSummary() }} Importar no borra nada: solo crea y actualiza.
+                </p>
+              </div>
+              <span class="badge bg-slate-100 text-slate-600">{{ importSaved() }} guardados</span>
+            </div>
+
+            <div class="card-body space-y-4">
+              <div class="table-wrap">
+                <table class="table">
+                  <thead>
+                    <tr>
+                      <th>Entidad</th>
+                      <th class="text-right">Creados</th>
+                      <th class="text-right">Actualizados</th>
+                      <th class="text-right">Omitidos</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    @for (row of importRows(); track row.entity) {
+                      <tr>
+                        <td class="font-medium text-slate-700">{{ row.label }}</td>
+                        <td class="text-right text-emerald-700">{{ row.created }}</td>
+                        <td class="text-right text-slate-600">{{ row.updated }}</td>
+                        <td class="text-right text-slate-400">{{ row.skipped }}</td>
+                      </tr>
+                    }
+                  </tbody>
+                </table>
+              </div>
+
+              @if (importIssues().length > 0) {
+                <div class="space-y-2">
+                  <h3 class="text-xs font-semibold uppercase tracking-wide text-slate-500">
+                    Avisos
+                  </h3>
+                  <ul class="space-y-2">
+                    @for (issue of importIssues(); track $index) {
+                      <li
+                        class="flex items-start gap-2 rounded-lg border px-3 py-2 text-xs"
+                        [class]="
+                          issue.level === 'error'
+                            ? 'border-rose-200 bg-rose-50 text-rose-700'
+                            : 'border-amber-200 bg-amber-50 text-amber-700'
+                        "
+                      >
+                        <app-icon
+                          [name]="issue.level === 'error' ? 'alert' : 'info'"
+                          size="h-4 w-4 shrink-0"
+                        />
+                        <span class="min-w-0">
+                          <span class="font-semibold">{{ entityLabel(issue.entity) }}</span>
+                          <span class="font-medium"> · {{ issue.reference }}</span>
+                          <span class="block">{{ issue.message }}</span>
+                        </span>
+                      </li>
+                    }
+                  </ul>
+                </div>
+              }
+            </div>
+          </section>
+        }
+
+      }
+
     </div>
 
     <!-- Crear otra empresa -->
@@ -1189,6 +1380,7 @@ export class SettingsPage implements OnInit {
   private readonly confirm = inject(ConfirmService);
   private readonly companiesService = inject(CompaniesService);
   private readonly preferences = inject(PreferencesService);
+  private readonly dataTransfer = inject(DataTransferService);
   private readonly themeService = inject(ThemeService);
   readonly auth = inject(AuthService);
 
@@ -1240,7 +1432,22 @@ export class SettingsPage implements OnInit {
       icon: 'user-cog',
       hint: 'Tu información personal y tus credenciales de acceso.',
     },
+    {
+      value: 'data',
+      label: 'Datos',
+      icon: 'folder',
+      hint: 'Exporta el catálogo a un archivo o impórtalo en este local.',
+    },
   ];
+
+  /**
+   * Pestañas que se pueden ver. «Datos» solo aparece para ADMIN y MANAGER: la
+   * importación escribe precios, costos y stock de golpe y el API la rechaza para
+   * el resto de los roles, así que no se ofrece un botón que no puede funcionar.
+   */
+  readonly visibleTabs = computed(() =>
+    this.tabs.filter((tab) => tab.value !== 'data' || this.canManage()),
+  );
 
   /** Bajada de la cabecera según la pestaña activa. */
   readonly activeHint = computed(
@@ -1567,6 +1774,182 @@ export class SettingsPage implements OnInit {
     });
   }
 
+  // ------------------------- Datos (respaldo del catálogo) --------------------
+
+  /** Descarga del catálogo en curso (el botón no se puede pulsar dos veces). */
+  readonly exporting = signal(false);
+
+  /** Importación en curso: elegir archivo → leer → confirmar → cargar. */
+  readonly importing = signal(false);
+
+  /** Qué hacer con los registros que ya existen (viaja en el query string). */
+  readonly importMode = signal<CatalogImportMode>('merge');
+
+  /** Resultado de la última importación (se resume debajo del botón). */
+  readonly importResult = signal<CatalogImportResult | null>(null);
+
+  /** Entidades del catálogo, en el orden en que se resumen. */
+  readonly catalogEntities = CATALOG_ENTITIES;
+
+  /** Modos de importación, con lo que hace cada uno. */
+  readonly importModeOptions: {
+    value: CatalogImportMode;
+    label: string;
+    hint: string;
+  }[] = [
+    {
+      value: 'merge',
+      label: 'Actualizar los que ya existen',
+      hint: 'El archivo manda: lo que tenga el mismo nombre o SKU se sobrescribe.',
+    },
+    {
+      value: 'skip',
+      label: 'Dejar los que ya existen',
+      hint: 'Solo se agregan los que faltan; lo que ya está en el local no se toca.',
+    },
+  ];
+
+  /** Nombre del modo elegido (chip de la cabecera). */
+  readonly importModeLabel = computed(
+    () => this.importModeOptions.find((option) => option.value === this.importMode())?.label ?? '',
+  );
+
+  /** Filas del resumen de la última importación (una por entidad). */
+  readonly importRows = computed(() => {
+    const result = this.importResult();
+    if (!result) return [];
+    return this.catalogEntities.map((entity) => ({
+      entity,
+      label: CATALOG_ENTITY_LABELS[entity],
+      created: result.created[entity] ?? 0,
+      updated: result.updated[entity] ?? 0,
+      skipped: result.skipped[entity] ?? 0,
+    }));
+  });
+
+  /** Registros que entraron (creados + actualizados) en la última importación. */
+  readonly importSaved = computed(() => {
+    const result = this.importResult();
+    return result ? catalogSum(result.created) + catalogSum(result.updated) : 0;
+  });
+
+  /** Registros que se dejaron como estaban (ya existían y el modo fue «omitir»). */
+  readonly importSkipped = computed(() => {
+    const result = this.importResult();
+    return result ? catalogSum(result.skipped) : 0;
+  });
+
+  /** Resumen en una línea de la última importación. */
+  readonly importSummary = computed(() => {
+    const result = this.importResult();
+    if (!result) return '';
+    const parts = [
+      `${catalogSum(result.created)} creados`,
+      `${catalogSum(result.updated)} actualizados`,
+    ];
+    const skipped = catalogSum(result.skipped);
+    if (skipped > 0) parts.push(`${skipped} omitidos (ya existían)`);
+    return `${parts.join(', ')}.`;
+  });
+
+  /** Avisos de la última importación, con los errores primero. */
+  readonly importIssues = computed(() => {
+    const issues = [...(this.importResult()?.issues ?? [])];
+    return issues.sort((a, b) => (a.level === b.level ? 0 : a.level === 'error' ? -1 : 1));
+  });
+
+  /** Nombre en español de una entidad (tabla del resumen y avisos). */
+  entityLabel(entity: CatalogEntity): string {
+    return CATALOG_ENTITY_LABELS[entity] ?? entity;
+  }
+
+  /** Descarga el catálogo completo del local como archivo JSON. */
+  exportCatalog(): void {
+    if (this.exporting()) return;
+
+    this.exporting.set(true);
+    this.dataTransfer.exportCatalog().subscribe({
+      next: (document) => {
+        this.exporting.set(false);
+        downloadJson(catalogFileName(document.exportedAt), document);
+        this.toast.success(
+          `${catalogSum(document.counts)} registros en el archivo`,
+          'Catálogo exportado',
+        );
+      },
+      // El aviso del error lo da el interceptor; aquí solo se libera el botón.
+      error: () => this.exporting.set(false),
+    });
+  }
+
+  setImportMode(mode: CatalogImportMode): void {
+    this.importMode.set(mode);
+  }
+
+  /**
+   * Lee el archivo elegido y, si es un respaldo del catálogo, pide confirmación
+   * antes de enviarlo: importar ESCRIBE en el catálogo del local.
+   */
+  async importCatalog(event: Event): Promise<void> {
+    const input = event.target as HTMLInputElement;
+    const file = input.files?.[0];
+    // Se vacía el input para poder elegir el MISMO archivo otra vez (por ejemplo,
+    // tras volver a exportarlo o para probar el otro modo).
+    input.value = '';
+    if (!file || this.importing()) return;
+
+    this.importing.set(true);
+    this.importResult.set(null);
+
+    let payload: unknown;
+    let overview: CatalogFileOverview;
+    try {
+      payload = await readJsonFile(file);
+      overview = catalogFileOverview(payload);
+    } catch (error) {
+      this.importing.set(false);
+      // No hubo petición al API: el aviso se da aquí (el interceptor solo cubre
+      // los errores de HTTP).
+      this.toast.error(apiErrorMessage(error), 'Archivo inválido');
+      return;
+    }
+
+    const origen = overview.exportedAt
+      ? `${overview.companyName}, exportado el ${dateTime(overview.exportedAt)}`
+      : overview.companyName;
+    const queHacer =
+      this.importMode() === 'merge'
+        ? 'Los registros que ya existan se actualizarán con el archivo.'
+        : 'Solo se agregarán los que falten: lo que ya está en el local no se toca.';
+    const confirmed = await this.confirm.ask({
+      title: 'Importar catálogo',
+      message:
+        `${file.name} trae ${overview.total} registros de ${origen}. ${queHacer} ` +
+        'Lo que esté en el local y no venga en el archivo no se borra. ¿Continuar?',
+      confirmLabel: 'Importar',
+    });
+    if (!confirmed) {
+      this.importing.set(false);
+      return;
+    }
+
+    this.dataTransfer.importCatalog(payload, this.importMode()).subscribe({
+      next: (result) => {
+        this.importing.set(false);
+        this.importResult.set(result);
+        if (result.issues.some((issue) => issue.level === 'error')) {
+          this.toast.warning(
+            'Algunos registros quedaron fuera: revisa los avisos.',
+            'Catálogo importado',
+          );
+        } else {
+          this.toast.success(this.importSummary(), 'Catálogo importado');
+        }
+      },
+      error: () => this.importing.set(false),
+    });
+  }
+
   ngOnInit(): void {
     this.ratesService.ensureLoaded();
     this.loadCompany();
@@ -1590,18 +1973,18 @@ export class SettingsPage implements OnInit {
    * mueve la selección y el foco a la pestaña vecina.
    */
   onTabKeydown(event: KeyboardEvent, current: SettingsSection): void {
-    const index = this.tabs.findIndex((tab) => tab.value === current);
+    const tabs = this.visibleTabs();
+    const index = tabs.findIndex((tab) => tab.value === current);
     if (index < 0) return;
 
     const step = event.key === 'ArrowRight' ? 1 : event.key === 'ArrowLeft' ? -1 : 0;
-    let next: number | null =
-      step === 0 ? null : (index + step + this.tabs.length) % this.tabs.length;
+    let next: number | null = step === 0 ? null : (index + step + tabs.length) % tabs.length;
     if (event.key === 'Home') next = 0;
-    else if (event.key === 'End') next = this.tabs.length - 1;
+    else if (event.key === 'End') next = tabs.length - 1;
     if (next === null) return;
 
     event.preventDefault();
-    const target = this.tabs[next];
+    const target = tabs[next];
     this.setSection(target.value);
     // El foco acompaña a la selección (patrón "roving tabindex").
     (event.currentTarget as HTMLElement)

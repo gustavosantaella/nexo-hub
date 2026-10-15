@@ -1,12 +1,15 @@
 import { signal } from '@angular/core';
 import { ComponentFixture, TestBed } from '@angular/core/testing';
 import { provideRouter } from '@angular/router';
-import { EMPTY } from 'rxjs';
+import { EMPTY, of } from 'rxjs';
 import type { Company, User } from '../../core/models/api.model';
+import type { CatalogDocument, CatalogImportResult } from '../../core/models/data-transfer.model';
 import { AuthService } from '../../core/services/auth.service';
 import { CompaniesService } from '../../core/services/companies.service';
 import { CurrenciesService } from '../../core/services/currencies.service';
+import { DataTransferService } from '../../core/services/data-transfer.service';
 import { RatesService } from '../../core/services/rates.service';
+import { ConfirmService } from '../../shared/services/confirm.service';
 import { SettingsPage } from './settings.page';
 
 /** Tema guardado por otra prueba: se limpia antes de montar la pantalla. */
@@ -62,6 +65,66 @@ const companiesStub = {
 const currenciesStub = { saving: signal(false), save: jasmine.createSpy('save') };
 
 /**
+ * Espera a que se cumpla una condición dando turnos al bucle de eventos: leer un
+ * archivo y abrir el diálogo de confirmación no ocurre en el mismo turno.
+ */
+async function esperar(condition: () => boolean, turns = 20): Promise<void> {
+  for (let turn = 0; turn < turns && !condition(); turn += 1) {
+    await new Promise((resolve) => setTimeout(resolve));
+  }
+}
+
+/** Respaldo mínimo del catálogo: lo que el API devuelve al exportar. */
+const catalogoExportado: CatalogDocument = {
+  format: 'nexo-hub.catalog',
+  version: 1,
+  exportedAt: '2024-05-01T12:00:00.000Z',
+  company: { id: 'emp-1', name: 'Cafetería Central' },
+  counts: { categories: 1, menuCategories: 0, suppliers: 0, products: 1, menus: 0 },
+  categories: [{ name: 'Bebidas', active: true }],
+  menuCategories: [],
+  suppliers: [],
+  products: [
+    {
+      sku: 'CAF-1',
+      name: 'Café',
+      price: 1,
+      priceCurrency: 'USD',
+      priceUsd: 1,
+      stock: 5,
+      minStock: 1,
+      unit: 'unit',
+      unitsPerBox: 1,
+      trackStock: true,
+      active: true,
+    },
+  ],
+  menus: [],
+};
+
+/** Lo que devuelve el doble al importar: dos guardados y un aviso. */
+const resultadoImportacion: CatalogImportResult = {
+  mode: 'merge',
+  created: { categories: 1, menuCategories: 0, suppliers: 0, products: 1, menus: 0 },
+  updated: { categories: 0, menuCategories: 0, suppliers: 0, products: 0, menus: 0 },
+  skipped: { categories: 0, menuCategories: 0, suppliers: 0, products: 0, menus: 0 },
+  issues: [
+    {
+      entity: 'menus',
+      level: 'warning',
+      reference: 'MEN-1',
+      message: 'No se encontró el ingrediente CAF-2.',
+    },
+  ],
+};
+
+/** Doble mínimo de `DataTransferService`: aquí no se sale a la red. */
+const dataTransferStub = {
+  exportCatalog: jasmine.createSpy('exportCatalog').and.returnValue(of(catalogoExportado)),
+  importCatalog: jasmine.createSpy('importCatalog').and.returnValue(of(resultadoImportacion)),
+};
+
+/**
  * Pruebas de las pestañas de Configuración: se pinta una sola sección a la vez y
  * se puede cambiar con el ratón o con las flechas del teclado.
  */
@@ -72,6 +135,11 @@ describe('SettingsPage (pestañas de configuración)', () => {
     localStorage.removeItem(THEME_KEY);
     localStorage.removeItem(TIP_PERCENT_KEY);
 
+    // Cada prueba arranca sin permiso de administración y con los dobles limpios.
+    authStub.canManage.set(false);
+    dataTransferStub.exportCatalog.calls.reset();
+    dataTransferStub.importCatalog.calls.reset();
+
     await TestBed.configureTestingModule({
       imports: [SettingsPage],
       providers: [
@@ -80,6 +148,7 @@ describe('SettingsPage (pestañas de configuración)', () => {
         { provide: AuthService, useValue: authStub },
         { provide: CompaniesService, useValue: companiesStub },
         { provide: CurrenciesService, useValue: currenciesStub },
+        { provide: DataTransferService, useValue: dataTransferStub },
       ],
     }).compileComponents();
 
@@ -91,12 +160,18 @@ describe('SettingsPage (pestañas de configuración)', () => {
     document.documentElement.classList.remove('dark');
     localStorage.removeItem(THEME_KEY);
     localStorage.removeItem(TIP_PERCENT_KEY);
+    authStub.canManage.set(false);
   });
 
   function tabs(): HTMLButtonElement[] {
     return Array.from(
       fixture.nativeElement.querySelectorAll('[role="tab"]') as NodeListOf<HTMLButtonElement>,
     );
+  }
+
+  /** Etiquetas de las pestañas visibles, en el orden en que se pintan. */
+  function tabLabels(): string[] {
+    return tabs().map((button) => button.textContent?.trim() ?? '');
   }
 
   function tab(label: string): HTMLButtonElement {
@@ -322,5 +397,80 @@ describe('SettingsPage (pestañas de configuración)', () => {
     } finally {
       ratesStub.snapshot.set(null);
     }
+  });
+
+  it('enseña la pestaña Datos solo a quien puede administrar el catálogo', () => {
+    // Importar escribe el catálogo del local: el API solo lo permite a ADMIN y
+    // MANAGER, así que al resto de los roles no se les ofrece la pestaña.
+    expect(tabLabels()).not.toContain('Datos');
+
+    authStub.canManage.set(true);
+    fixture.detectChanges();
+
+    expect(tabLabels()).toContain('Datos');
+
+    tab('Datos').click();
+    fixture.detectChanges();
+
+    expect(panel().id).toBe('data-panel');
+    expect(panel().textContent).toContain('Exportar el catálogo');
+    expect(panel().textContent).toContain('Importar el catálogo');
+    // Todavía nadie ha importado: no hay resumen que mostrar.
+    expect(panel().textContent).not.toContain('Resultado de la importación');
+  });
+
+  it('exporta el catálogo e importa el archivo elegido desde la pestaña Datos', async () => {
+    // El clic del enlace de descarga se anula: aquí se comprueba el flujo, no el archivo.
+    spyOn(HTMLAnchorElement.prototype, 'click').and.callFake(() => undefined);
+
+    authStub.canManage.set(true);
+    fixture.detectChanges();
+
+    tab('Datos').click();
+    fixture.detectChanges();
+
+    panelButton('Descargar respaldo').click();
+    fixture.detectChanges();
+
+    expect(dataTransferStub.exportCatalog).toHaveBeenCalledTimes(1);
+
+    // Modo «dejar los que ya existen»: viaja al API en el query string.
+    panelButton('Dejar los que ya existen').click();
+    fixture.detectChanges();
+
+    const input = fixture.nativeElement.querySelector(
+      'input[type="file"]',
+    ) as HTMLInputElement;
+    const transfer = new DataTransfer();
+    transfer.items.add(
+      new File([JSON.stringify(catalogoExportado)], 'catalogo.json', {
+        type: 'application/json',
+      }),
+    );
+    input.files = transfer.files;
+    input.dispatchEvent(new Event('change', { bubbles: true }));
+
+    // El archivo se lee en el navegador y, antes de tocar nada, se pide confirmación.
+    const confirm = TestBed.inject(ConfirmService);
+    await esperar(() => confirm.state().open);
+    fixture.detectChanges();
+
+    expect(confirm.state().open).toBe(true);
+    expect(confirm.state().message).toContain('catalogo.json');
+    expect(dataTransferStub.importCatalog).not.toHaveBeenCalled();
+
+    confirm.resolve(true);
+    await esperar(() => dataTransferStub.importCatalog.calls.count() > 0);
+    fixture.detectChanges();
+
+    expect(dataTransferStub.importCatalog).toHaveBeenCalledWith(
+      jasmine.objectContaining({ format: 'nexo-hub.catalog' }),
+      'skip',
+    );
+
+    // El resumen queda a la vista: guardados por entidad y los avisos del API.
+    expect(panel().textContent).toContain('Resultado de la importación');
+    expect(panel().textContent).toContain('2 guardados');
+    expect(panel().textContent).toContain('No se encontró el ingrediente CAF-2.');
   });
 });

@@ -50,6 +50,7 @@ const ICONS: Record<string, string> = {
   settings:
     '<path d="M4 7h9M18.5 7H20M4 12h3M12.5 12H20M4 17h6M15.5 17H20"/><circle cx="15.5" cy="7" r="2.2"/><circle cx="9.5" cy="12" r="2.2"/><circle cx="12.5" cy="17" r="2.2"/>',
   download: '<path d="M12 4v10"/><path d="m8 11 4 4 4-4"/><path d="M5 19h14"/>',
+  upload: '<path d="M12 20V10"/><path d="m8 13 4-4 4 4"/><path d="M5 4h14"/>',
   image:
     '<rect x="3.5" y="4.5" width="17" height="15" rx="2"/><circle cx="9" cy="10" r="1.6"/><path d="m4.5 17 4.7-4.7L13 16l2.5-2.5 4 4"/>',
   exchange:

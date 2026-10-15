@@ -12,6 +12,7 @@ import { CategoriesModule } from './modules/categories/categories.module';
 import { CompaniesModule } from './modules/companies/companies.module';
 import { CurrenciesModule } from './modules/currencies/currencies.module';
 import { CustomersModule } from './modules/customers/customers.module';
+import { DataTransferModule } from './modules/data-transfer/data-transfer.module';
 import { ExpensesModule } from './modules/expenses/expenses.module';
 import { HealthModule } from './modules/health/health.module';
 import { InventoryModule } from './modules/inventory/inventory.module';
@@ -47,6 +48,7 @@ import { PrismaModule } from './prisma/prisma.module';
     CategoriesModule,
     SuppliersModule,
     CustomersModule,
+    DataTransferModule,
     ProductsModule,
     CurrenciesModule,
     RatesModule,
