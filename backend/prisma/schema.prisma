@@ -138,6 +138,7 @@ model CompanyPreference {
   conversionCurrencies String? // JSON con las monedas (ISO, ej. ["USD","COP"]) cuyas conversiones ve el cajero; null = ninguna
   showBcvPrice  Boolean? // Mostrar debajo de cada monto el precio en dolares a la tasa oficial del BCV; null = no
   chargeRateKey String? // Tasa del dolar con la que el cajero cobra (`BCV_USD` o `CUSTOM_USD`); null = la activa
+  posView       String? // cards | table | columns: como lista el catalogo el punto de venta; null = cards
   updatedAt     DateTime @updatedAt
 
   company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)

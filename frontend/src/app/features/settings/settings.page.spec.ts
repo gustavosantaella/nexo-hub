@@ -43,6 +43,9 @@ const SHOW_BCV_PRICE_KEY = 'nexo-hub.show-bcv-price';
 /** Copia local en el navegador de la tasa con la que cobra el cajero. */
 const CHARGE_RATE_KEY = 'nexo-hub.charge-rate';
 
+/** Copia local en el navegador de la vista del catálogo del cajero. */
+const POS_VIEW_KEY = 'nexo-hub.pos-view';
+
 /**
  * Línea del dólar del BCV que la pantalla usa para su vista previa: en el servicio
  * real sale de la tasa cargada, aquí la fija cada prueba (por defecto, sin tasa).
@@ -185,6 +188,7 @@ describe('SettingsPage (pestañas de configuración)', () => {
     localStorage.removeItem(CONVERSION_CURRENCIES_KEY);
     localStorage.removeItem(SHOW_BCV_PRICE_KEY);
     localStorage.removeItem(CHARGE_RATE_KEY);
+    localStorage.removeItem(POS_VIEW_KEY);
 
     // Cada prueba arranca sin permiso de administración y con los dobles limpios.
     authStub.canManage.set(false);
@@ -227,6 +231,7 @@ describe('SettingsPage (pestañas de configuración)', () => {
     localStorage.removeItem(CONVERSION_CURRENCIES_KEY);
     localStorage.removeItem(SHOW_BCV_PRICE_KEY);
     localStorage.removeItem(CHARGE_RATE_KEY);
+    localStorage.removeItem(POS_VIEW_KEY);
     authStub.canManage.set(false);
     ratesStub.rates.set([]);
     ratesStub.currencies.set([]);
@@ -348,6 +353,38 @@ describe('SettingsPage (pestañas de configuración)', () => {
     fixture.detectChanges();
 
     expect(panelButton('Panel lateral').getAttribute('aria-pressed')).toBe('true');
+  });
+
+  it('el admin elige la vista del catálogo del cajero (tarjetas, tabla o columnas)', () => {
+    const http = TestBed.inject(HttpTestingController);
+    authStub.canManage.set(true);
+    fixture.detectChanges();
+    tab('Cajero').click();
+    fixture.detectChanges();
+
+    expect(panel().textContent).toContain('Vista del catálogo');
+    expect(panelButton('Tarjetas').getAttribute('aria-pressed')).toBe('true');
+
+    panelButton('Tabla').click();
+    fixture.detectChanges();
+
+    expect(panelButton('Tabla').getAttribute('aria-pressed')).toBe('true');
+    expect(localStorage.getItem(POS_VIEW_KEY)).toBe('table');
+
+    const request = http.expectOne({
+      method: 'PATCH',
+      url: `${environment.apiUrl}/preferences`,
+    });
+    expect(request.request.body.posView).toBe('table');
+    request.flush({
+      tipPercent: 10,
+      dialogView: 'modal',
+      priceCurrency: null,
+      conversionCurrencies: null,
+      showBcvPrice: false,
+      chargeRateKey: null,
+      posView: 'table',
+    });
   });
 
   it('guarda la propina sugerida de la empresa solo al pulsar «Guardar cambios»', () => {

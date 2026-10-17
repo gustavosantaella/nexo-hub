@@ -226,6 +226,8 @@ export class ProductsService {
         id: true,
         sku: true,
         name: true,
+        // La busqueda del POS tambien mira la descripcion y la categoria.
+        description: true,
         price: true,
         // El costo viaja con las opciones para que el formulario de menus pueda
         // costear la receta en vivo (producto x cantidad).
@@ -247,6 +249,8 @@ export class ProductsService {
         unitPriceEntered: true,
         imageUrl: true,
         categoryId: true,
+        // Nombre de la categoria para buscarla sin depender de otra peticion.
+        category: { select: { id: true, name: true } },
       },
       orderBy: { name: 'asc' },
     });

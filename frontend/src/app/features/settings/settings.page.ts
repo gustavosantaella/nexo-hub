@@ -51,6 +51,7 @@ import {
   normalizeTipPercent,
   type ChargeRateKey,
   type DialogView,
+  type PosView,
 } from '../../core/services/preferences.service';
 import { ThemeService, type Theme } from '../../core/services/theme.service';
 import { RatesService } from '../../core/services/rates.service';
@@ -264,6 +265,52 @@ interface CurrencyRow {
 
       <!-- Sección: Cajero -->
       @if (section() === 'pos') {
+
+        <!-- Vista del catálogo: el admin decide cómo lista el POS los productos
+             y los menús (tarjetas, tabla o columnas sin foto). -->
+        @if (canManage()) {
+          <section class="card mb-4">
+            <div class="card-header">
+              <div>
+                <h2 class="text-sm font-semibold text-slate-900">Vista del catálogo</h2>
+                <p class="mt-0.5 text-xs text-slate-500">
+                  Cómo lista el punto de venta los productos y los menús. Se aplica al
+                  instante y se guarda para toda la empresa: el cajero que entra desde otro
+                  equipo recibe la misma vista.
+                </p>
+              </div>
+              <span class="badge bg-slate-100 text-slate-600">{{ posViewLabel() }}</span>
+            </div>
+
+            <div class="card-body grid gap-3 sm:grid-cols-3">
+              @for (option of posViewOptions; track option.value) {
+                <button
+                  type="button"
+                  class="flex items-start gap-3 rounded-xl border p-3 text-left transition"
+                  [class]="
+                    posView() === option.value
+                      ? 'border-brand-400 bg-brand-50/60 ring-2 ring-brand-200'
+                      : 'border-slate-200 hover:border-brand-300 hover:bg-slate-50'
+                  "
+                  [attr.aria-pressed]="posView() === option.value"
+                  (click)="setPosView(option.value)"
+                >
+                  <span class="flex h-9 w-9 flex-none items-center justify-center rounded-lg bg-white shadow-sm">
+                    <app-icon
+                      [name]="option.icon"
+                      size="h-5 w-5"
+                      [class]="posView() === option.value ? 'text-brand-600' : 'text-slate-400'"
+                    />
+                  </span>
+                  <span>
+                    <span class="block text-sm font-semibold text-slate-800">{{ option.label }}</span>
+                    <span class="mt-0.5 block text-xs text-slate-500">{{ option.hint }}</span>
+                  </span>
+                </button>
+              }
+            </div>
+          </section>
+        }
 
         <!-- Moneda en la que el cajero ve los precios: el sistema los convierte
              con las tasas configuradas y los muestra en esa moneda. -->
@@ -1620,7 +1667,7 @@ export class SettingsPage implements OnInit {
       value: 'pos',
       label: 'Cajero',
       icon: 'shopping-cart',
-      hint: 'Propina sugerida, moneda, conversiones, precio en dólares BCV y tasa de cobro del cajero.',
+      hint: 'Vista del catálogo, propina sugerida, moneda, conversiones, precio en dólares BCV y tasa de cobro del cajero.',
     },
     {
       value: 'company',
@@ -1729,6 +1776,45 @@ export class SettingsPage implements OnInit {
   );
 
   // ------------------------------- Cajero (POS) ------------------------------
+  /**
+   * Cómo lista el catálogo el punto de venta. Es una preferencia de la empresa y
+   * se guarda al elegirla (como la presentación de los formularios), sin esperar
+   * al botón de la pestaña Cajero.
+   */
+  readonly posView = this.preferences.posView;
+
+  /** Vistas del catálogo que puede elegir el admin. */
+  readonly posViewOptions: {
+    value: PosView;
+    label: string;
+    hint: string;
+    icon: string;
+  }[] = [
+    {
+      value: 'cards',
+      label: 'Tarjetas',
+      hint: 'Productos con foto en una grilla cómoda para tocar.',
+      icon: 'grid',
+    },
+    {
+      value: 'table',
+      label: 'Tabla',
+      hint: 'Listado compacto de 20 artículos por página.',
+      icon: 'table',
+    },
+    {
+      value: 'columns',
+      label: 'Columnas',
+      hint: 'Sin fotos: columnas de 10 artículos, uno debajo del otro.',
+      icon: 'menu',
+    },
+  ];
+
+  /** Nombre de la vista del catálogo elegida (chip de la cabecera). */
+  readonly posViewLabel = computed(
+    () => this.posViewOptions.find((option) => option.value === this.posView())?.label ?? '',
+  );
+
   /**
    * Propina sugerida guardada en la empresa: la que el POS propone en cada venta
    * nueva. Lo que se elige en la pantalla vive en `tipDraft` hasta pulsar «Guardar
@@ -2405,6 +2491,16 @@ export class SettingsPage implements OnInit {
   setDialogView(view: DialogView): void {
     if (this.dialogView() === view) return;
     this.preferences.setDialogView(view);
+  }
+
+  /**
+   * Cambia la vista del catálogo del cajero (tarjetas, tabla o columnas). Se
+   * aplica al instante y viaja a la empresa, así que el POS de cualquier equipo
+   * la recibe al actualizar sus preferencias.
+   */
+  setPosView(view: PosView): void {
+    if (this.posView() === view) return;
+    this.preferences.setPosView(view);
   }
 
   // --------------------------------- Cajero ----------------------------------

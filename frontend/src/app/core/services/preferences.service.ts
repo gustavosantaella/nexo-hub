@@ -6,10 +6,11 @@ import type {
   ChargeRateKey,
   CompanyPreferences,
   DialogView,
+  PosView,
   UpdatePreferencesPayload,
 } from '../models/api.model';
 
-export type { ChargeRateKey, DialogView };
+export type { ChargeRateKey, DialogView, PosView };
 
 /** Tasas del dólar que el cajero puede fijar como tasa de cobro (igual que el API). */
 export const CHARGE_RATE_KEYS: readonly ChargeRateKey[] = ['BCV_USD', 'CUSTOM_USD'];
@@ -17,8 +18,15 @@ export const CHARGE_RATE_KEYS: readonly ChargeRateKey[] = ['BCV_USD', 'CUSTOM_US
 /** Vistas soportadas (se usan también para validar lo guardado). */
 export const DIALOG_VIEWS: readonly DialogView[] = ['modal', 'sidebar'];
 
+/** Presentaciones del catálogo del cajero y su valor de fábrica. */
+export const POS_VIEWS: readonly PosView[] = ['cards', 'table', 'columns'];
+export const DEFAULT_POS_VIEW: PosView = 'cards';
+
 /** Clave de `localStorage` con la presentación elegida. */
 const DIALOG_VIEW_KEY = 'nexo-hub.dialog-view';
+
+/** Clave de `localStorage` con la presentación del catálogo del cajero. */
+const POS_VIEW_KEY = 'nexo-hub.pos-view';
 
 /** Clave de `localStorage` con la propina sugerida del punto de venta. */
 const TIP_PERCENT_KEY = 'nexo-hub.tip-percent';
@@ -87,6 +95,18 @@ export function normalizeConversionCurrencies(value: unknown): string[] | null {
  */
 export function normalizeShowBcvPrice(value: unknown): boolean {
   return value === true || value === 'true' || value === 1 || value === '1';
+}
+
+/**
+ * Deja la presentación del catálogo del cajero en una de las vistas
+ * soportadas (`cards`, `table`, `columns`) o en `null` cuando no se eligió
+ * ninguna: sin elección se usan las tarjetas.
+ */
+export function normalizePosView(value: unknown): PosView | null {
+  const view = String(value ?? '')
+    .trim()
+    .toLowerCase();
+  return (POS_VIEWS as readonly string[]).includes(view) ? (view as PosView) : null;
 }
 
 /**
@@ -194,6 +214,19 @@ function storedShowBcvPrice(): boolean {
 function storedChargeRateKey(): ChargeRateKey | null {
   try {
     return normalizeChargeRateKey(localStorage.getItem(CHARGE_RATE_KEY));
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Copia local de la vista del catálogo del cajero (`null` = tarjetas). El
+ * arranque pinta con ella antes de que conteste el servidor; al iniciar sesión,
+ * lo que responde el servidor manda.
+ */
+function storedPosView(): PosView | null {
+  try {
+    return normalizePosView(localStorage.getItem(POS_VIEW_KEY));
   } catch {
     return null;
   }
@@ -318,6 +351,20 @@ export class PreferencesService {
    */
   readonly chargeRateKey = this._chargeRateKey.asReadonly();
 
+  private readonly _posView = signal<PosView | null>(storedPosView());
+
+  /**
+   * Cómo lista el catálogo el punto de venta (`cards`, `table` o `columns`).
+   *
+   * Es una preferencia de la **empresa**: el admin la elige en Configuración →
+   * Cajero y el POS la aplica al personal que cobra, también en otros equipos.
+   * Sin configurar se usan las tarjetas (`cards`).
+   */
+  readonly posView = computed(() => this._posView() ?? DEFAULT_POS_VIEW);
+
+  /** Presentación guardada explícitamente (`null` = tarjetas por defecto). */
+  readonly storedPosView = this._posView.asReadonly();
+
   /**
    * Trae las preferencias de la empresa activa (login, registro, cambio de
    * empresa o sesión recuperada al abrir la aplicación), las aplica y las deja
@@ -371,6 +418,7 @@ export class PreferencesService {
     this._conversionCurrencies.set(null);
     this._showBcvPrice.set(false);
     this._chargeRateKey.set(null);
+    this._posView.set(null);
     try {
       localStorage.removeItem(DIALOG_VIEW_KEY);
       localStorage.removeItem(TIP_PERCENT_KEY);
@@ -378,6 +426,7 @@ export class PreferencesService {
       localStorage.removeItem(CONVERSION_CURRENCIES_KEY);
       localStorage.removeItem(SHOW_BCV_PRICE_KEY);
       localStorage.removeItem(CHARGE_RATE_KEY);
+      localStorage.removeItem(POS_VIEW_KEY);
     } catch {
       /* almacenamiento no disponible (modo privado) */
     }
@@ -439,6 +488,15 @@ export class PreferencesService {
   }
 
   /**
+   * Cambia (y persiste) cómo lista el catálogo el punto de venta. Viaja a la
+   * empresa, así que el cajero que entra desde otro equipo recibe la misma vista.
+   */
+  setPosView(view: PosView): void {
+    this._posView.set(normalizePosView(view));
+    this.save();
+  }
+
+  /**
    * Cambia (y persiste) las preferencias del punto de venta de una sola vez: la
    * propina sugerida, la moneda en la que el cajero ve los precios, las
    * conversiones que puede ver debajo de cada monto, si además ve el precio en
@@ -480,6 +538,7 @@ export class PreferencesService {
     );
     this._showBcvPrice.set(normalizeShowBcvPrice(preferences?.showBcvPrice));
     this._chargeRateKey.set(normalizeChargeRateKey(preferences?.chargeRateKey));
+    this._posView.set(normalizePosView(preferences?.posView));
     this.cache();
   }
 
@@ -499,6 +558,8 @@ export class PreferencesService {
       conversionCurrencies: this._conversionCurrencies(),
       showBcvPrice: this._showBcvPrice(),
       chargeRateKey: this._chargeRateKey(),
+      // Sin elección no se manda: el servidor la deja en `null` (tarjetas).
+      ...(this._posView() ? { posView: this._posView() } : {}),
     };
     this.http
       .patch<CompanyPreferences>(this.baseUrl, payload)
@@ -527,6 +588,9 @@ export class PreferencesService {
       const chargeRate = this._chargeRateKey();
       if (chargeRate) localStorage.setItem(CHARGE_RATE_KEY, chargeRate);
       else localStorage.removeItem(CHARGE_RATE_KEY);
+      const posView = this._posView();
+      if (posView) localStorage.setItem(POS_VIEW_KEY, posView);
+      else localStorage.removeItem(POS_VIEW_KEY);
     } catch {
       /* almacenamiento no disponible (modo privado) */
     }

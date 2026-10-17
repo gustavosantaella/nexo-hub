@@ -13,7 +13,7 @@ import {
   Min,
 } from 'class-validator';
 import type { DialogView } from '../../../common/constants/enums';
-import { CHARGE_RATE_KEYS, DIALOG_VIEWS } from '../../../common/constants/enums';
+import { CHARGE_RATE_KEYS, DIALOG_VIEWS, POS_VIEWS } from '../../../common/constants/enums';
 
 /**
  * Preferencias de interfaz de la EMPRESA activa (Configuracion).
@@ -108,4 +108,17 @@ export class UpdatePreferencesDto {
     message: `La tasa de cobro debe ser ${CHARGE_RATE_KEYS.join(' o ')}`,
   })
   chargeRateKey?: string | null;
+
+  @ApiPropertyOptional({
+    description:
+      'Como lista el catalogo el punto de venta: tarjetas (`cards`), tabla de 20 por pagina (`table`) o columnas de 10 sin foto (`columns`). `null` = tarjetas',
+    enum: POS_VIEWS,
+    example: 'cards',
+    nullable: true,
+  })
+  @IsOptional()
+  @IsIn(POS_VIEWS, {
+    message: `La vista del cajero debe ser ${POS_VIEWS.join(', ')}`,
+  })
+  posView?: string | null;
 }

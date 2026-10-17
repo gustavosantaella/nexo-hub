@@ -152,6 +152,20 @@ export type DialogView = (typeof DialogView)[keyof typeof DialogView];
 export const DIALOG_VIEWS: DialogView[] = Object.values(DialogView);
 
 /**
+ * Como lista el catalogo el punto de venta (Configuracion > Cajero):
+ * - `cards`: tarjetas con foto.
+ * - `table`: tabla de 20 articulos por pagina.
+ * - `columns`: listas sin foto, en columnas de 10 articulos.
+ */
+export const PosView = {
+  CARDS: 'cards',
+  TABLE: 'table',
+  COLUMNS: 'columns',
+} as const;
+export type PosView = (typeof PosView)[keyof typeof PosView];
+export const POS_VIEWS: PosView[] = Object.values(PosView);
+
+/**
  * Tasas del dolar (bolivares por 1 USD) que el administrador puede fijar como
  * **tasa de cobro** del cajero (Configuracion > Cajero).
  *

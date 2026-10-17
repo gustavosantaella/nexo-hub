@@ -95,11 +95,16 @@ import { RateConversionsComponent } from '../../shared/components/rate-conversio
 import { EmptyStateComponent, LoaderComponent } from '../../shared/components/feedback.component';
 import { IconComponent } from '../../shared/components/icon.component';
 import { MoneyComponent } from '../../shared/components/money.component';
+import { SidebarComponent } from '../../shared/components/sidebar.component';
 
 /** Mesas que dibuja el mapa del salón al abrir la vista (se ajusta en pantalla). */
 const DEFAULT_TABLE_COUNT = 12;
 /** Tope de mesas numeradas del mapa. */
 const MAX_TABLE_COUNT = 60;
+/** Artículos que muestra cada página de la vista de tabla del POS. */
+const POS_TABLE_PAGE_SIZE = 20;
+/** Artículos por columna en la vista de columnas del POS (sin fotos). */
+const POS_COLUMN_ROWS = 10;
 
 /**
  * Estados por los que pasa un pedido hasta darse por terminado. El backend solo
@@ -151,6 +156,39 @@ interface TableCell {
 }
 
 /**
+ * Fila del catálogo del POS. Unifica productos y menús para que las vistas de
+ * tarjetas, tabla y columnas (y los resultados de la búsqueda global) pinten los
+ * dos tipos con la misma estructura.
+ */
+interface PosCatalogRow {
+  kind: 'product' | 'menu';
+  id: string;
+  name: string;
+  code: string;
+  category: string;
+  imageUrl: string | null;
+  /** Texto del tooltip de la tarjeta (nombre o motivo de no disponibilidad). */
+  title: string;
+  /** Precio que se cobra al tocar la fila (unidad suelta o menú). */
+  priceText: string;
+  /** Unidad de venta del precio (`UND`, `KG`...), vacía en los menús. */
+  unitLabel: string;
+  /** Línea secundaria: caja, ingredientes o aviso de presentación. */
+  detail: string | null;
+  /** Aviso inferior de las tarjetas (ej. elegir caja o unidad). */
+  note: string | null;
+  stockText: string;
+  stockHint: string;
+  /** Clases del distintivo de stock (agotado en rojo). */
+  stockClass: string;
+  available: boolean;
+  kindLabel: string;
+  orderedText: string | null;
+  product?: ProductOption;
+  menu?: MenuOption;
+}
+
+/**
  * Cuenta que se muestra en el carrito. Al agregar/cobrar una mesa no solo
  * entran las líneas nuevas: también los productos ya cargados del pedido, su
  * descuento, IGV y propina, y lo que el cliente ya pagó.
@@ -199,6 +237,7 @@ interface BillTotals {
     RateConversionsComponent,
     LoaderComponent,
     EmptyStateComponent,
+    SidebarComponent,
   ],
   changeDetection: ChangeDetectionStrategy.OnPush,
   template: `
@@ -228,7 +267,7 @@ interface BillTotals {
                   ? 'bg-white text-brand-700 shadow-sm'
                   : 'text-slate-500 hover:text-slate-700'
               "
-              (click)="tab.set('tables')"
+              (click)="tab.set('tables'); cartOpen.set(false)"
             >
               <app-icon name="table" size="h-4 w-4" />
               Mesas
@@ -246,8 +285,9 @@ interface BillTotals {
             <input
               class="input pl-9"
               type="search"
-              placeholder="Buscar por nombre o SKU y pulsar Enter…"
-              [(ngModel)]="search"
+              placeholder="Buscar por nombre, SKU, código, categoría, menú…"
+              [ngModel]="search"
+              (ngModelChange)="onSearchChange($event)"
               (keyup.enter)="addBySearch()"
             />
           </div>
@@ -256,7 +296,7 @@ interface BillTotals {
             class="input w-44"
             aria-label="Filtrar por categoría"
             [ngModel]="categoryId"
-            (ngModelChange)="categoryId = $event"
+            (ngModelChange)="setCategory($event)"
           >
             <option value="">Todas las categorías</option>
             @for (category of categories(); track category.id) {
@@ -268,7 +308,8 @@ interface BillTotals {
             <input
               type="checkbox"
               class="h-4 w-4 rounded border-slate-300"
-              [(ngModel)]="onlyAvailable"
+              [ngModel]="onlyAvailable"
+              (ngModelChange)="setOnlyAvailable($event)"
             />
             Con stock
           </label>
@@ -311,7 +352,7 @@ interface BillTotals {
         </div>
       </div>
       @if (tab() === 'sale') {
-        <div class="grid min-h-0 flex-1 items-stretch gap-3 xl:grid-cols-[minmax(0,1fr)_360px]">
+        <div class="flex min-h-0 flex-1 flex-col gap-3">
           <!-- Grilla de productos del inventario -->
           <section class="card flex min-h-0 flex-col overflow-hidden">
             <div class="card-header shrink-0 flex flex-wrap items-center justify-between gap-2">
@@ -325,7 +366,7 @@ interface BillTotals {
                         ? 'bg-white text-brand-700 shadow-sm'
                         : 'text-slate-500 hover:text-slate-700'
                     "
-                    (click)="gridKind.set('products')"
+                    (click)="setGridKind('products')"
                   >
                     Productos
                   </button>
@@ -337,7 +378,7 @@ interface BillTotals {
                         ? 'bg-white text-brand-700 shadow-sm'
                         : 'text-slate-500 hover:text-slate-700'
                     "
-                    (click)="gridKind.set('menus')"
+                    (click)="setGridKind('menus')"
                   >
                     Menús
                     @if (menus().length > 0) {
@@ -346,7 +387,9 @@ interface BillTotals {
                   </button>
                 </div>
                 <p class="text-xs text-slate-500">
-                  @if (gridKind() === 'products') {
+                  @if (isSearching) {
+                    {{ catalogRows.length }} resultado(s) entre productos y menús
+                  } @else if (gridKind() === 'products') {
                     {{ filteredProducts.length }} de {{ products().length }} productos del inventario
                   } @else {
                     {{ filteredMenus.length }} de {{ menus().length }} menús de la carta
@@ -359,7 +402,7 @@ interface BillTotals {
                     class="input w-44"
                     aria-label="Filtrar menús por categoría"
                     [ngModel]="menuCategoryId"
-                    (ngModelChange)="menuCategoryId = $event"
+                    (ngModelChange)="setMenuCategory($event)"
                   >
                     <option value="">Todas las categorías</option>
                     @for (category of menuCategories(); track category.id) {
@@ -368,195 +411,344 @@ interface BillTotals {
                   </select>
                 }
                 @if (search.trim()) {
-                  <button type="button" class="btn-ghost btn-sm" (click)="search = ''">
+                  <button type="button" class="btn-ghost btn-sm" (click)="clearSearch()">
                     <app-icon name="close" size="h-4 w-4" />
                     Limpiar búsqueda
                   </button>
                 }
               </div>
             </div>
-
-            @if (gridKind() === 'products') {
             @if (loading()) {
-              <app-loader label="Cargando productos…" />
-            } @else if (filteredProducts.length === 0) {
+              <app-loader label="Cargando catálogo…" />
+            } @else if (catalogRows.length === 0) {
               <app-empty-state
-                title="Sin productos"
-                message="Ajusta la búsqueda, la categoría o el filtro de stock y revisa el inventario."
-                icon="box"
+                [title]="isSearching ? 'Sin resultados' : gridKind() === 'menus' ? 'Sin menús' : 'Sin productos'"
+                [message]="emptyCatalogMessage"
+                [icon]="isSearching ? 'search' : gridKind() === 'menus' ? 'menu' : 'box'"
               />
             } @else {
-              <div
-                class="card-body grid min-h-0 flex-1 grid-cols-2 content-start gap-3 overflow-y-auto sm:grid-cols-3 2xl:grid-cols-4"
-              >
-                @for (product of filteredProducts; track product.id) {
-                  <div
-                    class="group flex flex-col overflow-hidden rounded-xl border border-slate-200 bg-white transition hover:border-brand-400 hover:shadow-card"
-                  >
-                    <button
-                      type="button"
-                      class="flex flex-1 flex-col text-left"
-                      [title]="product.stock > 0 ? product.name : product.name + ' (sin stock)'"
-                      (click)="addProduct(product)"
-                    >
-                      <span
-                        class="relative flex h-24 w-full items-center justify-center overflow-hidden bg-slate-100"
+              @switch (posView()) {
+                <!-- Tabla: 20 artículos por página, con el tipo a la vista. -->
+                @case ('table') {
+                  <div class="min-h-0 flex-1 overflow-auto pb-20 [scrollbar-gutter:stable]">
+                    <table class="min-w-full divide-y divide-slate-200 text-left text-sm">
+                      <thead
+                        class="sticky top-0 z-10 bg-slate-50 text-[11px] uppercase tracking-wide text-slate-500"
                       >
-                        @if (product.imageUrl) {
-                          <img
-                            class="h-full w-full object-cover transition duration-300 group-hover:scale-105"
-                            [src]="product.imageUrl"
-                            [alt]="product.name"
-                            loading="lazy"
-                          />
-                        } @else {
-                          <app-icon name="box" size="h-8 w-8" class="text-slate-300" />
+                        <tr>
+                          <th class="px-3 py-2 font-semibold">Artículo</th>
+                          <th class="px-3 py-2 font-semibold">Código / SKU</th>
+                          <th class="px-3 py-2 font-semibold">Categoría</th>
+                          <th class="px-3 py-2 font-semibold">Stock</th>
+                          <th class="px-3 py-2 text-right font-semibold">Precio</th>
+                        </tr>
+                      </thead>
+                      <tbody class="divide-y divide-slate-100 bg-white">
+                        @for (row of pagedCatalogRows; track row.kind + row.id) {
+                          <tr
+                            class="cursor-pointer transition hover:bg-brand-50/50"
+                            [title]="row.title"
+                            (click)="addCatalogRow(row)"
+                          >
+                            <td class="px-3 py-2">
+                              <span class="flex min-w-0 items-center gap-2">
+                                <span
+                                  class="badge flex-none"
+                                  [class]="
+                                    row.kind === 'menu'
+                                      ? 'bg-amber-100 text-amber-700'
+                                      : 'bg-slate-100 text-slate-600'
+                                  "
+                                >
+                                  {{ row.kindLabel }}
+                                </span>
+                                <span class="min-w-0">
+                                  <span
+                                    data-pos-table-name
+                                    class="block break-words font-medium text-slate-800"
+                                  >
+                                    {{ row.name }}
+                                  </span>
+                                  @if (row.orderedText) {
+                                    <span class="block text-[11px] font-semibold text-amber-700">
+                                      {{ row.orderedText }}
+                                    </span>
+                                  }
+                                </span>
+                              </span>
+                            </td>
+                            <td class="px-3 py-2 text-xs uppercase tracking-wide text-slate-500">
+                              {{ row.code }}
+                            </td>
+                            <td class="px-3 py-2 text-slate-600">
+                              {{ row.category || 'Sin categoría' }}
+                            </td>
+                            <td class="px-3 py-2">
+                              <span class="text-xs font-medium" [class]="row.stockClass">
+                                {{ row.stockText }}
+                              </span>
+                            </td>
+                            <td class="px-3 py-2 text-right">
+                              <span class="font-semibold text-slate-900">{{ row.priceText }}</span>
+                              @if (row.unitLabel) {
+                                <span class="block text-[11px] text-slate-400">
+                                  / {{ row.unitLabel }}
+                                </span>
+                              }
+                            </td>
+                          </tr>
                         }
-                        <span
-                          class="badge absolute right-1.5 top-1.5 bg-white/90"
-                          [class]="stockClass(product)"
-                          [title]="
-                            isBoxProduct(product)
-                              ? soldUnitLabel(product) + ' sueltas en inventario'
-                              : 'Stock disponible'
-                          "
+                      </tbody>
+                    </table>
+                  </div>
+                  @if (catalogRows.length > tablePageSize) {
+                    <div
+                      class="flex flex-wrap items-center justify-between gap-2 border-t border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-500"
+                    >
+                      <span>{{ tableRangeLabel }}</span>
+                      <div class="flex items-center gap-2">
+                        <button
+                          type="button"
+                          class="btn-secondary btn-sm"
+                          [disabled]="currentTablePage === 1"
+                          (click)="previousTablePage()"
                         >
-                          {{ product.stock }} {{ soldUnitLabel(product) }}
+                          Anterior
+                        </button>
+                        <span class="font-medium text-slate-600">
+                          Página {{ currentTablePage }} de {{ tablePageCount }}
                         </span>
-                      </span>
-                      <span class="flex flex-1 flex-col gap-0.5 p-2.5">
-                        <span class="line-clamp-2 text-sm font-medium leading-tight text-slate-800">
-                          {{ product.name }}
-                        </span>
-                        <span class="text-[11px] uppercase tracking-wide text-slate-400">
-                          {{ product.sku }}
-                        </span>
-                        <span class="mt-1 text-sm font-semibold text-slate-900">
-                          {{ looseUnitPriceText(product) }}
-                          <span class="text-xs font-normal text-slate-400">
-                            / {{ soldUnitLabel(product) }}
+                        <button
+                          type="button"
+                          class="btn-secondary btn-sm"
+                          [disabled]="currentTablePage === tablePageCount"
+                          (click)="nextTablePage()"
+                        >
+                          Siguiente
+                        </button>
+                      </div>
+                    </div>
+                  }
+                }
+
+                <!-- Columnas: sin foto, 10 artículos por columna y en orden. -->
+                @case ('columns') {
+                  <div class="min-h-0 flex-1 overflow-auto pb-20 [scrollbar-gutter:stable]">
+                    <div
+                      class="grid content-start gap-2 p-2"
+                      [style.grid-template-rows]="'repeat(' + columnRows + ', minmax(0, auto))'"
+                      style="grid-auto-flow: column; grid-auto-columns: minmax(15rem, 1fr)"
+                    >
+                      @for (row of catalogRows; track row.kind + row.id) {
+                        <button
+                          type="button"
+                          class="flex min-h-12 items-center justify-between gap-2 rounded-lg border border-slate-200 bg-white px-2.5 py-2 text-left transition hover:border-brand-400 hover:bg-brand-50/40"
+                          [title]="row.title"
+                          (click)="addCatalogRow(row)"
+                        >
+                          <span class="min-w-0 flex-1">
+                            <span class="flex min-w-0 items-start gap-1.5">
+                              <span
+                                class="flex-none text-[10px] font-semibold uppercase tracking-wide"
+                                [class]="row.kind === 'menu' ? 'text-amber-600' : 'text-slate-400'"
+                              >
+                                {{ row.kindLabel }}
+                              </span>
+                              <span
+                                data-pos-column-name
+                                class="min-w-0 break-words text-sm font-medium leading-tight text-slate-800"
+                              >
+                                {{ row.name }}
+                              </span>
+                            </span>
+                            <span
+                              data-pos-column-code
+                              class="block break-words text-[11px] leading-tight text-slate-400"
+                            >
+                              {{ row.code }}@if (row.category) { · {{ row.category }} }
+                            </span>
                           </span>
-                        </span>
-                        @if (isBoxProduct(product)) {
-                          <span class="text-[11px] font-medium text-brand-700">
-                            Caja de {{ boxUnitsOf(product) }}: {{ boxPriceText(product) }}
+                          <span class="min-w-0 max-w-[45%] flex-none text-right">
+                            <span
+                              data-pos-column-price
+                              class="block break-words text-sm font-semibold leading-tight text-slate-900"
+                            >
+                              {{ row.priceText }}
+                            </span>
+                            <span class="block text-[10px] font-medium" [class]="row.stockClass">
+                              {{ row.stockText }}
+                            </span>
                           </span>
+                        </button>
+                      }
+                    </div>
+                  </div>
+                }
+
+                <!-- Tarjetas: la vista de siempre, ahora también para los resultados
+                     de menús y productos mezclados. -->
+                @default {
+                  <!-- Tarjetas compactas: 6 columnas en escritorio. -->
+                  <div
+                    data-pos-cards
+                    class="card-body grid min-h-0 flex-1 grid-cols-2 content-start gap-2 overflow-y-auto p-2 pb-20 [scrollbar-gutter:stable] sm:grid-cols-3 md:grid-cols-6"
+                  >
+                    @for (row of catalogRows; track row.kind + row.id) {
+                      <div
+                        class="group flex min-w-0 flex-col rounded-lg border border-slate-200 bg-white transition hover:border-brand-400 hover:shadow-card"
+                      >
+                        <button
+                          type="button"
+                          class="flex min-w-0 flex-1 flex-col text-left"
+                          [title]="row.title"
+                          (click)="addCatalogRow(row)"
+                        >
+                          <span
+                            data-pos-card-image
+                            class="relative flex h-20 w-full items-center justify-center overflow-hidden rounded-t-lg bg-slate-100"
+                          >
+                            @if (row.imageUrl) {
+                              <img
+                                class="h-full w-full object-cover transition duration-300 group-hover:scale-105"
+                                [src]="row.imageUrl"
+                                [alt]="row.name"
+                                loading="lazy"
+                              />
+                            } @else {
+                              <app-icon
+                                [name]="row.kind === 'menu' ? 'menu' : 'box'"
+                                size="h-6 w-6"
+                                class="text-slate-300"
+                              />
+                            }
+                            <span
+                              class="absolute right-1 top-1 rounded-full bg-white/90 px-1.5 text-[10px] font-semibold leading-4"
+                              [class]="row.stockClass"
+                              [title]="row.stockHint"
+                            >
+                              {{ row.stockText }}
+                            </span>
+                            <span
+                              class="absolute left-1 top-1 rounded-full bg-white/90 px-1.5 text-[9px] font-semibold uppercase leading-4 tracking-wide text-slate-500"
+                            >
+                              {{ row.kindLabel }}
+                            </span>
+                          </span>
+
+                          <span class="flex min-w-0 flex-1 flex-col gap-0.5 p-2">
+                            <span
+                              data-pos-card-name
+                              class="break-words text-xs font-medium leading-tight text-slate-800"
+                            >
+                              {{ row.name }}
+                            </span>
+                            <span
+                              data-pos-card-code
+                              class="break-words text-[10px] uppercase leading-tight tracking-wide text-slate-400"
+                            >
+                              {{ row.code }}@if (row.category) { · {{ row.category }} }
+                            </span>
+                            <span
+                              data-pos-card-price
+                              class="mt-0.5 break-words text-xs font-semibold leading-tight text-slate-900"
+                            >
+                              {{ row.priceText }}
+                              @if (row.unitLabel) {
+                                <span class="text-[10px] font-normal text-slate-400">
+                                  / {{ row.unitLabel }}
+                                </span>
+                              }
+                            </span>
+                            @if (row.detail) {
+                              <span class="break-words text-[10px] font-medium leading-tight text-brand-700">
+                                {{ row.detail }}
+                              </span>
+                            }
+                            @if (row.orderedText) {
+                              <span
+                                class="mt-0.5 break-words text-[10px] font-semibold leading-tight text-amber-700"
+                              >
+                                {{ row.orderedText }}
+                              </span>
+                            }
+                          </span>
+                        </button>
+                        @if (row.note) {
+                          <p class="mx-2 mb-2 break-words text-[10px] leading-tight text-slate-400">
+                            {{ row.note }}
+                          </p>
                         }
-                        @if (orderedUnitsOf(product.id); as ordered) {
-                          <span class="mt-0.5 text-[11px] font-semibold text-amber-700">
-                            Ya en la mesa: {{ ordered }}
-                          </span>
-                        }
-                      </span>
-                    </button>
-                    @if (isBoxProduct(product)) {
-                      <p class="mx-2.5 mb-2.5 text-[11px] leading-tight text-slate-400">
-                        Al agregarlo eliges caja o unidad
-                      </p>
+                      </div>
                     }
                   </div>
                 }
-              </div>
-            }
-            } @else {
-              @if (filteredMenus.length === 0) {
-                <app-empty-state
-                  title="Sin menús"
-                  message="Crea menús con su receta en Catálogo → Menús para venderlos aquí."
-                  icon="menu"
-                />
-              } @else {
-                <div
-                  class="card-body grid min-h-0 flex-1 grid-cols-2 content-start gap-3 overflow-y-auto sm:grid-cols-3 2xl:grid-cols-4"
-                >
-                  @for (menu of filteredMenus; track menu.id) {
-                    <div
-                      class="group flex flex-col overflow-hidden rounded-xl border border-slate-200 bg-white transition hover:border-brand-400 hover:shadow-card"
-                    >
-                      <button
-                        type="button"
-                        class="flex flex-1 flex-col text-left"
-                        [title]="menuTitle(menu)"
-                        (click)="addMenu(menu)"
-                      >
-                        <span class="relative flex h-24 w-full items-center justify-center overflow-hidden bg-slate-100">
-                          @if (menu.imageUrl) {
-                            <img class="h-full w-full object-cover" [src]="menu.imageUrl" [alt]="menu.name" />
-                          } @else {
-                            <app-icon name="menu" size="h-7 w-7" class="text-slate-300" />
-                          }
-                          <span
-                            class="absolute right-1.5 top-1.5 badge"
-                            [class]="menu.available ? 'bg-emerald-100 text-emerald-700' : 'bg-rose-100 text-rose-700'"
-                            [title]="menuStockHint(menu)"
-                          >
-                            {{ menuStockLabel(menu) }}
-                          </span>
-                        </span>
-                        <span class="flex flex-1 flex-col gap-0.5 p-2.5">
-                          <span class="line-clamp-2 text-sm font-medium leading-tight text-slate-800">
-                            {{ menu.name }}
-                          </span>
-                          <span class="text-[11px] uppercase tracking-wide text-slate-400">
-                            {{ menu.code }} · {{ menu.ingredients.length }} ingrediente(s)
-                          </span>
-                          <span class="mt-1 text-sm font-semibold text-slate-900">
-                            {{ money(menu.price) }}
-                          </span>
-                          @if (orderedMenusOf(menu.id); as ordered) {
-                            <span class="mt-0.5 text-[11px] font-semibold text-amber-700">
-                              Ya en la mesa: {{ ordered }}
-                            </span>
-                          }
-                        </span>
-                      </button>
-                    </div>
-                  }
-                </div>
               }
             }
           </section>
-          <!-- Carrito de la venta en curso -->
-          <aside class="card flex min-h-0 flex-col overflow-hidden">
-            <div class="card-header shrink-0 flex items-start justify-between gap-2">
-              <div>
-                <h2 class="text-sm font-semibold text-slate-900">
-                  {{ targetOrder() ? 'Agregar a ' + targetOrder()!.code : 'Venta actual' }}
-                </h2>
-                <p class="text-xs text-slate-500">
-                  @if (targetOrder(); as order) {
-                    {{ itemCount(order) }} ya en la mesa · {{ lines().length }} por agregar ·
-                    {{ totalUnits }} unidades
-                  } @else {
-                    {{ lines().length }} ítems · {{ totalUnits }} unidades
-                  }
-                </p>
-              </div>
-              <div class="flex gap-1">
-                @if (targetOrder()) {
-                  <button
-                    type="button"
-                    class="btn-ghost btn-sm"
-                    title="Salir del modo agregar"
-                    (click)="cancelAddMode()"
-                  >
-                    <app-icon name="close" size="h-4 w-4" />
-                  </button>
-                }
-                @if (lines().length > 0) {
-                  <button
-                    type="button"
-                    class="btn-ghost btn-sm text-rose-600"
-                    title="Vaciar el carrito"
-                    (click)="clearLines()"
-                  >
-                    <app-icon name="trash" size="h-4 w-4" />
-                  </button>
-                }
-              </div>
-            </div>
+          <!-- Botón flotante: abre la tarjeta de cobro como panel lateral. -->
+          <button
+            type="button"
+            data-pos-cart-toggle
+            class="fixed bottom-5 right-5 z-30 flex items-center gap-3 rounded-full bg-brand-600 px-4 py-3.5 text-white shadow-xl transition hover:bg-brand-700 focus:outline-none focus:ring-2 focus:ring-brand-300 focus:ring-offset-2 sm:bottom-6 sm:right-6"
+            [attr.aria-expanded]="cartOpen()"
+            aria-label="Abrir la tarjeta de cobro"
+            title="Abrir la tarjeta de cobro"
+            (click)="cartOpen.set(true)"
+          >
+            <span class="relative">
+              <app-icon name="receipt" size="h-6 w-6" />
+              @if (lines().length > 0) {
+                <span
+                  class="absolute -right-2.5 -top-2.5 flex h-5 min-w-5 items-center justify-center rounded-full bg-white px-1 text-[11px] font-bold leading-none text-brand-700"
+                >
+                  {{ lines().length }}
+                </span>
+              }
+            </span>
+            <span class="hidden text-left leading-tight sm:block">
+              <span class="block text-[10px] font-semibold uppercase tracking-wide text-white/70">
+                Cobro
+              </span>
+              <span class="block text-sm font-semibold">{{ money(bill.total) }}</span>
+            </span>
+          </button>
 
-            <div class="card-body flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto">
+          <!-- Carrito y cobro de la venta en curso: panel lateral. -->
+          <app-sidebar
+            [open]="cartOpen()"
+            [title]="targetOrder() ? 'Agregar a ' + targetOrder()!.code : 'Venta actual'"
+            [subtitle]="cartSubtitle"
+            size="md"
+            (closed)="cartOpen.set(false)"
+          >
+            <div class="space-y-3" data-pos-cart-panel>
+              @if (targetOrder() || lines().length > 0) {
+                <div class="flex flex-wrap items-center justify-end gap-1">
+                  @if (targetOrder()) {
+                    <button
+                      type="button"
+                      class="btn-ghost btn-sm"
+                      title="Salir del modo agregar"
+                      (click)="cancelAddMode()"
+                    >
+                      <app-icon name="close" size="h-4 w-4" />
+                      Salir del pedido
+                    </button>
+                  }
+                  @if (lines().length > 0) {
+                    <button
+                      type="button"
+                      class="btn-ghost btn-sm text-rose-600"
+                      title="Vaciar el carrito"
+                      (click)="clearLines()"
+                    >
+                      <app-icon name="trash" size="h-4 w-4" />
+                      Vaciar
+                    </button>
+                  }
+                </div>
+              }
+
               @if (targetOrder(); as order) {
                 <p class="rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-800">
                   Agregando al pedido {{ order.code }}
@@ -977,41 +1169,41 @@ interface BillTotals {
                  
                 }
               </div>
-
-              <div class="flex gap-2">
-                @if (targetOrder() && lines().length === 0) {
-                  <button
-                    type="button"
-                    class="btn-primary flex-1"
-                    [disabled]="!canCharge"
-                    (click)="submitSale(true)"
-                  >
-                    <app-icon name="money" size="h-4 w-4" />
-                    {{ saving() ? 'Procesando…' : chargeLabel }}
-                  </button>
-                } @else {
-                  <button
-                    type="button"
-                    class="btn-secondary flex-1"
-                    [disabled]="!canSave"
-                    (click)="submitSale(false)"
-                  >
-                    <app-icon name="plus" size="h-4 w-4" />
-                    {{ targetOrder() ? 'Agregar' : 'Guardar' }}
-                  </button>
-                  <button
-                    type="button"
-                    class="btn-primary flex-1"
-                    [disabled]="!canCharge"
-                    (click)="submitSale(true)"
-                  >
-                    <app-icon name="money" size="h-4 w-4" />
-                    {{ saving() ? 'Procesando…' : chargeLabel }}
-                  </button>
-                }
-              </div>
             </div>
-          </aside>
+
+            <div sidebarFooter class="flex w-full gap-2">
+              @if (targetOrder() && lines().length === 0) {
+                <button
+                  type="button"
+                  class="btn-primary flex-1"
+                  [disabled]="!canCharge"
+                  (click)="submitSale(true)"
+                >
+                  <app-icon name="money" size="h-4 w-4" />
+                  {{ saving() ? 'Procesando…' : chargeLabel }}
+                </button>
+              } @else {
+                <button
+                  type="button"
+                  class="btn-secondary flex-1"
+                  [disabled]="!canSave"
+                  (click)="submitSale(false)"
+                >
+                  <app-icon name="plus" size="h-4 w-4" />
+                  {{ targetOrder() ? 'Agregar' : 'Guardar' }}
+                </button>
+                <button
+                  type="button"
+                  class="btn-primary flex-1"
+                  [disabled]="!canCharge"
+                  (click)="submitSale(true)"
+                >
+                  <app-icon name="money" size="h-4 w-4" />
+                  {{ saving() ? 'Procesando…' : chargeLabel }}
+                </button>
+              }
+            </div>
+          </app-sidebar>
         </div>
       } @else {
         <!-- Mapa de mesas -->
@@ -1264,6 +1456,13 @@ export class PosComponent implements OnInit, OnDestroy {
   /** Presentación de los diálogos según la preferencia de la empresa. */
   readonly dialogView = this.preferences.dialogView;
 
+  /** Cómo lista el catálogo el POS: tarjetas, tabla (20/página) o columnas (10). */
+  readonly posView = this.preferences.posView;
+  readonly tablePageSize = POS_TABLE_PAGE_SIZE;
+  readonly columnRows = POS_COLUMN_ROWS;
+  /** Página de la vista de tabla (se reinicia al cambiar búsqueda o filtros). */
+  readonly tablePage = signal(1);
+
   readonly money = money;
   /** Presentacion del producto: precio por unidad y etiqueta de la unidad vendida. */
   readonly unitPriceOf = unitPriceOf;
@@ -1317,6 +1516,11 @@ export class PosComponent implements OnInit, OnDestroy {
   readonly saving = signal(false);
   readonly formError = signal<string | null>(null);
   readonly tab = signal<'sale' | 'tables'>('sale');
+  /**
+   * La tarjeta de cobro vive en un panel lateral que arranca cerrado y se abre
+   * con el botón flotante de factura: así el catálogo usa todo el ancho.
+   */
+  readonly cartOpen = signal(false);
   readonly cashOpen = signal(false);
   /**
    * Botón **Actualizar preferencias**: `true` mientras se están trayendo de nuevo
@@ -1351,6 +1555,11 @@ export class PosComponent implements OnInit, OnDestroy {
   onlyAvailable = true;
   /** Filtro de la grilla de menús. */
   menuCategoryId = '';
+
+  /** Búsqueda global: recorre productos y menús a la vez. */
+  get isSearching(): boolean {
+    return this.search.trim().length > 0;
+  }
 
   /** Cabecera de la venta nueva (no se usa al agregar a un pedido existente). */
   form: {
@@ -1518,23 +1727,81 @@ export class PosComponent implements OnInit, OnDestroy {
   //  GRILLA DE PRODUCTOS
   // ===========================================================================
 
+  /**
+   * Deja un texto en minúsculas y sin tildes para que la búsqueda encuentre
+   * «café» al escribir «cafe» y no dependa de mayúsculas.
+   */
+  private normalizeSearchText(value: string | null | undefined): string {
+    return String(value ?? '')
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .toLowerCase()
+      .trim();
+  }
+
+  /** Nombre de la categoría del producto (con su principal, si es subcategoría). */
+  categoryOfProduct(product: ProductOption): string {
+    const category = this.categories().find((item) => item.id === product.categoryId);
+    return category ? categoryOptionLabel(category) : (product.category?.name ?? '');
+  }
+
+  /** Nombre de la categoría del menú (con su principal, si es subcategoría). */
+  categoryOfMenu(menu: MenuOption): string {
+    const category = this.menuCategories().find((item) => item.id === menu.categoryId);
+    return category ? categoryOptionLabel(category) : (menu.category?.name ?? '');
+  }
+
+  /**
+   * El buscador del POS recorre TODO lo que identifica a un producto: nombre,
+   * SKU, descripción y categoría (incluida la principal de una subcategoría).
+   */
+  private productMatches(product: ProductOption, term: string): boolean {
+    const haystack = this.normalizeSearchText(
+      [
+        product.name,
+        product.sku,
+        product.description ?? '',
+        product.category?.name ?? '',
+        this.categoryOfProduct(product),
+      ].join(' '),
+    );
+    return haystack.includes(term);
+  }
+
+  /**
+   * Un menú se encuentra por nombre, código, descripción, categoría o por
+   * cualquiera de los productos de su receta: «carne» devuelve la parrilla.
+   */
+  private menuMatches(menu: MenuOption, term: string): boolean {
+    const haystack = this.normalizeSearchText(
+      [
+        menu.name,
+        menu.code,
+        menu.description ?? '',
+        menu.category?.name ?? '',
+        this.categoryOfMenu(menu),
+        ...menu.ingredients.map((ingredient) => ingredient.product?.name ?? ''),
+      ].join(' '),
+    );
+    return haystack.includes(term);
+  }
+
   /** Productos que cumplen la búsqueda, la categoría y el filtro de stock. */
   get filteredProducts(): ProductOption[] {
-    const term = this.search.trim().toLowerCase();
-    // Elegir una principal incluye lo agrupado en sus subcategorias.
-    const categoryIds = categoryScopeIds(this.categories(), this.categoryId);
+    const term = this.normalizeSearchText(this.search);
+    // Al buscar, el filtro de categoría de la pestaña oculta (menús) no debe
+    // limitar los productos: la búsqueda es global. El filtro visible sí manda.
+    const categoryIds =
+      this.isSearching && this.gridKind() === 'menus'
+        ? []
+        : categoryScopeIds(this.categories(), this.categoryId);
     return this.products()
       .filter((product) => (this.onlyAvailable ? product.stock > 0 : true))
       .filter(
         (product) =>
           categoryIds.length === 0 || categoryIds.includes(product.categoryId ?? ''),
       )
-      .filter(
-        (product) =>
-          !term ||
-          product.name.toLowerCase().includes(term) ||
-          product.sku.toLowerCase().includes(term),
-      )
+      .filter((product) => !term || this.productMatches(product, term))
       .sort((a, b) => a.name.localeCompare(b.name));
   }
 
@@ -1543,21 +1810,174 @@ export class PosComponent implements OnInit, OnDestroy {
    * Un menú agotado solo se muestra si se desmarca "Con stock".
    */
   get filteredMenus(): MenuOption[] {
-    const term = this.search.trim().toLowerCase();
-    const categoryIds = categoryScopeIds(this.menuCategories(), this.menuCategoryId);
+    const term = this.normalizeSearchText(this.search);
+    // Igual que en los productos: el filtro de la otra pestaña no oculta los
+    // menús cuando la búsqueda es global.
+    const categoryIds =
+      this.isSearching && this.gridKind() === 'products'
+        ? []
+        : categoryScopeIds(this.menuCategories(), this.menuCategoryId);
     return this.menus()
       .filter((menu) => (this.onlyAvailable ? menu.available : true))
       .filter(
         (menu) =>
           categoryIds.length === 0 || categoryIds.includes(menu.categoryId ?? ''),
       )
-      .filter(
-        (menu) =>
-          !term ||
-          menu.name.toLowerCase().includes(term) ||
-          menu.code.toLowerCase().includes(term),
-      )
+      .filter((menu) => !term || this.menuMatches(menu, term))
       .sort((a, b) => a.name.localeCompare(b.name));
+  }
+
+  /**
+   * Filas del catálogo que pinta el POS. Sin búsqueda se ven los productos o los
+   * menús de la pestaña activa; al buscar se mezclan ambos tipos, que es lo que
+   * permite encontrar una parrilla escribiendo «carne» desde Productos.
+   */
+  get catalogRows(): PosCatalogRow[] {
+    const rows = this.isSearching
+      ? [
+          ...this.filteredProducts.map((product) => this.productRow(product)),
+          ...this.filteredMenus.map((menu) => this.menuRow(menu)),
+        ].sort((a, b) => a.name.localeCompare(b.name))
+      : this.gridKind() === 'menus'
+        ? this.filteredMenus.map((menu) => this.menuRow(menu))
+        : this.filteredProducts.map((product) => this.productRow(product));
+    return rows;
+  }
+
+  /** Fila de tarjeta/tabla/columna de un producto del inventario. */
+  private productRow(product: ProductOption): PosCatalogRow {
+    const unit = soldUnitLabel(product);
+    const ordered = this.orderedUnitsOf(product.id);
+    const box = isBoxProduct(product);
+    return {
+      kind: 'product',
+      id: product.id,
+      name: product.name,
+      code: product.sku,
+      category: this.categoryOfProduct(product),
+      imageUrl: product.imageUrl ?? null,
+      title: product.stock > 0 ? product.name : `${product.name} (sin stock)`,
+      priceText: this.looseUnitPriceText(product),
+      unitLabel: unit,
+      detail: box ? `Caja de ${boxUnitsOf(product)}: ${this.boxPriceText(product)}` : null,
+      note: box ? 'Al agregarlo eliges caja o unidad' : null,
+      stockText: `${product.stock} ${unit}`,
+      stockHint: box ? `${unit} sueltas en inventario` : 'Stock disponible',
+      stockClass: this.stockClass(product),
+      available: product.stock > 0,
+      kindLabel: 'Producto',
+      orderedText: ordered > 0 ? `Ya en la mesa: ${ordered}` : null,
+      product,
+    };
+  }
+
+  /** Fila de tarjeta/tabla/columna de un menú de la carta. */
+  private menuRow(menu: MenuOption): PosCatalogRow {
+    const ordered = this.orderedMenusOf(menu.id);
+    return {
+      kind: 'menu',
+      id: menu.id,
+      name: menu.name,
+      code: menu.code,
+      category: this.categoryOfMenu(menu),
+      imageUrl: menu.imageUrl ?? null,
+      title: menuTitle(menu),
+      priceText: money(menu.price),
+      unitLabel: '',
+      detail: `${menu.ingredients.length} ingrediente(s)`,
+      note: null,
+      stockText: menuStockLabel(menu),
+      stockHint: menuStockHint(menu),
+      stockClass: menu.available ? 'text-emerald-700' : 'text-rose-700',
+      available: menu.available,
+      kindLabel: 'Menú',
+      orderedText: ordered > 0 ? `Ya en la mesa: ${ordered}` : null,
+      menu,
+    };
+  }
+
+  /** Mensaje del estado vacío según lo que se esté buscando o mirando. */
+  get emptyCatalogMessage(): string {
+    if (this.isSearching) {
+      return 'Prueba con otro nombre, SKU, código, categoría o ingrediente: la búsqueda recorre productos y menús.';
+    }
+    return this.gridKind() === 'menus'
+      ? 'Crea menús con su receta en Catálogo → Menús para venderlos aquí.'
+      : 'Ajusta la búsqueda, la categoría o el filtro de stock y revisa el inventario.';
+  }
+
+  /** Filas de la página visible en la vista de tabla. */
+  get pagedCatalogRows(): PosCatalogRow[] {
+    const page = this.currentTablePage;
+    return this.catalogRows.slice(
+      (page - 1) * this.tablePageSize,
+      page * this.tablePageSize,
+    );
+  }
+
+  /** Página actual de la tabla, acotada al número de resultados. */
+  get currentTablePage(): number {
+    return Math.min(this.tablePage(), this.tablePageCount);
+  }
+
+  /** Páginas de 20 filas que necesita la vista de tabla. */
+  get tablePageCount(): number {
+    return Math.max(1, Math.ceil(this.catalogRows.length / this.tablePageSize));
+  }
+
+  /** Texto «1–20 de 35» del pie de la tabla. */
+  get tableRangeLabel(): string {
+    const total = this.catalogRows.length;
+    if (total === 0) return 'Sin artículos';
+    const start = (this.currentTablePage - 1) * this.tablePageSize + 1;
+    const end = Math.min(this.currentTablePage * this.tablePageSize, total);
+    return `${start}–${end} de ${total}`;
+  }
+
+  previousTablePage(): void {
+    this.tablePage.set(Math.max(1, this.currentTablePage - 1));
+  }
+
+  nextTablePage(): void {
+    this.tablePage.set(Math.min(this.tablePageCount, this.currentTablePage + 1));
+  }
+
+  /** Agrega la fila tocada: la caja pregunta unidad y el menú se vende directo. */
+  addCatalogRow(row: PosCatalogRow): void {
+    if (row.product) this.addProduct(row.product);
+    else if (row.menu) this.addMenu(row.menu);
+  }
+
+  // ---------------------------- Filtros de la grilla -------------------------
+
+  onSearchChange(value: string): void {
+    this.search = value ?? '';
+    this.tablePage.set(1);
+  }
+
+  setCategory(categoryId: string): void {
+    this.categoryId = categoryId ?? '';
+    this.tablePage.set(1);
+  }
+
+  setMenuCategory(categoryId: string): void {
+    this.menuCategoryId = categoryId ?? '';
+    this.tablePage.set(1);
+  }
+
+  setOnlyAvailable(onlyAvailable: boolean): void {
+    this.onlyAvailable = onlyAvailable;
+    this.tablePage.set(1);
+  }
+
+  setGridKind(kind: 'products' | 'menus'): void {
+    this.gridKind.set(kind);
+    this.tablePage.set(1);
+  }
+
+  clearSearch(): void {
+    this.search = '';
+    this.tablePage.set(1);
   }
 
   /** Clase del distintivo de stock: rojo cuando el producto está agotado. */
@@ -1836,32 +2256,35 @@ export class PosComponent implements OnInit, OnDestroy {
 
   /** Agrega por SKU/código exacto (lector de códigos) o la primera coincidencia. */
   addBySearch(): void {
-    const term = this.search.trim().toLowerCase();
+    const term = this.normalizeSearchText(this.search);
     if (!term) return;
 
-    // En la carta de menús el código del menú hace de código de barras.
-    if (this.gridKind() === 'menus') {
-      const menu =
-        this.menus().find((option) => option.code.toLowerCase() === term) ??
-        this.filteredMenus[0];
-      if (!menu) {
-        this.formError.set(`No se encontró ningún menú para "${this.search}".`);
-        return;
-      }
-      this.addMenu(menu);
-      this.search = '';
-      return;
-    }
+    // Un lector de códigos manda el SKU/código exacto; si no, se agrega la
+    // primera coincidencia de la búsqueda global (productos y menús juntos).
+    const product =
+      this.products().find(
+        (option) =>
+          this.normalizeSearchText(option.sku) === term ||
+          this.normalizeSearchText(option.name) === term,
+      ) ?? null;
+    const menu =
+      this.menus().find(
+        (option) =>
+          this.normalizeSearchText(option.code) === term ||
+          this.normalizeSearchText(option.name) === term,
+      ) ?? null;
+    const row = this.catalogRows[0] ?? null;
 
-    const match =
-      this.products().find((product) => product.sku.toLowerCase() === term) ??
-      this.filteredProducts[0];
-    if (!match) {
-      this.formError.set(`No se encontró ningún producto para "${this.search}".`);
+    if (product) this.addProduct(product);
+    else if (menu) this.addMenu(menu);
+    else if (row) this.addCatalogRow(row);
+    else {
+      this.formError.set(
+        `No se encontró ningún producto ni menú para "${this.search}" en el nombre, SKU, código, categoría o ingredientes.`,
+      );
       return;
     }
-    this.addProduct(match);
-    this.search = '';
+    this.clearSearch();
   }
 
   /**
@@ -1929,6 +2352,15 @@ export class PosComponent implements OnInit, OnDestroy {
   /** Unidades totales del carrito (se muestra en la cabecera). */
   get totalUnits(): number {
     return this.lines().reduce((acc, line) => acc + line.quantity, 0);
+  }
+
+  /** Resumen que acompaña el título del panel de cobro. */
+  get cartSubtitle(): string {
+    const order = this.targetOrder();
+    if (order) {
+      return `${this.itemCount(order)} ya en la mesa · ${this.lines().length} por agregar · ${this.totalUnits} unidades`;
+    }
+    return `${this.lines().length} ítems · ${this.totalUnits} unidades`;
   }
 
   /**
@@ -2086,6 +2518,7 @@ export class PosComponent implements OnInit, OnDestroy {
     this.tab.set('sale');
     this.form.type = 'DINE_IN';
     this.form.tableNumber = number;
+    this.cartOpen.set(true);
     this.toast.info(`Mesa ${number} lista para tomar el pedido`);
   }
 
@@ -2094,6 +2527,7 @@ export class PosComponent implements OnInit, OnDestroy {
     this.resetSale();
     this.tab.set('sale');
     this.targetOrder.set(order);
+    this.cartOpen.set(true);
   }
 
   /** Pasa al modo «cobrar» del pedido de una mesa. */
@@ -2105,6 +2539,7 @@ export class PosComponent implements OnInit, OnDestroy {
     this.resetSale();
     this.tab.set('sale');
     this.targetOrder.set(order);
+    this.cartOpen.set(true);
   }
 
   /** Saldo pendiente de un pedido (en moneda base). */
@@ -2456,6 +2891,8 @@ export class PosComponent implements OnInit, OnDestroy {
     this.charge = { method: 'CASH', currency: BASE_CURRENCY.code, received: 0 };
     this.search = '';
     this.formError.set(null);
+    // Terminada (o reiniciada) la venta, el panel de cobro vuelve a cerrarse.
+    this.cartOpen.set(false);
   }
 
   /** Sale del modo «agregar a un pedido» sin guardar nada. */
@@ -2463,6 +2900,7 @@ export class PosComponent implements OnInit, OnDestroy {
     this.targetOrder.set(null);
     this.lines.set([]);
     this.formError.set(null);
+    this.cartOpen.set(false);
     this.reload();
   }
 

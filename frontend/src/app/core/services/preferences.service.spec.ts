@@ -13,6 +13,7 @@ import {
   normalizeConversionCurrencies,
   normalizePriceCurrency,
   normalizeShowBcvPrice,
+  normalizePosView,
   normalizeTipPercent,
 } from './preferences.service';
 
@@ -36,6 +37,9 @@ const SHOW_BCV_PRICE_KEY = 'nexo-hub.show-bcv-price';
 
 /** Clave de `localStorage` de la tasa con la que cobra el cajero. */
 const CHARGE_RATE_KEY = 'nexo-hub.charge-rate';
+
+/** Clave de `localStorage` de la vista del catálogo del cajero. */
+const POS_VIEW_KEY = 'nexo-hub.pos-view';
 
 /** Monta el doble de `HttpClient` y devuelve el controlador de peticiones. */
 function configureHttp(): HttpTestingController {
@@ -705,6 +709,51 @@ describe('PreferencesService (tasa de cobro del cajero)', () => {
   });
 });
 
+describe('PreferencesService (vista del catálogo del cajero)', () => {
+  let http: HttpTestingController;
+
+  beforeEach(() => {
+    localStorage.clear();
+    http = configureHttp();
+  });
+
+  afterEach(() => {
+    localStorage.clear();
+    http.verify();
+  });
+
+  it('guarda la vista del catálogo del cajero para la empresa', () => {
+    const preferences = TestBed.inject(PreferencesService);
+
+    preferences.setPosView('table');
+
+    expect(preferences.posView()).toBe('table');
+    expect(localStorage.getItem(POS_VIEW_KEY)).toBe('table');
+
+    const request = http.expectOne({ method: 'PATCH', url: API });
+    expect(request.request.body).toEqual({
+      tipPercent: DEFAULT_TIP_PERCENT,
+      dialogView: 'modal',
+      priceCurrency: null,
+      conversionCurrencies: null,
+      showBcvPrice: false,
+      chargeRateKey: null,
+      posView: 'table',
+    });
+    request.flush(prefs({ posView: 'table' }));
+  });
+
+  it('recupera la vista del catálogo guardada y descarta valores desconocidos', () => {
+    localStorage.setItem(POS_VIEW_KEY, 'columns');
+    expect(TestBed.inject(PreferencesService).posView()).toBe('columns');
+
+    localStorage.setItem(POS_VIEW_KEY, 'lista');
+    TestBed.resetTestingModule();
+    http = configureHttp();
+    expect(TestBed.inject(PreferencesService).posView()).toBe('cards');
+  });
+});
+
 describe('normalizeChargeRateKey', () => {
   it('solo acepta las tasas del dólar que pueden cobrar', () => {
     expect(normalizeChargeRateKey('bcv_usd')).toBe('BCV_USD');
@@ -728,6 +777,17 @@ describe('normalizeShowBcvPrice', () => {
     expect(normalizeShowBcvPrice(null)).toBeFalse();
     expect(normalizeShowBcvPrice(undefined)).toBeFalse();
     expect(normalizeShowBcvPrice('sí')).toBeFalse();
+  });
+});
+
+describe('normalizePosView', () => {
+  it('acepta solo las vistas del catálogo y normaliza mayúsculas', () => {
+    expect(normalizePosView('cards')).toBe('cards');
+    expect(normalizePosView(' TABLE ')).toBe('table');
+    expect(normalizePosView('Columns')).toBe('columns');
+    expect(normalizePosView('lista')).toBeNull();
+    expect(normalizePosView(null)).toBeNull();
+    expect(normalizePosView(undefined)).toBeNull();
   });
 });
 

@@ -9,6 +9,7 @@ const SELECT = {
   conversionCurrencies: true,
   showBcvPrice: true,
   chargeRateKey: true,
+  posView: true,
 };
 
 /** Preferencias de fabrica: la empresa aun no configuro nada. */
@@ -19,6 +20,7 @@ const NO_PREFERENCES = {
   conversionCurrencies: null,
   showBcvPrice: null,
   chargeRateKey: null,
+  posView: null,
 };
 
 /** Doble de `PrismaService` que solo expone el delegado de preferencias. */
@@ -56,6 +58,7 @@ describe('PreferencesService (preferencias de la empresa)', () => {
       conversionCurrencies: JSON.stringify(['USD', 'COP']),
       showBcvPrice: true,
       chargeRateKey: 'CUSTOM_USD',
+      posView: 'table',
     });
 
     await expect(service.find('c1')).resolves.toEqual({
@@ -65,6 +68,7 @@ describe('PreferencesService (preferencias de la empresa)', () => {
       conversionCurrencies: ['USD', 'COP'],
       showBcvPrice: true,
       chargeRateKey: 'CUSTOM_USD',
+      posView: 'table',
     });
   });
 
@@ -105,6 +109,7 @@ describe('PreferencesService (preferencias de la empresa)', () => {
       conversionCurrencies: null,
       showBcvPrice: null,
       chargeRateKey: null,
+      posView: null,
     });
     expect(upsert).toHaveBeenCalledWith({
       where: { companyId: 'c1' },
@@ -116,6 +121,7 @@ describe('PreferencesService (preferencias de la empresa)', () => {
         conversionCurrencies: null,
         showBcvPrice: null,
         chargeRateKey: null,
+        posView: null,
       },
       update: {
         tipPercent: 15,
@@ -149,6 +155,7 @@ describe('PreferencesService (preferencias de la empresa)', () => {
         conversionCurrencies: null,
         showBcvPrice: null,
         chargeRateKey: null,
+        posView: null,
       },
       update: { dialogView: 'sidebar' },
       select: SELECT,
@@ -236,6 +243,7 @@ describe('PreferencesService (preferencias de la empresa)', () => {
           conversionCurrencies: null,
           showBcvPrice: null,
           chargeRateKey: null,
+          posView: null,
         },
       }),
     );
@@ -386,5 +394,41 @@ describe('PreferencesService (preferencias de la empresa)', () => {
     });
     const found = await service.find('c1');
     expect(found.chargeRateKey).toBeNull();
+  });
+
+  it('guarda la vista del catálogo del cajero y `null` vuelve a las tarjetas', async () => {
+    upsert.mockResolvedValue({ ...NO_PREFERENCES, posView: 'table' });
+
+    const result = await service.update('c1', { posView: 'table' });
+
+    expect(result.posView).toBe('table');
+    expect(upsert).toHaveBeenCalledWith(
+      expect.objectContaining({ update: { posView: 'table' } }),
+    );
+
+    await service.update('c1', { posView: null });
+    expect(upsert).toHaveBeenLastCalledWith(
+      expect.objectContaining({ update: { posView: null } }),
+    );
+  });
+
+  it('normaliza la vista del catálogo y descarta valores desconocidos', async () => {
+    await service.update('c1', { posView: ' COLUMNS ' });
+    expect(upsert).toHaveBeenCalledWith(
+      expect.objectContaining({ update: { posView: 'columns' } }),
+    );
+
+    for (const value of ['grid', 'lista', '']) {
+      await service.update('c1', { posView: value });
+    }
+    expect(upsert).toHaveBeenLastCalledWith(
+      expect.objectContaining({ update: { posView: null } }),
+    );
+  });
+
+  it('sin configurar, el catálogo del cajero se ve en tarjetas', async () => {
+    findUnique.mockResolvedValue(null);
+    const found = await service.find('c1');
+    expect(found.posView).toBeNull();
   });
 });

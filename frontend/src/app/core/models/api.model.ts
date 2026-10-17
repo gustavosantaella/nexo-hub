@@ -131,6 +131,13 @@ export interface UpdateProfilePayload {
 export type DialogView = 'modal' | 'sidebar';
 
 /**
+ * Cómo lista el catálogo el punto de venta (Configuración → Cajero):
+ * tarjetas con foto (`cards`), tabla de 20 por página (`table`) o listas sin
+ * foto en columnas de 10 (`columns`).
+ */
+export type PosView = 'cards' | 'table' | 'columns';
+
+/**
  * Tasas del dólar (bolívares por 1 USD) que el admin puede fijar como **tasa de
  * cobro** del cajero. Son las dos que expresan bolívares por dólar: la del BCV y
  * la personalizada del local.
@@ -172,6 +179,12 @@ export interface CompanyPreferences {
    * nada. `null` = sin configurar: se cobra con la tasa activa del sistema.
    */
   chargeRateKey: ChargeRateKey | null;
+  /**
+   * Cómo lista el catálogo el punto de venta: tarjetas con foto (`cards`), tabla
+   * de 20 por página (`table`) o listas sin foto en columnas de 10 (`columns`).
+   * `null` = tarjetas, el valor de fábrica.
+   */
+  posView?: PosView | null;
 }
 
 /** Cuerpo de `PATCH /preferences`: `null` borra la preferencia de la empresa. */
@@ -182,6 +195,7 @@ export interface UpdatePreferencesPayload {
   conversionCurrencies?: string[] | null;
   showBcvPrice?: boolean | null;
   chargeRateKey?: ChargeRateKey | null;
+  posView?: PosView | null;
 }
 
 /** Cuerpo de `POST /companies` y `PATCH /companies/current`. */
@@ -279,6 +293,8 @@ export interface ProductOption {
   id: string;
   sku: string;
   name: string;
+  /** Descripción del catálogo: el buscador del POS también la recorre. */
+  description?: string | null;
   price: number;
   /**
    * Costo de referencia. El API siempre lo envia (lo usa el formulario de menús
@@ -311,6 +327,8 @@ export interface ProductOption {
   /** Foto para la grilla del POS (URL o data URL); `null` si no tiene. */
   imageUrl?: string | null;
   categoryId?: string | null;
+  /** Categoría resuelta por el API para buscarla y mostrarla sin otra petición. */
+  category?: ProductRef | null;
 }
 
 export interface ProductPayload {

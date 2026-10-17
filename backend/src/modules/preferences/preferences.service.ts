@@ -1,7 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import type { Prisma } from '@prisma/client';
-import type { ChargeRateKey, DialogView } from '../../common/constants/enums';
-import { CHARGE_RATE_KEYS } from '../../common/constants/enums';
+import type { ChargeRateKey, DialogView, PosView } from '../../common/constants/enums';
+import { CHARGE_RATE_KEYS, POS_VIEWS } from '../../common/constants/enums';
 import { PrismaService } from '../../prisma/prisma.service';
 import { UpdatePreferencesDto } from './dto/update-preferences.dto';
 
@@ -32,6 +32,12 @@ export interface CompanyPreferences {
    * activa del sistema (la personalizada del dolar o, si no existe, la del BCV).
    */
   chargeRateKey: ChargeRateKey | null;
+  /**
+   * Como lista el catalogo el punto de venta: `cards` (tarjetas con foto),
+   * `table` (tabla de 20 por pagina) o `columns` (sin foto, columnas de 10).
+   * `null` = `cards`, el valor de fabrica.
+   */
+  posView: PosView | null;
 }
 
 /** Columnas que viajan al cliente (el `companyId` es la sesion, no hace falta). */
@@ -42,6 +48,7 @@ const PREFERENCES_SELECT = {
   conversionCurrencies: true,
   showBcvPrice: true,
   chargeRateKey: true,
+  posView: true,
 } satisfies Prisma.CompanyPreferenceSelect;
 
 type PreferenceRow = Prisma.CompanyPreferenceGetPayload<{
@@ -56,6 +63,7 @@ const NO_PREFERENCES: CompanyPreferences = {
   conversionCurrencies: null,
   showBcvPrice: null,
   chargeRateKey: null,
+  posView: null,
 };
 
 /** Tope de monedas en la lista (la interfaz ofrece las configuradas del local). */
@@ -146,6 +154,16 @@ function normalizeChargeRateKey(value: string | null | undefined): ChargeRateKey
   return (CHARGE_RATE_KEYS as readonly string[]).includes(key) ? (key as ChargeRateKey) : null;
 }
 
+/**
+ * Deja la vista del catalogo en una de las presentaciones soportadas o en `null`
+ * (tarjetas, el valor de fabrica). Cualquier otro valor se descarta.
+ */
+function normalizePosView(value: string | null | undefined): PosView | null {
+  if (value === null || value === undefined) return null;
+  const view = String(value).trim().toLowerCase();
+  return (POS_VIEWS as readonly string[]).includes(view) ? (view as PosView) : null;
+}
+
 function toPreferences(row: PreferenceRow): CompanyPreferences {
   return {
     tipPercent: row.tipPercent,
@@ -154,6 +172,7 @@ function toPreferences(row: PreferenceRow): CompanyPreferences {
     conversionCurrencies: parseConversionCurrencies(row.conversionCurrencies),
     showBcvPrice: row.showBcvPrice ?? null,
     chargeRateKey: normalizeChargeRateKey(row.chargeRateKey),
+    posView: normalizePosView(row.posView),
   };
 }
 
@@ -211,6 +230,9 @@ export class PreferencesService {
     if (dto.chargeRateKey !== undefined) {
       update.chargeRateKey = normalizeChargeRateKey(dto.chargeRateKey);
     }
+    if (dto.posView !== undefined) {
+      update.posView = normalizePosView(dto.posView);
+    }
 
     const row = await this.prisma.companyPreference.upsert({
       where: { companyId },
@@ -224,6 +246,7 @@ export class PreferencesService {
         ),
         showBcvPrice: normalizeShowBcvPrice(dto.showBcvPrice),
         chargeRateKey: normalizeChargeRateKey(dto.chargeRateKey),
+        posView: normalizePosView(dto.posView),
       },
       update,
       select: PREFERENCES_SELECT,

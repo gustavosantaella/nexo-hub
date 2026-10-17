@@ -2,7 +2,7 @@ import { provideHttpClient } from '@angular/common/http';
 import { HttpTestingController, provideHttpClientTesting } from '@angular/common/http/testing';
 import { ComponentFixture, TestBed } from '@angular/core/testing';
 import { environment } from '../../../environments/environment';
-import type { ProductOption } from '../../core/models/api.model';
+import type { Category, ProductOption } from '../../core/models/api.model';
 import type { MenuOption } from '../../core/models/api.model';
 import type { Order, OrderItem } from '../../core/models/operations.model';
 import type { RatesSnapshot } from '../../core/models/rates.model';
@@ -239,7 +239,10 @@ describe('PosComponent (vista de cajero)', () => {
     setDisplayCurrency(null);
   });
 
-  function mount(menus: MenuOption[] = []): {
+  function mount(
+    menus: MenuOption[] = [],
+    openCart = true,
+  ): {
     fixture: ComponentFixture<PosComponent>;
     pos: PosComponent;
   } {
@@ -265,6 +268,13 @@ describe('PosComponent (vista de cajero)', () => {
     http.expectOne(`${API}/orders/active`).flush([]);
     fixture.detectChanges();
 
+    // La tarjeta de cobro es un panel lateral: las pruebas que validan su
+    // contenido lo abren; las que prueban el estado inicial lo dejan cerrado.
+    if (openCart) {
+      pos.cartOpen.set(true);
+      fixture.detectChanges();
+    }
+
     return { fixture, pos };
   }
 
@@ -282,6 +292,36 @@ describe('PosComponent (vista de cajero)', () => {
     http.match(`${API}/categories/options`).forEach((request) => request.flush([]));
     http.match(`${API}/customers/options`).forEach((request) => request.flush([]));
   }
+
+  /**
+   * La tarjeta de cobro ya no ocupa una columna fija: vive en un panel lateral
+   * que arranca cerrado y se abre desde el botón flotante con icono de factura.
+   */
+  it('abre la tarjeta de cobro en un panel lateral desde el botón flotante', () => {
+    const { fixture, pos } = mount([], false);
+
+    expect(pos.cartOpen()).toBeFalse();
+    expect(fixture.nativeElement.querySelector('aside[role="dialog"]')).toBeNull();
+
+    const toggle = fixture.nativeElement.querySelector(
+      '[data-pos-cart-toggle]',
+    ) as HTMLButtonElement | null;
+    expect(toggle).not.toBeNull();
+    // El botón flotante se identifica con el icono de factura.
+    expect(toggle!.querySelector('app-icon')).not.toBeNull();
+
+    toggle!.click();
+    fixture.detectChanges();
+
+    expect(pos.cartOpen()).toBeTrue();
+    const panel = fixture.nativeElement.querySelector(
+      'aside[role="dialog"]',
+    ) as HTMLElement | null;
+    expect(panel).not.toBeNull();
+    expect(panel!.textContent).toContain('Venta actual');
+    expect(panel!.textContent).toContain('Cobro');
+    expect(panel!.textContent).toContain('Guardar');
+  });
 
   /**
    * Presentaciones: al agregar una caja/paquete el POS pregunta qué se entrega y
@@ -1040,6 +1080,177 @@ describe('PosComponent (vista de cajero)', () => {
     // Un producto cargado en dólares sigue mostrando su conversión.
     expect(pos.looseUnitPriceText(PRODUCTS[1])).toBe('Bs 970.00');
     expect(pos.boxPriceText(PRODUCTS[1])).toBe('Bs 23,280.00');
+  });
+
+  /**
+   * El buscador es global: recorre productos y menús sin importar la pestaña
+   * activa, y mira nombre, SKU/código, descripción, categoría e ingredientes.
+   */
+  it('busca en productos y menús por categoría, descripción e ingredientes', () => {
+    const { fixture, pos } = mount(MENUS);
+    const bebidas: Category = {
+      id: 'cat-bebidas',
+      name: 'Bebidas',
+      active: true,
+      createdAt: '2026-10-13T10:00:00.000Z',
+      updatedAt: '2026-10-13T10:00:00.000Z',
+    };
+    const agua: ProductOption = {
+      id: 'p3',
+      sku: 'AGUA-01',
+      name: 'Agua mineral',
+      description: 'Botella de 625 ml',
+      price: 2,
+      stock: 12,
+      unit: 'UND',
+      unitsPerBox: 1,
+      categoryId: bebidas.id,
+    };
+    pos.products.set([...PRODUCTS, agua]);
+    pos.categories.set([bebidas]);
+
+    // Producto por categoría, aunque la pestaña activa sea la de productos.
+    pos.search = 'bebidas';
+    fixture.detectChanges();
+    expect(pos.catalogRows.map((row) => row.name)).toEqual(['Agua mineral']);
+
+    // Menú por el nombre de un ingrediente de su receta: «carne» → Parrilla.
+    pos.search = 'carne';
+    fixture.detectChanges();
+    expect(pos.catalogRows.map((row) => row.name)).toEqual(['Parrilla']);
+
+    // El SKU sigue funcionando sin importar tildes ni mayúsculas.
+    pos.search = 'agua-01';
+    fixture.detectChanges();
+    expect(pos.catalogRows.map((row) => row.name)).toEqual(['Agua mineral']);
+  });
+
+  /**
+   * Las tarjetas se pensaron para mostrar mucho catálogo de un vistazo: como
+   * mínimo 5 columnas en escritorio y piezas compactas (foto de 5rem, textos
+   * pequeños y separación reducida).
+   */
+  it('muestra las tarjetas compactas con 6 columnas en escritorio', () => {
+    const { fixture } = mount();
+
+    expect(localStorage.getItem('nexo-hub.pos-view')).toBeNull();
+    const grid = fixture.nativeElement.querySelector('[data-pos-cards]') as HTMLElement | null;
+    expect(grid).not.toBeNull();
+    expect(grid!.classList.contains('md:grid-cols-6')).toBeTrue();
+    expect(grid!.classList.contains('md:grid-cols-5')).toBeFalse();
+    expect(grid!.classList.contains('gap-2')).toBeTrue();
+    expect(grid!.classList.contains('p-2')).toBeTrue();
+    expect(grid!.classList.contains('[scrollbar-gutter:stable]')).toBeTrue();
+
+    // El ancho no debe cambiar entre «todo el catálogo» y «filtrado», y los
+    // textos completos deben poder envolverse en vez de recortarse.
+    const name = grid!.querySelector('[data-pos-card-name]') as HTMLElement | null;
+    expect(name).not.toBeNull();
+    expect(name!.classList.contains('line-clamp-2')).toBeFalse();
+    expect(name!.classList.contains('break-words')).toBeTrue();
+
+    const code = grid!.querySelector('[data-pos-card-code]') as HTMLElement | null;
+    expect(code).not.toBeNull();
+    expect(code!.classList.contains('truncate')).toBeFalse();
+    expect(code!.classList.contains('break-words')).toBeTrue();
+
+    const price = grid!.querySelector('[data-pos-card-price]') as HTMLElement | null;
+    expect(price).not.toBeNull();
+    expect(price!.classList.contains('break-words')).toBeTrue();
+
+    const image = grid!.querySelector('[data-pos-card-image]') as HTMLElement | null;
+    expect(image).not.toBeNull();
+    expect(image!.classList.contains('h-20')).toBeTrue();
+    expect(image!.classList.contains('h-24')).toBeFalse();
+  });
+
+  /**
+   * Con el catálogo completo la barra de desplazamiento aparecía y estrechaba las
+   * tarjetas; al filtrar desaparecía y los textos ya entraban. Ahora el ancho se
+   * reserva siempre y, además, nombres/códigos/precios pueden ocupar varias
+   * líneas en las vistas de tarjetas, columnas y tabla.
+   */
+  it('no recorta nombres, códigos ni precios en las tres vistas del catálogo', () => {
+    localStorage.setItem('nexo-hub.pos-view', 'columns');
+    const columnsFixture = mount().fixture;
+    const scroll = columnsFixture.nativeElement.querySelector(
+      '[data-pos-cards], [style*="grid-auto-flow: column"]',
+    ) as HTMLElement | null;
+    expect(scroll).not.toBeNull();
+    expect(scroll!.parentElement!.classList.contains('[scrollbar-gutter:stable]')).toBeTrue();
+
+    const columnName = columnsFixture.nativeElement.querySelector(
+      '[data-pos-column-name]',
+    ) as HTMLElement | null;
+    expect(columnName).not.toBeNull();
+    expect(columnName!.classList.contains('truncate')).toBeFalse();
+    expect(columnName!.classList.contains('break-words')).toBeTrue();
+
+    const columnCode = columnsFixture.nativeElement.querySelector(
+      '[data-pos-column-code]',
+    ) as HTMLElement | null;
+    expect(columnCode!.classList.contains('truncate')).toBeFalse();
+    expect(columnCode!.classList.contains('break-words')).toBeTrue();
+
+    const columnPrice = columnsFixture.nativeElement.querySelector(
+      '[data-pos-column-price]',
+    ) as HTMLElement | null;
+    expect(columnPrice!.classList.contains('break-words')).toBeTrue();
+    columnsFixture.destroy();
+  });
+
+  /**
+   * La vista de tabla pagina de 20 en 20 y la de columnas agrupa 10 filas por
+   * columna, sin fotos: son las dos presentaciones que elige el admin.
+   */
+  it('pagina la tabla de 20 en 20 y arma columnas de 10 sin fotos', () => {
+    localStorage.setItem('nexo-hub.pos-view', 'columns');
+    const { fixture, pos } = mount();
+    const products = Array.from({ length: 25 }, (_, index) => ({
+      ...PRODUCTS[0],
+      id: `p-${index}`,
+      sku: `SKU-${index}`,
+      name: `Producto ${index + 1}`,
+    }));
+    pos.products.set(products);
+    fixture.detectChanges();
+
+    expect(pos.posView()).toBe('columns');
+    const columns = fixture.nativeElement.querySelector(
+      '[style*="grid-auto-flow: column"]',
+    ) as HTMLElement | null;
+    expect(columns).not.toBeNull();
+    expect(columns!.querySelectorAll('img')).toHaveSize(0);
+    expect(pos.catalogRows.length).toBe(25);
+
+    expect(pos.pagedCatalogRows.length).toBe(20);
+    pos.nextTablePage();
+    expect(pos.currentTablePage).toBe(2);
+    expect(pos.pagedCatalogRows.length).toBe(5);
+  });
+
+  it('pinta la tabla con 20 filas por página cuando el admin la elige', () => {
+    localStorage.setItem('nexo-hub.pos-view', 'table');
+    const { fixture, pos } = mount();
+    const products = Array.from({ length: 25 }, (_, index) => ({
+      ...PRODUCTS[0],
+      id: `p-${index}`,
+      sku: `SKU-${index}`,
+      name: `Producto ${index + 1}`,
+    }));
+    pos.products.set(products);
+    fixture.detectChanges();
+
+    const table = fixture.nativeElement.querySelector('table') as HTMLTableElement | null;
+    expect(table).not.toBeNull();
+    expect(table!.querySelectorAll('tbody tr').length).toBe(20);
+    expect(fixture.nativeElement.textContent).toContain('Página 1 de 2');
+
+    const tableName = table!.querySelector('[data-pos-table-name]') as HTMLElement | null;
+    expect(tableName).not.toBeNull();
+    expect(tableName!.classList.contains('truncate')).toBeFalse();
+    expect(tableName!.classList.contains('break-words')).toBeTrue();
+    expect(table!.parentElement!.classList.contains('[scrollbar-gutter:stable]')).toBeTrue();
   });
 });
 
