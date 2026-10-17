@@ -475,10 +475,10 @@ interface CurrencyRow {
             <div>
               <h2 class="text-sm font-semibold text-slate-900">Propina sugerida</h2>
               <p class="mt-0.5 text-xs text-slate-500">
-                Porcentaje que el punto de venta propone al cobrar. La propina siempre es
-                opcional: en el cajero se puede cambiar, escribir otro monto o dejarla en
-                cero. Al pulsar «Guardar cambios» se guarda para toda la empresa: el
-                cajero que entra desde otro equipo la recibe al iniciar sesión.
+                Porcentaje que el punto de venta aplica cuando el cajero marca la propina
+                como «Sí». Al marcar «No» no se cobra propina. Al pulsar «Guardar cambios»
+                se guarda para toda la empresa: el cajero que entra desde otro equipo la
+                recibe al iniciar sesión.
               </p>
             </div>
             <span class="badge bg-slate-100 text-slate-600">{{ tipPercentLabel() }}</span>

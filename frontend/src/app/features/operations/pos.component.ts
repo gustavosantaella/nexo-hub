@@ -51,14 +51,13 @@ import {
 import { OrdersService } from '../../core/services/orders.service';
 import {
   PreferencesService,
-  TIP_PERCENT_PRESETS,
-  normalizeTipPercent,
 } from '../../core/services/preferences.service';
 import { RatesService } from '../../core/services/rates.service';
 import { ToastService } from '../../core/services/toast.service';
 import { categoryOptionLabel, categoryScopeIds } from '../../core/utils/category-tree';
 import {
   apiErrorMessage,
+  dateTime,
   displayBaseCode,
   divMoney,
   money,
@@ -96,6 +95,7 @@ import { EmptyStateComponent, LoaderComponent } from '../../shared/components/fe
 import { IconComponent } from '../../shared/components/icon.component';
 import { MoneyComponent } from '../../shared/components/money.component';
 import { SidebarComponent } from '../../shared/components/sidebar.component';
+import { ConfirmService } from '../../shared/services/confirm.service';
 
 /** Mesas que dibuja el mapa del salón al abrir la vista (se ajusta en pantalla). */
 const DEFAULT_TABLE_COUNT = 12;
@@ -248,6 +248,7 @@ interface BillTotals {
           <div class="flex rounded-lg border border-slate-200 bg-slate-50 p-0.5">
             <button
               type="button"
+              data-pos-tab-sale
               class="flex items-center gap-1.5 rounded-md px-3 py-1.5 text-sm font-medium transition"
               [class]="
                 tab() === 'sale'
@@ -261,6 +262,7 @@ interface BillTotals {
             </button>
             <button
               type="button"
+              data-pos-tab-tables
               class="flex items-center gap-1.5 rounded-md px-3 py-1.5 text-sm font-medium transition"
               [class]="
                 tab() === 'tables'
@@ -274,6 +276,25 @@ interface BillTotals {
               @if (occupiedTables.length > 0) {
                 <span class="badge bg-amber-100 text-amber-700">
                   {{ occupiedTables.length }}
+                </span>
+              }
+            </button>
+            <button
+              type="button"
+              data-pos-tab-saved
+              class="flex items-center gap-1.5 rounded-md px-3 py-1.5 text-sm font-medium transition"
+              [class]="
+                tab() === 'saved'
+                  ? 'bg-white text-brand-700 shadow-sm'
+                  : 'text-slate-500 hover:text-slate-700'
+              "
+              (click)="tab.set('saved'); cartOpen.set(false)"
+            >
+              <app-icon name="clock" size="h-4 w-4" />
+              Guardados
+              @if (savedOrders.length > 0) {
+                <span class="badge bg-sky-100 text-sky-700">
+                  {{ savedOrders.length }}
                 </span>
               }
             </button>
@@ -591,7 +612,7 @@ interface BillTotals {
                   <!-- Tarjetas compactas: 6 columnas en escritorio. -->
                   <div
                     data-pos-cards
-                    class="card-body grid min-h-0 flex-1 grid-cols-2 content-start gap-2 overflow-y-auto p-2 pb-20 [scrollbar-gutter:stable] sm:grid-cols-3 md:grid-cols-6"
+                    class="card-body grid min-h-0 flex-1 grid-cols-2 content-start gap-2 overflow-y-auto p-2 pb-20 [scrollbar-gutter:stable] min-[600px]:grid-cols-4 md:grid-cols-6"
                   >
                     @for (row of catalogRows; track row.kind + row.id) {
                       <div
@@ -722,30 +743,28 @@ interface BillTotals {
             (closed)="cartOpen.set(false)"
           >
             <div class="space-y-3" data-pos-cart-panel>
-              @if (targetOrder() || lines().length > 0) {
-                <div class="flex flex-wrap items-center justify-end gap-1">
-                  @if (targetOrder()) {
-                    <button
-                      type="button"
-                      class="btn-ghost btn-sm"
-                      title="Salir del modo agregar"
-                      (click)="cancelAddMode()"
-                    >
-                      <app-icon name="close" size="h-4 w-4" />
-                      Salir del pedido
-                    </button>
-                  }
-                  @if (lines().length > 0) {
-                    <button
-                      type="button"
-                      class="btn-ghost btn-sm text-rose-600"
-                      title="Vaciar el carrito"
-                      (click)="clearLines()"
-                    >
-                      <app-icon name="trash" size="h-4 w-4" />
-                      Vaciar
-                    </button>
-                  }
+              @if (targetOrder(); as order) {
+                <div class="flex flex-wrap items-center justify-between gap-1">
+                  <button
+                    type="button"
+                    data-pos-cancel-order
+                    class="btn-ghost btn-sm text-rose-600"
+                    [disabled]="savedItemBusyId() !== null || saving()"
+                    title="Cancelar todo el pedido y devolver el stock al inventario"
+                    (click)="cancelOrder(order)"
+                  >
+                    <app-icon name="trash" size="h-4 w-4" />
+                    {{ savedItemBusyId() === order.id ? 'Cancelando…' : 'Cancelar pedido' }}
+                  </button>
+                  <button
+                    type="button"
+                    class="btn-ghost btn-sm"
+                    title="Salir del modo agregar"
+                    (click)="cancelAddMode()"
+                  >
+                    <app-icon name="close" size="h-4 w-4" />
+                    Salir del pedido
+                  </button>
                 </div>
               }
 
@@ -837,10 +856,32 @@ interface BillTotals {
                             {{ money(item.unitPrice) }} c/u · ya en el pedido
                           </span>
                         </span>
-                        <span
-                          class="w-16 flex-none text-right text-sm font-semibold text-slate-900"
-                        >
-                          {{ money(item.total) }}
+                        <span class="flex flex-none flex-col items-end gap-1">
+                          <span class="text-sm font-semibold text-slate-900">
+                            {{ money(item.total) }}
+                          </span>
+                          <button
+                            type="button"
+                            data-pos-target-remove-item
+                            class="btn-ghost btn-sm px-1 text-rose-600"
+                            [disabled]="savedItemBusyId() !== null || saving()"
+                            [title]="
+                              orderItems(order).length <= 1
+                                ? 'Quitar el último producto (cancela el pedido)'
+                                : 'Quitar producto'
+                            "
+                            [attr.aria-label]="
+                              orderItems(order).length <= 1
+                                ? 'Cancelar el pedido ' + order.code + ' y quitar ' + item.name
+                                : 'Quitar ' + item.name + ' del pedido ' + order.code
+                            "
+                            (click)="removeOrderItem(order, item)"
+                          >
+                            <app-icon name="trash" size="h-3.5 w-3.5" />
+                            <span class="text-[11px]">
+                              {{ savedItemBusyId() === item.id ? 'Quitando…' : 'Quitar' }}
+                            </span>
+                          </button>
                         </span>
                       </div>
                     }
@@ -980,38 +1021,45 @@ interface BillTotals {
                 </details>
               }
 
-              <!-- Propina opcional: arranca con la sugerencia de Configuración → Cajero. -->
+              <!-- Propina opcional: Sí aplica el porcentaje de Configuración → Cajero. -->
               @if (!targetOrder()) {
                 <div
-                  class="flex flex-wrap items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 py-2"
+                  class="flex flex-wrap items-center gap-2 rounded-lg border border-slate-200 bg-white px-3 py-2"
+                  data-pos-tip
                 >
                   <span class="text-xs font-semibold uppercase tracking-wide text-slate-500">
                     Propina
                   </span>
-                  <input
-                    class="input w-16 px-2 py-1 text-center"
-                    type="number"
-                    min="0"
-                    max="100"
-                    aria-label="Propina en porcentaje"
-                    [(ngModel)]="form.tipRate"
-                    (change)="applyTipRate()"
-                  />
-                  <span class="text-xs text-slate-500">%</span>
-                  @for (preset of tipPresets; track preset) {
+                  <div class="flex rounded-lg border border-slate-200 bg-slate-50 p-0.5">
                     <button
                       type="button"
+                      data-pos-tip-yes
+                      class="rounded-md px-3 py-1 text-sm font-medium transition"
                       [class]="
-                        form.tipRate === preset
-                          ? 'btn-secondary btn-sm bg-slate-100'
-                          : 'btn-ghost btn-sm'
+                        form.tipEnabled
+                          ? 'bg-white text-brand-700 shadow-sm'
+                          : 'text-slate-500 hover:text-slate-700'
                       "
-                      [attr.aria-pressed]="form.tipRate === preset"
-                      (click)="setTipRate(preset)"
+                      [attr.aria-pressed]="form.tipEnabled"
+                      (click)="setTip(true)"
                     >
-                      {{ preset === 0 ? 'Sin' : preset + '%' }}
+                      Sí
                     </button>
-                  }
+                    <button
+                      type="button"
+                      data-pos-tip-no
+                      class="rounded-md px-3 py-1 text-sm font-medium transition"
+                      [class]="
+                        !form.tipEnabled
+                          ? 'bg-white text-brand-700 shadow-sm'
+                          : 'text-slate-500 hover:text-slate-700'
+                      "
+                      [attr.aria-pressed]="!form.tipEnabled"
+                      (click)="setTip(false)"
+                    >
+                      No
+                    </button>
+                  </div>
                   <span class="ml-auto text-sm font-semibold text-slate-800">
                     {{ money(tipAmount) }}
                   </span>
@@ -1172,6 +1220,16 @@ interface BillTotals {
             </div>
 
             <div sidebarFooter class="flex w-full gap-2">
+              <button
+                type="button"
+                data-pos-clear
+                class="btn-ghost btn-sm shrink-0 text-rose-600"
+                title="Vaciar todo el contenido de la venta"
+                (click)="clearSale()"
+              >
+                <app-icon name="trash" size="h-4 w-4" />
+                Vaciar
+              </button>
               @if (targetOrder() && lines().length === 0) {
                 <button
                   type="button"
@@ -1205,7 +1263,7 @@ interface BillTotals {
             </div>
           </app-sidebar>
         </div>
-      } @else {
+      } @else if (tab() === 'tables') {
         <!-- Mapa de mesas -->
         <section class="card flex min-h-0 flex-1 flex-col overflow-hidden">
           <div class="card-header shrink-0 flex flex-wrap items-center justify-between gap-2">
@@ -1317,6 +1375,193 @@ interface BillTotals {
                       Abrir mesa
                     </button>
                   }
+                </div>
+              }
+            </div>
+          }
+        </section>
+      } @else {
+        <!-- Pedidos guardados: todos los activos, tengan mesa o no. -->
+        <section class="card flex min-h-0 flex-1 flex-col overflow-hidden" data-pos-saved>
+          <div class="card-header shrink-0 flex flex-wrap items-center justify-between gap-2">
+            <div>
+              <h2 class="text-sm font-semibold text-slate-900">Pedidos guardados</h2>
+              <p class="text-xs text-slate-500">
+                {{ savedOrders.length }} en curso · se muestran primero los más recientes
+              </p>
+            </div>
+            <button
+              type="button"
+              class="btn-secondary btn-sm"
+              [disabled]="loadingTables()"
+              (click)="reload()"
+            >
+              <app-icon name="refresh" size="h-4 w-4" />
+              Actualizar
+            </button>
+          </div>
+
+          @if (loadingTables()) {
+            <app-loader label="Cargando pedidos guardados…" />
+          } @else if (savedOrders.length === 0) {
+            <app-empty-state
+              icon="clock"
+              title="No hay pedidos guardados"
+              message="Cuando uses Guardar en la venta, el pedido aparecerá aquí para retomarlo o cobrarlo."
+            />
+          } @else {
+            <div
+              class="card-body grid min-h-0 flex-1 grid-cols-1 content-start gap-3 overflow-y-auto lg:grid-cols-2 2xl:grid-cols-3"
+            >
+              @for (order of savedOrders; track order.id) {
+                <div
+                  class="rounded-xl border border-slate-200 bg-white p-3"
+                  data-pos-saved-order
+                >
+                  <div class="flex items-start justify-between gap-2">
+                    <div class="min-w-0">
+                      <p class="truncate text-sm font-semibold text-slate-900">
+                        {{ order.code }}
+                      </p>
+                      <p class="text-xs text-slate-500">{{ dateTime(order.createdAt) }}</p>
+                    </div>
+                    <span class="badge flex-none" [class]="paymentStatusClasses[order.paymentStatus]">
+                      {{ statusLabel(order) }}
+                    </span>
+                  </div>
+
+                  <div class="mt-2 flex flex-wrap items-center gap-1">
+                    <span class="badge bg-slate-100 text-slate-600">
+                      {{ typeLabels[order.type] }}
+                    </span>
+                    @if (order.tableNumber) {
+                      <span class="badge bg-amber-100 text-amber-700">
+                        Mesa {{ order.tableNumber }}
+                      </span>
+                    }
+                    <span class="badge bg-slate-100 text-slate-600">
+                      {{ orderStatusLabel(order) }}
+                    </span>
+                  </div>
+
+                  <p class="mt-2 text-xs font-medium text-slate-600">
+                    {{ customerLabel(order) }}
+                  </p>
+                  <p class="mt-1 break-words text-xs text-slate-500" data-pos-saved-items>
+                    {{ savedOrderSummary(order) }}
+                  </p>
+
+                  @if (orderItems(order).length > 0) {
+                    <button
+                      type="button"
+                      data-pos-saved-toggle-items
+                      class="btn-ghost btn-sm mt-1 px-1 text-xs text-slate-500"
+                      [attr.aria-expanded]="isSavedOrderExpanded(order)"
+                      (click)="toggleSavedOrder(order.id)"
+                    >
+                      <app-icon
+                        name="chevron-right"
+                        size="h-3.5 w-3.5 transition-transform"
+                        [class.rotate-90]="isSavedOrderExpanded(order)"
+                      />
+                      {{
+                        isSavedOrderExpanded(order)
+                          ? 'Ocultar productos'
+                          : 'Editar productos (' + orderItems(order).length + ')'
+                      }}
+                    </button>
+                  }
+
+                  @if (isSavedOrderExpanded(order)) {
+                    <div
+                      class="mt-1 space-y-1 rounded-lg border border-slate-200 bg-slate-50 p-2"
+                      data-pos-saved-item-list
+                    >
+                      @for (item of orderItems(order); track item.id) {
+                        <div class="flex items-center gap-2" data-pos-saved-item>
+                          <span class="min-w-0 flex-1 break-words text-xs text-slate-700">
+                            {{ item.quantity }} × {{ item.name }}
+                          </span>
+                          <span class="flex-none text-xs font-medium text-slate-600">
+                            {{ money(item.total) }}
+                          </span>
+                          <button
+                            type="button"
+                            data-pos-saved-remove-item
+                            class="btn-ghost btn-sm px-1 text-rose-600"
+                            [disabled]="savedItemBusyId() !== null"
+                            [title]="
+                              orderItems(order).length <= 1
+                                ? 'Quitar el último producto (cancela el pedido)'
+                                : 'Quitar producto'
+                            "
+                            [attr.aria-label]="
+                              orderItems(order).length <= 1
+                                ? 'Cancelar el pedido ' + order.code + ' y quitar ' + item.name
+                                : 'Quitar ' + item.name + ' del pedido ' + order.code
+                            "
+                            (click)="removeOrderItem(order, item)"
+                          >
+                            <app-icon name="trash" size="h-4 w-4" />
+                            <span class="text-xs">
+                              {{ savedItemBusyId() === item.id ? 'Quitando…' : 'Quitar' }}
+                            </span>
+                          </button>
+                        </div>
+                      }
+                    </div>
+                  }
+
+                  <div class="mt-2 flex items-end justify-between gap-2">
+                    <div>
+                      <p class="text-[11px] uppercase tracking-wide text-slate-400">Total</p>
+                      <p class="text-sm font-semibold text-slate-900">{{ money(order.total) }}</p>
+                    </div>
+                    <div class="text-right">
+                      <p class="text-[11px] uppercase tracking-wide text-slate-400">Saldo</p>
+                      <p
+                        class="text-sm font-semibold"
+                        [class]="isPaid(order) ? 'text-emerald-700' : 'text-amber-700'"
+                      >
+                        {{ money(balance(order)) }}
+                      </p>
+                    </div>
+                  </div>
+
+                  <div class="mt-3 flex gap-1">
+                    <button
+                      type="button"
+                      data-pos-saved-add
+                      class="btn-secondary btn-sm flex-1"
+                      (click)="startAddToOrder(order)"
+                    >
+                      <app-icon name="plus" size="h-4 w-4" />
+                      Agregar
+                    </button>
+                    @if (isPaid(order)) {
+                      <button
+                        type="button"
+                        data-pos-saved-close
+                        class="btn-primary btn-sm flex-1"
+                        [disabled]="saving()"
+                        (click)="closeTable(order)"
+                      >
+                        <app-icon name="check" size="h-4 w-4" />
+                        {{ order.tableNumber ? 'Cerrar mesa' : 'Cerrar' }}
+                      </button>
+                    } @else {
+                      <button
+                        type="button"
+                        data-pos-saved-charge
+                        class="btn-primary btn-sm flex-1"
+                        [disabled]="!cashOpen()"
+                        (click)="startChargeOrder(order)"
+                      >
+                        <app-icon name="money" size="h-4 w-4" />
+                        Cobrar
+                      </button>
+                    }
+                  </div>
                 </div>
               }
             </div>
@@ -1449,6 +1694,7 @@ export class PosComponent implements OnInit, OnDestroy {
   private readonly preferences = inject(PreferencesService);
   private readonly layout = inject(LayoutService);
   private readonly toast = inject(ToastService);
+  private readonly confirm = inject(ConfirmService);
 
   /** Cierra la vista de cajero y vuelve al arqueo de Caja. */
   @Output() exit = new EventEmitter<void>();
@@ -1464,6 +1710,7 @@ export class PosComponent implements OnInit, OnDestroy {
   readonly tablePage = signal(1);
 
   readonly money = money;
+  readonly dateTime = dateTime;
   /** Presentacion del producto: precio por unidad y etiqueta de la unidad vendida. */
   readonly unitPriceOf = unitPriceOf;
   readonly soldUnitLabel = soldUnitLabel;
@@ -1482,8 +1729,6 @@ export class PosComponent implements OnInit, OnDestroy {
   readonly maxTableCount = MAX_TABLE_COUNT;
   /** Billetes/monedas frecuentes para completar el efectivo recibido. */
   readonly receiptShortcuts = [5, 10, 20, 50, 100];
-  /** Propinas de atajo de la venta (0 % = sin propina). */
-  readonly tipPresets = TIP_PERCENT_PRESETS;
   /** Moneda base del sistema (el delivery y el desglose se muestran en USD). */
   readonly baseCurrency = BASE_CURRENCY;
   /**
@@ -1515,7 +1760,7 @@ export class PosComponent implements OnInit, OnDestroy {
   readonly loadingTables = signal(false);
   readonly saving = signal(false);
   readonly formError = signal<string | null>(null);
-  readonly tab = signal<'sale' | 'tables'>('sale');
+  readonly tab = signal<'sale' | 'tables' | 'saved'>('sale');
   /**
    * La tarjeta de cobro vive en un panel lateral que arranca cerrado y se abre
    * con el botón flotante de factura: así el catálogo usa todo el ancho.
@@ -1538,6 +1783,10 @@ export class PosComponent implements OnInit, OnDestroy {
   readonly activeOrders = signal<Order[]>([]);
   readonly tableCount = signal(DEFAULT_TABLE_COUNT);
   readonly targetOrder = signal<Order | null>(null);
+  /** Pedido guardado con su lista de productos desplegada para corregirla. */
+  readonly expandedSavedOrderId = signal<string | null>(null);
+  /** Línea o pedido que se está quitando/cancelando (bloquea sus acciones). */
+  readonly savedItemBusyId = signal<string | null>(null);
   readonly lines = signal<PosLine[]>([]);
   /**
    * Producto por presentacion (caja/paquete) esperando que el cajero elija la
@@ -1569,8 +1818,10 @@ export class PosComponent implements OnInit, OnDestroy {
     notes: string;
     discount: number;
     taxRate: number;
-    /** Propina en porcentaje sobre el neto (opcional). */
+    /** Propina en porcentaje sobre el neto (la que configuró el admin). */
     tipRate: number;
+    /** Si la venta lleva propina (Sí) o no (No). */
+    tipEnabled: boolean;
     /** Costo de delivery en `deliveryFeeCurrency` (solo pedidos a domicilio). */
     deliveryFee: number;
     /** Moneda del costo de delivery (el POS lo captura en USD). */
@@ -1583,6 +1834,7 @@ export class PosComponent implements OnInit, OnDestroy {
       discount: 0,
       taxRate: 0,
       tipRate: 0,
+      tipEnabled: true,
       deliveryFee: 0,
       deliveryFeeCurrency: BASE_CURRENCY.code,
     };
@@ -1604,7 +1856,7 @@ export class PosComponent implements OnInit, OnDestroy {
     // El punto de venta ocupa toda la pantalla: oculta la barra lateral y la
     // cabecera del back-office mientras está abierto.
     this.layout.setFullscreen(true);
-    // La venta arranca limpia y con la propina sugerida en Configuración.
+    // La venta arranca limpia y con la propina configurada por el admin.
     this.resetSale();
     this.reload();
   }
@@ -2335,9 +2587,13 @@ export class PosComponent implements OnInit, OnDestroy {
     this.lines.set(this.lines().filter((line) => this.lineKey(line) !== key));
   }
 
-  clearLines(): void {
-    this.lines.set([]);
-    this.formError.set(null);
+  /**
+   * Vacía todo el panel de la venta en curso: carrito, modo pedido y datos del
+   * comprobante y del cobro. El panel queda abierto para empezar de nuevo.
+   */
+  clearSale(): void {
+    this.resetSaleData();
+    this.unitPicker.set(null);
   }
 
   /**
@@ -2405,7 +2661,7 @@ export class PosComponent implements OnInit, OnDestroy {
    * que ya tiene registrado el pedido.
    */
   get tipAmount(): number {
-    if (this.targetOrder()) return 0;
+    if (this.targetOrder() || !this.form.tipEnabled) return 0;
     return mulMoney(
       this.subtotal - this.discountAmount,
       (Number(this.form.tipRate) || 0) / 100,
@@ -2482,6 +2738,131 @@ export class PosComponent implements OnInit, OnDestroy {
   private taxRateOf(order: Order): number {
     const taxable = sumMoney([order.subtotal, -order.discount]);
     return taxable > 0 ? (order.tax / taxable) * 100 : 0;
+  }
+
+  // ===========================================================================
+  //  PEDIDOS GUARDADOS
+  // ===========================================================================
+
+  /**
+   * Pedidos activos que quedaron guardados desde el POS (con o sin mesa). Se
+   * ordenan del más reciente al más antiguo: al guardar una venta, el cajero la
+   * encuentra arriba sin tener que buscarla.
+   */
+  get savedOrders(): Order[] {
+    return [...this.activeOrders()].sort((a, b) =>
+      b.createdAt.localeCompare(a.createdAt),
+    );
+  }
+
+  /** Resumen de los productos de un pedido guardado para identificarlo rápido. */
+  savedOrderSummary(order: Order): string {
+    const items = this.orderItems(order);
+    if (items.length === 0) {
+      const count = this.itemCount(order);
+      return count === 1 ? '1 producto' : `${count} productos`;
+    }
+    return items
+      .map((item) => `${item.quantity} × ${item.name}`)
+      .join(' · ');
+  }
+
+  /** Abre o cierra la lista de productos de un pedido guardado. */
+  toggleSavedOrder(orderId: string): void {
+    this.expandedSavedOrderId.update((current) => (current === orderId ? null : orderId));
+  }
+
+  /** `true` cuando la tarjeta muestra la lista editable de sus productos. */
+  isSavedOrderExpanded(order: Order): boolean {
+    return this.expandedSavedOrderId() === order.id;
+  }
+
+  /**
+   * Quita un producto cargado por error en un pedido guardado, en una mesa o en
+   * el panel lateral de cobro. El backend devuelve su stock al inventario y
+   * recalcula los totales. Si era la última línea, el pedido completo se cancela
+   * (también devuelve todo el stock) para que el cajero pueda corregir incluso un
+   * pedido de un solo producto sin quedarse con una venta vacía.
+   */
+  async removeOrderItem(order: Order, item: OrderItem): Promise<void> {
+    if (this.savedItemBusyId() || this.saving()) return;
+
+    const lastItem = this.orderItems(order).length <= 1;
+    const confirmed = await this.confirm.ask({
+      title: lastItem ? 'Cancelar pedido' : 'Quitar producto',
+      message: lastItem
+        ? `"${item.name}" es el único producto del pedido ${order.code}. Si lo quitas, se cancelará el pedido completo y su stock volverá al inventario.`
+        : `¿Quitar "${item.name}" del pedido ${order.code}? El stock vuelve al inventario y se recalculan los totales.`,
+      confirmLabel: lastItem ? 'Cancelar pedido' : 'Quitar',
+      tone: 'danger',
+    });
+    if (!confirmed) return;
+
+    if (lastItem) {
+      this.cancelOrderRequest(order, item.id);
+      return;
+    }
+
+    this.savedItemBusyId.set(item.id);
+    this.orders.removeItem(order.id, item.id).subscribe({
+      next: (updated) => {
+        this.savedItemBusyId.set(null);
+        this.activeOrders.update((orders) =>
+          orders.map((current) => (current.id === updated.id ? updated : current)),
+        );
+        if (this.targetOrder()?.id === updated.id) this.targetOrder.set(updated);
+        this.toast.success(`"${item.name}" quitado del pedido ${order.code}`);
+      },
+      error: (error) => {
+        this.savedItemBusyId.set(null);
+        this.toast.error(apiErrorMessage(error));
+      },
+    });
+  }
+
+  /**
+   * Cancela el pedido completo desde el panel lateral (mesa o pedido guardado):
+   * sus productos vuelven al inventario y la mesa queda libre.
+   */
+  async cancelOrder(order: Order): Promise<void> {
+    if (this.savedItemBusyId() || this.saving()) return;
+
+    const pending = this.lines().length;
+    const confirmed = await this.confirm.ask({
+      title: 'Cancelar pedido',
+      message:
+        `¿Cancelar el pedido ${order.code}? Se quitarán todos sus productos y el stock volverá al inventario.` +
+        (pending > 0 ? ' También se descartarán los productos que aún no has guardado.' : ''),
+      confirmLabel: 'Cancelar pedido',
+      tone: 'danger',
+    });
+    if (!confirmed) return;
+
+    this.cancelOrderRequest(order, order.id);
+  }
+
+  /** Envía la cancelación y limpia la venta en curso si era el pedido abierto. */
+  private cancelOrderRequest(order: Order, busyId: string): void {
+    this.savedItemBusyId.set(busyId);
+    this.orders.updateStatus(order.id, 'CANCELLED').subscribe({
+      next: () => {
+        this.savedItemBusyId.set(null);
+        this.activeOrders.update((orders) =>
+          orders.filter((current) => current.id !== order.id),
+        );
+        if (this.expandedSavedOrderId() === order.id) {
+          this.expandedSavedOrderId.set(null);
+        }
+        // Al cancelar la mesa o el guardado que se estaba cobrando, el panel se
+        // cierra y queda una venta nueva lista para el siguiente cliente.
+        if (this.targetOrder()?.id === order.id) this.resetSale();
+        this.toast.success(`Pedido ${order.code} cancelado y stock devuelto`);
+      },
+      error: (error) => {
+        this.savedItemBusyId.set(null);
+        this.toast.error(apiErrorMessage(error));
+      },
+    });
   }
 
   // ===========================================================================
@@ -2656,14 +3037,13 @@ export class PosComponent implements OnInit, OnDestroy {
     this.charge.received = sumMoney([this.chargeAmount, extra]);
   }
 
-  /** Atajo de propina (0 % = venta sin propina). */
-  setTipRate(rate: number): void {
-    this.form.tipRate = rate;
-  }
-
-  /** Normaliza el porcentaje de propina escrito a mano (0-100). */
-  applyTipRate(): void {
-    this.form.tipRate = normalizeTipPercent(this.form.tipRate);
+  /**
+   * Enciende o apaga la propina de la venta. Al encenderla se aplica el
+   * porcentaje configurado por el admin; al apagarla la propina queda en cero.
+   */
+  setTip(enabled: boolean): void {
+    this.form.tipEnabled = enabled;
+    this.form.tipRate = enabled ? this.preferences.tipPercent() : 0;
   }
 
   /** Al cambiar de moneda el efectivo recibido deja de ser válido. */
@@ -2874,6 +3254,14 @@ export class PosComponent implements OnInit, OnDestroy {
 
   /** Limpia el carrito, el modo pedido y los datos de la venta. */
   private resetSale(): void {
+    this.resetSaleData();
+    this.search = '';
+    // Terminada (o reiniciada) la venta, el panel de cobro vuelve a cerrarse.
+    this.cartOpen.set(false);
+  }
+
+  /** Deja la venta en blanco sin tocar los filtros ni el estado del panel. */
+  private resetSaleData(): void {
     this.targetOrder.set(null);
     this.lines.set([]);
     this.form = {
@@ -2883,16 +3271,15 @@ export class PosComponent implements OnInit, OnDestroy {
       notes: '',
       discount: 0,
       taxRate: 0,
-      // Cada venta nueva propone la propina configurada (opcional).
+      // Cada venta nueva arranca con la propina configurada; el cajero puede
+      // apagarla con «No».
       tipRate: this.preferences.tipPercent(),
+      tipEnabled: this.preferences.tipPercent() > 0,
       deliveryFee: 0,
       deliveryFeeCurrency: BASE_CURRENCY.code,
     };
     this.charge = { method: 'CASH', currency: BASE_CURRENCY.code, received: 0 };
-    this.search = '';
     this.formError.set(null);
-    // Terminada (o reiniciada) la venta, el panel de cobro vuelve a cerrarse.
-    this.cartOpen.set(false);
   }
 
   /** Sale del modo «agregar a un pedido» sin guardar nada. */

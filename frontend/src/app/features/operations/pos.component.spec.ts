@@ -7,6 +7,7 @@ import type { MenuOption } from '../../core/models/api.model';
 import type { Order, OrderItem } from '../../core/models/operations.model';
 import type { RatesSnapshot } from '../../core/models/rates.model';
 import { RatesService } from '../../core/services/rates.service';
+import { ConfirmService } from '../../shared/services/confirm.service';
 import { money, setDisplayCurrency } from '../../core/utils/format';
 import { unitPriceOf } from '../../core/utils/product-pricing';
 import { PosComponent } from './pos.component';
@@ -324,6 +325,440 @@ describe('PosComponent (vista de cajero)', () => {
   });
 
   /**
+   * El pie del panel trae un botón **Vaciar** que deja la venta en blanco: no
+   * solo quita el carrito, también borra cliente, mesa, notas, descuentos,
+   * delivery y los datos del cobro. El panel sigue abierto para empezar de nuevo.
+   */
+  it('vacía todo el contenido de la venta desde el botón Vaciar del sidebar', () => {
+    const { fixture, pos } = mount();
+
+    pos.addProduct(PRODUCTS[0]);
+    pos.form.type = 'DELIVERY';
+    pos.form.customerId = 'c1';
+    pos.form.tableNumber = '4';
+    pos.form.notes = 'Sin cebolla';
+    pos.form.discount = 5;
+    pos.form.taxRate = 18;
+    pos.form.tipEnabled = false;
+    pos.form.tipRate = 0;
+    pos.form.deliveryFee = 4;
+    pos.charge.method = 'CASH';
+    pos.charge.currency = 'VES';
+    pos.charge.received = 100;
+    pos.formError.set('Error de prueba');
+    fixture.detectChanges();
+
+    const clear = fixture.nativeElement.querySelector(
+      '[data-pos-clear]',
+    ) as HTMLButtonElement | null;
+    expect(clear).not.toBeNull();
+    expect(clear!.textContent).toContain('Vaciar');
+
+    clear!.click();
+    fixture.detectChanges();
+
+    expect(pos.lines().length).toBe(0);
+    expect(pos.total).toBe(0);
+    expect(pos.form.customerId).toBe('');
+    expect(pos.form.type).toBe('DINE_IN');
+    expect(pos.form.tableNumber).toBe('');
+    expect(pos.form.notes).toBe('');
+    expect(pos.form.discount).toBe(0);
+    expect(pos.form.taxRate).toBe(0);
+    // La venta nueva vuelve a arrancar con la propina configurada por el admin.
+    expect(pos.form.tipEnabled).toBeTrue();
+    expect(pos.form.tipRate).toBe(10);
+    expect(pos.form.deliveryFee).toBe(0);
+    expect(pos.charge.currency).toBe('USD');
+    expect(pos.charge.received).toBe(0);
+    expect(pos.formError()).toBeNull();
+    // El panel no se cierra: queda listo para una venta nueva.
+    expect(pos.cartOpen()).toBeTrue();
+    expect(fixture.nativeElement.textContent).toContain(
+      'Toca un producto de la grilla para empezar la venta.',
+    );
+  });
+
+  /**
+   * Tercera pestaña del POS: los pedidos que se guardaron sin cobrar quedan a la
+   * vista aunque no tengan mesa, y se pueden retomar o cobrar desde ahí.
+   */
+  it('lista los pedidos guardados en su propia pestaña y permite retomarlos', () => {
+    const { fixture, pos } = mount([], false);
+
+    const tab = fixture.nativeElement.querySelector(
+      '[data-pos-tab-saved]',
+    ) as HTMLButtonElement | null;
+    expect(tab).not.toBeNull();
+    expect(tab!.textContent).toContain('Guardados');
+
+    tab!.click();
+    fixture.detectChanges();
+
+    expect(pos.tab()).toBe('saved');
+    expect(fixture.nativeElement.textContent).toContain('No hay pedidos guardados');
+
+    pos.activeOrders.set([
+      order({
+        id: 'o2',
+        code: 'PED-0002',
+        tableNumber: '4',
+        subtotal: 60,
+        total: 60,
+        paidAmount: 20,
+        paymentStatus: 'PARTIAL',
+        createdAt: '2026-10-13T11:00:00.000Z',
+        items: [
+          {
+            id: 'i2',
+            orderId: 'o2',
+            productId: 'p1',
+            name: 'Cafe pasado',
+            quantity: 2,
+            unitPrice: 30,
+            total: 60,
+          },
+        ],
+      }),
+      order({
+        id: 'o3',
+        code: 'PED-0003',
+        type: 'TAKEAWAY',
+        subtotal: 30,
+        total: 30,
+        createdAt: '2026-10-13T12:00:00.000Z',
+        items: [
+          {
+            id: 'i3',
+            orderId: 'o3',
+            productId: 'p1',
+            name: 'Cafe pasado',
+            quantity: 1,
+            unitPrice: 30,
+            total: 30,
+          },
+        ],
+      }),
+    ]);
+    fixture.detectChanges();
+
+    const cards = fixture.nativeElement.querySelectorAll(
+      '[data-pos-saved-order]',
+    ) as NodeListOf<HTMLElement>;
+    expect(cards.length).toBe(2);
+    // El más reciente queda primero para encontrarlo al terminar de guardarlo.
+    expect(cards[0].textContent).toContain('PED-0003');
+    expect(cards[0].textContent).toContain('Para llevar');
+    expect(cards[0].textContent).toContain('1 × Cafe pasado');
+    expect(cards[1].textContent).toContain('PED-0002');
+    expect(cards[1].textContent).toContain('Mesa 4');
+    expect(cards[1].textContent).toContain('Pago parcial');
+    expect(tab!.textContent).toContain('2');
+
+    // «Cobrar» reabre el pedido en la vista de venta con el saldo pendiente.
+    const charge = cards[1].querySelector(
+      '[data-pos-saved-charge]',
+    ) as HTMLButtonElement | null;
+    expect(charge).not.toBeNull();
+    charge!.click();
+    fixture.detectChanges();
+
+    expect(pos.tab()).toBe('sale');
+    expect(pos.targetOrder()?.id).toBe('o2');
+    expect(pos.cartOpen()).toBeTrue();
+
+    // «Agregar» también retoma el pedido guardado.
+    pos.tab.set('saved');
+    fixture.detectChanges();
+    const add = fixture.nativeElement.querySelector(
+      '[data-pos-saved-add]',
+    ) as HTMLButtonElement | null;
+    expect(add).not.toBeNull();
+    add!.click();
+    fixture.detectChanges();
+
+    expect(pos.tab()).toBe('sale');
+    expect(pos.targetOrder()?.id).toBe('o3');
+    expect(pos.cartOpen()).toBeTrue();
+  });
+
+  /**
+   * Un pedido guardado se puede corregir: el cajero despliega sus productos y
+   * quita el que se cargó por error. El backend devuelve el stock al inventario y
+   * la tarjeta toma los totales recalculados de la respuesta.
+   */
+  it('permite quitar un producto de un pedido guardado', async () => {
+    const { fixture, pos } = mount([], false);
+    const items: OrderItem[] = [
+      {
+        id: 'i2',
+        orderId: 'o2',
+        productId: 'p1',
+        name: 'Cafe pasado',
+        quantity: 2,
+        unitPrice: 30,
+        total: 60,
+      },
+      {
+        id: 'i4',
+        orderId: 'o2',
+        productId: 'p2',
+        name: 'Malta',
+        quantity: 1,
+        unitPrice: 10,
+        total: 10,
+      },
+    ];
+    const saved = order({
+      id: 'o2',
+      code: 'PED-0002',
+      subtotal: 70,
+      total: 70,
+      items,
+    });
+
+    pos.activeOrders.set([saved]);
+    pos.tab.set('saved');
+    fixture.detectChanges();
+
+    // La tarjeta deja abrir la lista de productos antes de tocar la papelera.
+    const toggle = fixture.nativeElement.querySelector(
+      '[data-pos-saved-toggle-items]',
+    ) as HTMLButtonElement | null;
+    expect(toggle).not.toBeNull();
+    expect(toggle!.textContent).toContain('Editar productos');
+    toggle!.click();
+    fixture.detectChanges();
+
+    const rows = fixture.nativeElement.querySelectorAll(
+      '[data-pos-saved-item]',
+    ) as NodeListOf<HTMLElement>;
+    expect(rows.length).toBe(2);
+    expect(rows[0].textContent).toContain('2 × Cafe pasado');
+    expect(rows[1].textContent).toContain('1 × Malta');
+
+    const remove = rows[0].querySelector(
+      '[data-pos-saved-remove-item]',
+    ) as HTMLButtonElement | null;
+    expect(remove).not.toBeNull();
+    expect(remove!.textContent).toContain('Quitar');
+    expect(remove!.title).toBe('Quitar producto');
+    expect(remove!.getAttribute('aria-label')).toBe(
+      'Quitar Cafe pasado del pedido PED-0002',
+    );
+
+    // Primero confirma: un descuido del cajero no debe borrar el producto.
+    const confirm = TestBed.inject(ConfirmService);
+    const removal = pos.removeOrderItem(saved, items[0]);
+    expect(confirm.state().open).toBeTrue();
+    expect(confirm.state().message).toContain('Cafe pasado');
+    confirm.resolve(true);
+    await removal;
+
+    const request = http.expectOne(`${API}/orders/o2/items/i2`);
+    expect(request.request.method).toBe('DELETE');
+    const remaining = { ...saved, subtotal: 10, total: 10, items: [items[1]] };
+    request.flush(remaining);
+    fixture.detectChanges();
+
+    expect(pos.savedOrders[0].total).toBe(10);
+    expect(pos.savedOrders[0].items?.length).toBe(1);
+    const text = fixture.nativeElement.textContent as string;
+    expect(text).toContain('Malta');
+    expect(text).not.toContain('Cafe pasado');
+
+    // Si solo queda una línea, el cajero también puede corregirla: se confirma
+    // la cancelación del pedido y el backend devuelve todo el stock.
+    const lastRemove = fixture.nativeElement.querySelector(
+      '[data-pos-saved-remove-item]',
+    ) as HTMLButtonElement | null;
+    expect(lastRemove).not.toBeNull();
+    expect(lastRemove!.disabled).toBeFalse();
+    expect(lastRemove!.title).toBe('Quitar el último producto (cancela el pedido)');
+    expect(lastRemove!.getAttribute('aria-label')).toBe(
+      'Cancelar el pedido PED-0002 y quitar Malta',
+    );
+
+    const cancellation = pos.removeOrderItem(pos.savedOrders[0], items[1]);
+    expect(confirm.state().open).toBeTrue();
+    expect(confirm.state().title).toBe('Cancelar pedido');
+    expect(confirm.state().message).toContain('se cancelará el pedido completo');
+    confirm.resolve(true);
+    await cancellation;
+
+    const cancelRequest = http.expectOne(`${API}/orders/o2/status`);
+    expect(cancelRequest.request.method).toBe('PATCH');
+    expect(cancelRequest.request.body).toEqual({ status: 'CANCELLED' });
+    cancelRequest.flush({ ...remaining, status: 'CANCELLED' });
+    fixture.detectChanges();
+
+    expect(pos.savedOrders.length).toBe(0);
+    expect(fixture.nativeElement.textContent).toContain('No hay pedidos guardados');
+  });
+
+  /**
+   * El panel lateral de cobro también es una vía para corregir una mesa o un
+   * guardado: cada producto ya cargado se puede quitar y el pedido completo se
+   * puede cancelar sin salir de la venta.
+   */
+  it('permite quitar productos y cancelar el pedido desde el panel lateral', async () => {
+    const { fixture, pos } = mount();
+    const items: OrderItem[] = [
+      {
+        id: 'i1',
+        orderId: 'o9',
+        productId: 'p1',
+        name: 'Cafe pasado',
+        quantity: 2,
+        unitPrice: 30,
+        total: 60,
+      },
+      {
+        id: 'i2',
+        orderId: 'o9',
+        productId: 'p2',
+        name: 'Malta (caja 24)',
+        quantity: 24,
+        unitPrice: 1,
+        total: 24,
+      },
+    ];
+    const tableOrder = order({
+      id: 'o9',
+      code: 'PED-0009',
+      tableNumber: '4',
+      items,
+      subtotal: 84,
+      total: 84,
+    });
+
+    pos.activeOrders.set([tableOrder]);
+    pos.startAddToOrder(tableOrder);
+    fixture.detectChanges();
+
+    // Los productos ya cargados en la mesa tienen su propia papelera.
+    const removeButtons = fixture.nativeElement.querySelectorAll(
+      '[data-pos-target-remove-item]',
+    ) as NodeListOf<HTMLButtonElement>;
+    expect(removeButtons.length).toBe(2);
+    expect(removeButtons[0].textContent).toContain('Quitar');
+    expect(removeButtons[0].getAttribute('aria-label')).toBe(
+      'Quitar Cafe pasado del pedido PED-0009',
+    );
+
+    const confirm = TestBed.inject(ConfirmService);
+    const removal = pos.removeOrderItem(tableOrder, items[0]);
+    expect(confirm.state().open).toBeTrue();
+    expect(confirm.state().message).toContain('Cafe pasado');
+    confirm.resolve(true);
+    await removal;
+
+    const request = http.expectOne(`${API}/orders/o9/items/i1`);
+    expect(request.request.method).toBe('DELETE');
+    const remaining = {
+      ...tableOrder,
+      subtotal: 24,
+      total: 24,
+      items: [items[1]],
+    };
+    request.flush(remaining);
+    fixture.detectChanges();
+
+    // El panel y la cuenta se actualizan sin salir del modo cobro.
+    expect(pos.targetOrder()?.items?.length).toBe(1);
+    expect(pos.bill.subtotal).toBe(24);
+    expect(pos.bill.total).toBe(24);
+    const text = (fixture.nativeElement.querySelector(
+      '[data-pos-cart-panel]',
+    ) as HTMLElement).textContent as string;
+    expect(text).not.toContain('Cafe pasado');
+    expect(text).toContain('Malta (caja 24)');
+
+    // El botón de cancelar vive junto a «Salir del pedido».
+    const cancelButton = fixture.nativeElement.querySelector(
+      '[data-pos-cancel-order]',
+    ) as HTMLButtonElement | null;
+    expect(cancelButton).not.toBeNull();
+    expect(cancelButton!.textContent).toContain('Cancelar pedido');
+
+    const cancellation = pos.cancelOrder(pos.targetOrder()!);
+    expect(confirm.state().open).toBeTrue();
+    expect(confirm.state().title).toBe('Cancelar pedido');
+    expect(confirm.state().message).toContain('PED-0009');
+    confirm.resolve(true);
+    await cancellation;
+
+    const cancelRequest = http.expectOne(`${API}/orders/o9/status`);
+    expect(cancelRequest.request.method).toBe('PATCH');
+    expect(cancelRequest.request.body).toEqual({ status: 'CANCELLED' });
+    cancelRequest.flush({ ...remaining, status: 'CANCELLED' });
+    fixture.detectChanges();
+
+    expect(pos.targetOrder()).toBeNull();
+    expect(pos.activeOrders().length).toBe(0);
+    expect(pos.cartOpen()).toBeFalse();
+    expect(fixture.nativeElement.querySelector('aside[role="dialog"]')).toBeNull();
+  });
+
+  /**
+   * Si el pedido abierto en el panel tiene una sola línea, quitarla cancela el
+   * pedido completo y descarta la venta en curso en vez de dejar un carrito vacío.
+   */
+  it('cancela el pedido al quitar su último producto desde el panel lateral', async () => {
+    const { fixture, pos } = mount();
+    const items: OrderItem[] = [
+      {
+        id: 'i1',
+        orderId: 'o9',
+        productId: 'p1',
+        name: 'Cafe pasado',
+        quantity: 2,
+        unitPrice: 30,
+        total: 60,
+      },
+    ];
+    const tableOrder = order({
+      id: 'o9',
+      code: 'PED-0009',
+      tableNumber: '4',
+      items,
+      subtotal: 60,
+      total: 60,
+    });
+
+    pos.activeOrders.set([tableOrder]);
+    pos.startAddToOrder(tableOrder);
+    fixture.detectChanges();
+
+    const remove = fixture.nativeElement.querySelector(
+      '[data-pos-target-remove-item]',
+    ) as HTMLButtonElement | null;
+    expect(remove).not.toBeNull();
+    expect(remove!.title).toBe('Quitar el último producto (cancela el pedido)');
+    expect(remove!.getAttribute('aria-label')).toBe(
+      'Cancelar el pedido PED-0009 y quitar Cafe pasado',
+    );
+
+    const confirm = TestBed.inject(ConfirmService);
+    const removal = pos.removeOrderItem(tableOrder, items[0]);
+    expect(confirm.state().open).toBeTrue();
+    expect(confirm.state().title).toBe('Cancelar pedido');
+    expect(confirm.state().message).toContain('se cancelará el pedido completo');
+    confirm.resolve(true);
+    await removal;
+
+    const request = http.expectOne(`${API}/orders/o9/status`);
+    expect(request.request.method).toBe('PATCH');
+    expect(request.request.body).toEqual({ status: 'CANCELLED' });
+    request.flush({ ...tableOrder, status: 'CANCELLED' });
+    fixture.detectChanges();
+
+    expect(pos.targetOrder()).toBeNull();
+    expect(pos.activeOrders().length).toBe(0);
+    expect(pos.cartOpen()).toBeFalse();
+  });
+
+  /**
    * Presentaciones: al agregar una caja/paquete el POS pregunta qué se entrega y
    * cada opción se cobra a su precio (la caja al del catálogo, la unidad suelta al
    * repartido). El carrito guarda siempre unidades de inventario.
@@ -410,7 +845,7 @@ describe('PosComponent (vista de cajero)', () => {
     const { fixture, pos } = mount();
     const malta: ProductOption = { ...PRODUCTS[1], price: 72, unitPrice: 3.5, stock: 48 };
 
-    pos.setTipRate(0);
+    pos.setTip(false);
     pos.addProduct(malta);
     pos.pickSaleUnit('CAJA');
     pos.submitSale(true);
@@ -542,7 +977,7 @@ describe('PosComponent (vista de cajero)', () => {
   it('cobra la caja completa como sus unidades sueltas al precio repartido', () => {
     const { fixture, pos } = mount();
 
-    pos.setTipRate(0);
+    pos.setTip(false);
     pos.addProduct(PRODUCTS[1]);
     pos.pickSaleUnit('CAJA');
     pos.submitSale(true);
@@ -582,9 +1017,11 @@ describe('PosComponent (vista de cajero)', () => {
     expect(pos.lines()[0].inputUnit).toBe('UND');
   });
 
-  it('arranca con la propina sugerida (10 %) y la aplica sobre el neto', () => {
+  it('aplica la propina configurada solo cuando se elige «Sí»', () => {
     const { fixture, pos } = mount();
 
+    // La venta arranca con la propina que configuró el admin (10 %).
+    expect(pos.form.tipEnabled).toBeTrue();
     expect(pos.form.tipRate).toBe(10);
     expect(pos.tipAmount).toBe(0);
 
@@ -595,13 +1032,62 @@ describe('PosComponent (vista de cajero)', () => {
     expect(pos.tipAmount).toBe(3);
     expect(pos.total).toBe(33);
 
-    // La propina es opcional y no paga IGV: con 18 % de IGV el total es 30 + 5.4.
+    // «No» deja la propina en cero: no se cobra nada por ese concepto.
+    pos.setTip(false);
+    fixture.detectChanges();
+
+    expect(pos.form.tipEnabled).toBeFalse();
+    expect(pos.form.tipRate).toBe(0);
+    expect(pos.tipAmount).toBe(0);
+    expect(pos.total).toBe(30);
+
+    // «Sí» vuelve a aplicar el porcentaje configurado por el admin.
+    pos.setTip(true);
+    expect(pos.form.tipEnabled).toBeTrue();
+    expect(pos.form.tipRate).toBe(10);
+    expect(pos.tipAmount).toBe(3);
+
+    // La propina no paga IGV: con 18 % de IGV y sin propina son 30 + 5.4.
     pos.form.taxRate = 18;
-    pos.setTipRate(0);
+    pos.setTip(false);
     fixture.detectChanges();
 
     expect(pos.tipAmount).toBe(0);
     expect(pos.total).toBe(35.4);
+  });
+
+  /** La propina ya no se escribe a mano: es un Sí/No con el monto calculado. */
+  it('muestra la propina como Sí/No y aplica el monto al instante', () => {
+    const { fixture, pos } = mount();
+    pos.addProduct(PRODUCTS[0]);
+    fixture.detectChanges();
+
+    const panel = fixture.nativeElement.querySelector(
+      '[data-pos-tip]',
+    ) as HTMLElement | null;
+    const yes = fixture.nativeElement.querySelector(
+      '[data-pos-tip-yes]',
+    ) as HTMLButtonElement;
+    const no = fixture.nativeElement.querySelector(
+      '[data-pos-tip-no]',
+    ) as HTMLButtonElement;
+    expect(panel).not.toBeNull();
+    expect(panel!.textContent).toContain('Propina');
+    expect(panel!.textContent).toContain('Sí');
+    expect(panel!.textContent).toContain('No');
+    expect(panel!.textContent).toContain('3');
+    expect(yes.getAttribute('aria-pressed')).toBe('true');
+
+    no.click();
+    fixture.detectChanges();
+    expect(pos.form.tipEnabled).toBeFalse();
+    expect(pos.tipAmount).toBe(0);
+    expect(no.getAttribute('aria-pressed')).toBe('true');
+
+    yes.click();
+    fixture.detectChanges();
+    expect(pos.form.tipEnabled).toBeTrue();
+    expect(pos.tipAmount).toBe(3);
   });
 
   /**
@@ -687,7 +1173,7 @@ describe('PosComponent (vista de cajero)', () => {
     http.expectOne(`${API}/rates`).flush(RATES);
     fixture.detectChanges();
 
-    pos.setTipRate(0);
+    pos.setTip(false);
     pos.addProduct(PRODUCTS[0]);
 
     // 30 USD se ven como Bs 28.500,00 (personalizada 950) y esos bolívares, al
@@ -747,7 +1233,7 @@ describe('PosComponent (vista de cajero)', () => {
       bsPerUsd: 905,
     });
 
-    pos.setTipRate(0);
+    pos.setTip(false);
     pos.addProduct(PRODUCTS[0]);
 
     expect(pos.charge.currency).toBe('USD');
@@ -799,7 +1285,7 @@ describe('PosComponent (vista de cajero)', () => {
     const { fixture, pos } = mount();
 
     pos.addProduct(PRODUCTS[0]);
-    pos.setTipRate(0);
+    pos.setTip(false);
     pos.form.type = 'DELIVERY';
     pos.form.deliveryFee = 4;
     fixture.detectChanges();
@@ -835,7 +1321,7 @@ describe('PosComponent (vista de cajero)', () => {
     const { fixture, pos } = mount();
 
     pos.addProduct(PRODUCTS[0]);
-    pos.setTipRate(0);
+    pos.setTip(false);
     // El cajero escribió un costo pero el pedido es de salón: no se cobra.
     pos.form.deliveryFee = 4;
     fixture.detectChanges();
@@ -1126,11 +1612,11 @@ describe('PosComponent (vista de cajero)', () => {
   });
 
   /**
-   * Las tarjetas se pensaron para mostrar mucho catálogo de un vistazo: como
-   * mínimo 5 columnas en escritorio y piezas compactas (foto de 5rem, textos
-   * pequeños y separación reducida).
+   * Las tarjetas se pensaron para mostrar mucho catálogo de un vistazo: 4
+   * columnas desde 600 px y 6 en escritorio, con piezas compactas (foto de
+   * 5rem, textos pequeños y separación reducida).
    */
-  it('muestra las tarjetas compactas con 6 columnas en escritorio', () => {
+  it('muestra las tarjetas compactas con 4 columnas en 601 px y 6 en escritorio', () => {
     const { fixture } = mount();
 
     expect(localStorage.getItem('nexo-hub.pos-view')).toBeNull();
@@ -1138,6 +1624,9 @@ describe('PosComponent (vista de cajero)', () => {
     expect(grid).not.toBeNull();
     expect(grid!.classList.contains('md:grid-cols-6')).toBeTrue();
     expect(grid!.classList.contains('md:grid-cols-5')).toBeFalse();
+    // En una pantalla de 601 px se ven 4 columnas (antes se veían 2).
+    expect(grid!.classList.contains('min-[600px]:grid-cols-4')).toBeTrue();
+    expect(grid!.classList.contains('sm:grid-cols-3')).toBeFalse();
     expect(grid!.classList.contains('gap-2')).toBeTrue();
     expect(grid!.classList.contains('p-2')).toBeTrue();
     expect(grid!.classList.contains('[scrollbar-gutter:stable]')).toBeTrue();
