@@ -656,10 +656,11 @@ describe('PosComponent (vista de cajero)', () => {
     // Pagando en bolívares el cliente entrega el precio de la pantalla, tal cual.
     pos.charge.currency = 'VES';
     expect(pos.chargeAmount).toBe(28500);
-    // La ayuda del cobro dice el mismo equivalente que el API va a registrar: los
-    // bolívares de la pantalla (28.500,00), al cambio del BCV, son $ 32,50.
+    // La tarjeta de cobro no repite la conversión: el monto se lee en el campo y
+    // en el resumen "Se cobrará", sin la línea "≈ Bs … al cambio".
     fixture.detectChanges();
-    expect(fixture.nativeElement.textContent as string).toContain(
+    expect(fixture.nativeElement.textContent as string).not.toContain('al cambio');
+    expect(fixture.nativeElement.textContent as string).not.toContain(
       '= $ 32.50 · Bs 28,500.00 · tasa BCV',
     );
 

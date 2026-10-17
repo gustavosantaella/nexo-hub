@@ -699,11 +699,9 @@ export class OrdersService {
             `El menu "${recipe.name}" esta inactivo y no puede venderse`,
           );
         }
-        if (recipe.ingredients.length === 0) {
-          throw new BadRequestException(
-            `El menu "${recipe.name}" no tiene receta cargada`,
-          );
-        }
+        // La receta es opcional: un menu sin ingredientes se cobra a su precio
+        // y no descuenta inventario (su consumo queda vacio). Bloquear la venta
+        // obligaba a cargar una receta solo para poder cobrar el plato.
         // Un ingrediente desactivado despues de armar la receta deja el menu
         // invendible: se avisa cual es para que se corrija la receta.
         const inactive = recipe.ingredients.filter(

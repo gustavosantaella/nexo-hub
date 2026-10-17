@@ -200,6 +200,15 @@ const MENUS: Record<string, MenuFixture> = {
       { productId: 'p3', quantity: 1, productName: 'Descontinuado', active: false },
     ],
   },
+  // Sin receta cargada: se cobra a su precio y no descuenta inventario.
+  m4: {
+    id: 'm4',
+    code: 'MEN-4',
+    name: 'Alitas BBQ 20 unidades',
+    price: 30,
+    active: true,
+    ingredients: [],
+  },
 };
 
 function createService(
@@ -1307,6 +1316,32 @@ describe('OrdersService (menus con receta)', () => {
       unitPrice: 99.5,
       total: 99.5,
     });
+  });
+
+  it('vende un menu sin receta: lo cobra a su precio y no mueve inventario', async () => {
+    const { service, tx, inventory } = createService(order());
+
+    await service.addItems(
+      COMPANY_ID,
+      'o1',
+      { items: [{ menuId: 'm4', quantity: 2 }] },
+      'u1',
+    );
+
+    // Sin receta no hay consumo congelado: la linea se cobra igual.
+    expect(itemsWrite(tx).create).toEqual([
+      {
+        companyId: COMPANY_ID,
+        productId: null,
+        menuId: 'm4',
+        name: 'Alitas BBQ 20 unidades',
+        quantity: 2,
+        unitPrice: 30,
+        total: 60,
+        consumption: null,
+      },
+    ]);
+    expect(inventory.applyMovement).not.toHaveBeenCalled();
   });
 
   it('rechaza un menu inexistente', async () => {

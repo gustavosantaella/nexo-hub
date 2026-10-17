@@ -3,6 +3,7 @@ import type { ConfigService } from '@nestjs/config';
 import type { CurrencySetting } from '../../common/constants/currencies';
 import type { PrismaService } from '../../prisma/prisma.service';
 import type { CurrenciesService } from '../currencies/currencies.service';
+import type { PreferencesService } from '../preferences/preferences.service';
 import { CUSTOM_RATE_KEY, RatesService } from './rates.service';
 
 /** Empresa de prueba usada en todas las llamadas (multi-tenant). */
@@ -94,6 +95,7 @@ function buildService(options: {
   cacheTtlSeconds?: number;
   currencies?: CurrencySetting[];
   baseCurrency?: string;
+  preferencePriceCurrency?: string | null;
 }): { service: RatesService; prisma: Record<string, jest.Mock> } {
   const setting = options.setting ?? null;
   const prisma = {
@@ -123,9 +125,16 @@ function buildService(options: {
     baseCurrencyCode: jest.fn().mockResolvedValue(options.baseCurrency ?? 'USD'),
   };
 
+  const preferences = {
+    find: jest.fn().mockResolvedValue({
+      priceCurrency: options.preferencePriceCurrency ?? null,
+    }),
+  };
+
   const service = new RatesService(
     { setting: settingDelegate } as unknown as PrismaService,
     currencies as unknown as CurrenciesService,
+    preferences as unknown as PreferencesService,
     config as unknown as ConfigService,
   );
 
@@ -650,6 +659,27 @@ describe('RatesService', () => {
       await expect(
         service.chargeBalance(COMPANY_ID, 100, 'BCV_USD'),
       ).resolves.toBe(100);
+    });
+
+    it('usa la moneda de precios del cajero aunque la base contable sea el dolar', async () => {
+      // Regresion: la empresa guarda los montos en USD (`currencies.base`) pero
+      // el cajero ve los precios en Bs (`priceCurrency` del POS). El saldo maximo
+      // debe salir de los Bs que lee en pantalla, no del total en dolares.
+      const { service } = buildService({
+        fetchImpl: fetchMock,
+        baseCurrency: 'USD',
+        preferencePriceCurrency: 'VES',
+        setting: {
+          key: CUSTOM_RATE_KEY,
+          value: '905.5',
+          updatedAt: new Date('2026-10-13T12:00:00.000Z'),
+          updatedBy: null,
+        },
+      });
+
+      await expect(
+        service.chargeBalance(COMPANY_ID, 100, 'BCV_USD'),
+      ).resolves.toBe(103.27);
     });
 
     it('descarta una tasa inventada', async () => {

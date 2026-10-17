@@ -928,6 +928,7 @@ interface BillTotals {
                       label="Moneda"
                       [value]="charge.currency"
                       [amount]="chargeAmount"
+                      [showHint]="false"
                       [rateKey]="chargeRateKey()"
                       (valueChange)="onChargeCurrencyChange($event)"
                     />
@@ -973,11 +974,7 @@ interface BillTotals {
                     <span class="font-semibold">{{ amountIn(chargeAmount, charge.currency) }}</span>
                     en {{ charge.currency }}@if (chargeRateLabel(); as label) { · tasa {{ label }} }.
                   </p>
-                  <app-rate-conversions
-                    [amount]="chargeAmount"
-                    [currency]="charge.currency"
-                    [rateKey]="chargeRateKey()"
-                  />
+                 
                 }
               </div>
 
@@ -1370,16 +1367,16 @@ export class PosComponent implements OnInit, OnDestroy {
     /** Moneda del costo de delivery (el POS lo captura en USD). */
     deliveryFeeCurrency: string;
   } = {
-    customerId: '',
-    type: 'DINE_IN',
-    tableNumber: '',
-    notes: '',
-    discount: 0,
-    taxRate: 0,
-    tipRate: 0,
-    deliveryFee: 0,
-    deliveryFeeCurrency: BASE_CURRENCY.code,
-  };
+      customerId: '',
+      type: 'DINE_IN',
+      tableNumber: '',
+      notes: '',
+      discount: 0,
+      taxRate: 0,
+      tipRate: 0,
+      deliveryFee: 0,
+      deliveryFeeCurrency: BASE_CURRENCY.code,
+    };
 
   /** Cobro de la venta en curso. */
   charge: { method: PaymentMethod; currency: string; received: number } = {
@@ -2330,9 +2327,9 @@ export class PosComponent implements OnInit, OnDestroy {
         // Solo los pedidos a domicilio llevan costo de delivery (sin IGV).
         ...(deliveryFee > 0
           ? {
-              deliveryFee: Number(this.form.deliveryFee) || 0,
-              deliveryFeeCurrency: this.form.deliveryFeeCurrency || BASE_CURRENCY.code,
-            }
+            deliveryFee: Number(this.form.deliveryFee) || 0,
+            deliveryFeeCurrency: this.form.deliveryFeeCurrency || BASE_CURRENCY.code,
+          }
           : {}),
         items: this.lines().map((line) => this.itemsPayloadOf(line)),
       })
@@ -2403,23 +2400,23 @@ export class PosComponent implements OnInit, OnDestroy {
         ...(rateKey ? { rateKey } : {}),
       })
       .subscribe({
-      next: () => {
-        this.toast.success(
-          `Pedido ${order.code} cobrado con ${this.methodLabels[this.charge.method]}`,
-        );
-        this.backToSaleStart();
-      },
-      error: (error) => {
-        // El pedido ya quedó registrado: se avisa y se deja cobrar de nuevo.
-        this.saving.set(false);
-        this.toast.error(
-          `El pedido ${order.code} quedó guardado, pero el cobro falló: ${apiErrorMessage(error)}`,
-        );
-        this.targetOrder.set(order);
-        this.charge.received = 0;
-        this.reload();
-      },
-    });
+        next: () => {
+          this.toast.success(
+            `Pedido ${order.code} cobrado con ${this.methodLabels[this.charge.method]}`,
+          );
+          this.backToSaleStart();
+        },
+        error: (error) => {
+          // El pedido ya quedó registrado: se avisa y se deja cobrar de nuevo.
+          this.saving.set(false);
+          this.toast.error(
+            `El pedido ${order.code} quedó guardado, pero el cobro falló: ${apiErrorMessage(error)}`,
+          );
+          this.targetOrder.set(order);
+          this.charge.received = 0;
+          this.reload();
+        },
+      });
   }
 
   /** Cierra la venta en curso (sin cobro) y vuelve al inicio. */

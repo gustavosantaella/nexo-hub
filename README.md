@@ -182,8 +182,8 @@ Para partir de cero: `npm run db:reset` (borra la base, la recrea y siembra).
   cantidad, el consumo se pondera por unidades: `(2 × 0.1 + 3 × 0.2) / 5 = 0.16`,
   `common/utils/consumption.util.ts`); las líneas viejas sin snapshot siguen
   resolviéndose con la receta vigente. Los productos sin control de inventario no
-  generan movimiento; los menús sin receta no se pueden vender y se cobran a su
-  precio.
+  generan movimiento; los menús sin receta se cobran a su precio y no descuentan
+  inventario (la receta es opcional).
   En los reportes, la venta de un menú se atribuye **al menú** (no reparte el
   importe entre sus ingredientes): el menú aparece en *más vendidos* con su costo
   de receta y en *ventas por categoría* con su categoría de menú.

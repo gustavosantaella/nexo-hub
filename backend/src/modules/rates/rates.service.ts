@@ -21,6 +21,7 @@ import {
 } from '../../common/utils/currency.util';
 import { PrismaService } from '../../prisma/prisma.service';
 import { CurrenciesService } from '../currencies/currencies.service';
+import { PreferencesService } from '../preferences/preferences.service';
 
 /** Clave de `Setting` donde vive la tasa personalizada (Bs por USD). */
 export const CUSTOM_RATE_KEY = 'rates.custom_usd';
@@ -240,6 +241,7 @@ export class RatesService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly currencies: CurrenciesService,
+    private readonly preferences: PreferencesService,
     config: ConfigService,
   ) {
     this.bcvUrl =
@@ -644,13 +646,13 @@ export class RatesService {
   /**
    * Saldo que puede cubrir un cobro hecho con la **tasa de cobro** `rateKey`.
    *
-   * El cajero cobra el precio que lee en pantalla, y los montos se muestran en la
-   * moneda base de la empresa (`baseCurrency`), no en dolares: cuando la tasa de
-   * cobro no es la activa (el BCV en vez de la personalizada del local), el cobro
-   * en divisas vale MAS que el total del pedido —que esta en dolares— sin que sea
-   * un exceso real, y al cobrar en bolivares el cliente paga el precio de la
-   * pantalla. Esta es la misma conversion que hace el punto de venta antes de
-   * mandar el cobro.
+   * El cajero cobra el precio que lee en pantalla, y los precios se muestran en
+   * la moneda que la empresa eligio para el cajero (`priceCurrency`), no
+   * necesariamente en la moneda base contable: cuando la tasa de cobro no es la
+   * activa (el BCV en vez de la personalizada del local), el cobro en divisas vale
+   * MAS que el total del pedido —que esta en dolares— sin que sea un exceso real,
+   * y al cobrar en bolivares el cliente paga el precio de la pantalla. Esta es la
+   * misma conversion que hace el punto de venta antes de mandar el cobro.
    *
    * Sin tasa elegida devuelve el saldo tal cual (`fitToBalance` sigue comparando en
    * dolares); con la empresa mostrando los precios en dolares, tambien.
@@ -663,7 +665,7 @@ export class RatesService {
     const key = normalizeRateKey(rateKey);
     if (!key) return balance;
 
-    const displayCode = await this.currencies.baseCurrencyCode(companyId);
+    const displayCode = await this.chargeDisplayCode(companyId);
     if (displayCode === BASE_CURRENCY_CODE) return balance;
 
     const shown = convertFromBase(
@@ -679,6 +681,20 @@ export class RatesService {
       await this.conversionRates(companyId, displayCode, key),
     );
     return converted?.baseAmount ?? balance;
+  }
+
+  /**
+   * Moneda en la que el cajero VE los precios: la preferencia de la empresa
+   * (`priceCurrency`) y, sin ella, la moneda base contable. El punto de venta
+   * aplica exactamente esta regla antes de enviar el cobro, asi que el saldo
+   * maximo del backend tiene que usar la misma moneda.
+   */
+  private async chargeDisplayCode(companyId: string): Promise<string> {
+    const [baseCode, preferences] = await Promise.all([
+      this.currencies.baseCurrencyCode(companyId),
+      this.preferences.find(companyId),
+    ]);
+    return normalizeCurrencyCode(preferences.priceCurrency) || baseCode;
   }
 
   /** Lee la tasa personalizada de la empresa (o `null` si no existe). */

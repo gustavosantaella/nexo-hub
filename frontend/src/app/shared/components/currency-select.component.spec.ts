@@ -120,6 +120,7 @@ const CUSTOM_SNAPSHOT: RatesSnapshot = {
       label="Moneda del pago"
       [value]="currency()"
       [amount]="amount()"
+      [showHint]="showHint()"
       [rateKey]="rateKey()"
       (valueChange)="currency.set($event)"
     />
@@ -128,6 +129,7 @@ const CUSTOM_SNAPSHOT: RatesSnapshot = {
 class HostComponent {
   readonly currency = signal('USD');
   readonly amount = signal<number>(0);
+  readonly showHint = signal(true);
   readonly rateKey = signal<RateKey | null>(null);
 }
 
@@ -307,5 +309,20 @@ describe('CurrencySelectComponent', () => {
     fixture.detectChanges();
 
     expect(fixture.nativeElement.textContent).not.toContain('=');
+  });
+
+  /**
+   * En la tarjeta de cobro el operador elige la moneda, pero el equivalente
+   * (`≈ Bs … al cambio`) es ruido: el monto del cobro ya se muestra en el campo
+   * y en el resumen. `showHint` permite ocultarlo solo en ese formulario.
+   */
+  it('omite el equivalente del monto cuando showHint es false', () => {
+    fixture.componentInstance.amount.set(10);
+    fixture.componentInstance.rateKey.set('BCV_USD');
+    fixture.componentInstance.showHint.set(false);
+    fixture.detectChanges();
+
+    expect(fixture.nativeElement.textContent).not.toContain('al cambio');
+    expect(fixture.nativeElement.textContent).toContain('Dólares (USD) · tasa BCV');
   });
 });
