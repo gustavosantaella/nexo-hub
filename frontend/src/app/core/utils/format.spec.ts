@@ -198,6 +198,14 @@ describe('format (valores abreviados)', () => {
       expect(moneyLoaded(350, 'ves')).toBe('Bs 350.00');
     });
 
+    it('respeta el signo de un descuento guardado en la moneda elegida', () => {
+      setDisplayCurrency(BOLIVARES);
+
+      // La linea de descuento se pinta en negativo: se conserva el signo del
+      // monto cargado y no se cae al redondeo del USD.
+      expect(moneyLoaded(-350, 'VES')).toBe('Bs -350.00');
+    });
+
     it('abrevia el monto cargado con su valor exacto disponible', () => {
       setDisplayCurrency(BOLIVARES);
 

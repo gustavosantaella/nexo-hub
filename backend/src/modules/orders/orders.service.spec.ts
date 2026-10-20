@@ -13,13 +13,19 @@ import type { CashService } from '../cash/cash.service';
 import type { InventoryService } from '../inventory/inventory.service';
 import type { MenusService } from '../menus/menus.service';
 import type { NotificationsService } from '../notifications/notifications.service';
-import type { RatesService, RateHistory } from '../rates/rates.service';
+import type {
+  RatesService,
+  RateHistory,
+  SaleDisplay,
+} from '../rates/rates.service';
 import {
   OrdersService,
   computeOrderTotals,
   encodePaymentLines,
+  encodePriceBreakdown,
   encodeRatesHistory,
   parsePaymentLines,
+  parsePriceBreakdown,
   parseRatesHistory,
 } from './orders.service';
 import { OrdersRepository } from './orders.repository';
@@ -59,6 +65,34 @@ const RATES_HISTORY: RateHistory = {
     },
   ],
 };
+
+/**
+ * Vitrina simetrica: el cajero ve los precios en dolares al valor del catalogo,
+ * asi que no hay recargo ni snapshot en bolivares.
+ */
+const SALE_DISPLAY_USD: SaleDisplay = {
+  currency: 'USD',
+  displayRate: 1,
+  chargeRate: 1,
+  factor: 1,
+  lifted: false,
+};
+
+/**
+ * Vitrina con recargo: 970 Bs/USD en pantalla y 881,81 Bs/USD en el BCV (10% mas
+ * caro en dolares de venta). Es el caso que antes corrompia los montos: el precio
+ * en bolivares se guardaba y volvia a leerse distinto al multiplicar el USD.
+ */
+function liftedSale(overrides: Partial<SaleDisplay> = {}): SaleDisplay {
+  return {
+    currency: 'VES',
+    displayRate: 970,
+    chargeRate: 881.8181818181819,
+    factor: 1.1,
+    lifted: true,
+    ...overrides,
+  };
+}
 
 /** Catalogo de productos simulado (precios en la moneda base, decimales). */
 const PRODUCTS: Record<
@@ -314,6 +348,7 @@ function createService(
     {
       ratesHistory: jest.fn(async () => RATES_HISTORY),
       saleFactor: jest.fn(async () => 1),
+      saleDisplay: jest.fn(async () => SALE_DISPLAY_USD),
       ...rates,
     } as unknown as RatesService,
     menus as unknown as MenusService,
@@ -638,6 +673,7 @@ describe('OrdersService.addItems (agregar productos a un pedido)', () => {
         name: 'Postre',
         quantity: 1,
         unitPrice: 30,
+        unitPriceEntered: null,
         total: 30,
         // Un producto suelto se consume a si mismo: 1 unidad por unidad vendida.
         consumption: '[{"productId":"p2","quantity":1}]',
@@ -671,6 +707,7 @@ describe('OrdersService.addItems (agregar productos a un pedido)', () => {
         name: 'Cafe',
         quantity: 3,
         unitPrice: 50,
+        unitPriceEntered: null,
         total: 150,
         consumption: '[{"productId":"p1","quantity":1}]',
       },
@@ -735,6 +772,7 @@ describe('OrdersService.addItems (agregar productos a un pedido)', () => {
         name: 'Cafe',
         quantity: 1,
         unitPrice: 40,
+        unitPriceEntered: null,
         total: 40,
         consumption: '[{"productId":"p1","quantity":1}]',
       },
@@ -790,8 +828,9 @@ describe('OrdersService.create (costo de delivery)', () => {
 
   it('lleva los precios del catalogo al valor de venta de la vitrina', async () => {
     // Precio de catalogo 50 USD, vitrina 10% mas cara en USD: la linea y el
-    // subtotal se guardan ya inflados, que es lo que luego suma la caja.
-    const rates = { saleFactor: jest.fn(async () => 1.1) };
+    // subtotal se guardan ya inflados, que es lo que luego suma la caja. El
+    // precio en bolivares que vio el cajero (48.500,00) queda congelado aparte.
+    const rates = { saleDisplay: jest.fn(async () => liftedSale()) };
     const { service, tx } = createService(null, rates);
 
     await service.create(
@@ -801,10 +840,97 @@ describe('OrdersService.create (costo de delivery)', () => {
     );
 
     const data = tx.order.create.mock.calls[0][0].data;
-    const createdItems = data.items as { create: { unitPrice: number }[] };
+    const createdItems = data.items as {
+      create: { unitPrice: number; unitPriceEntered: number | null }[];
+    };
     expect(createdItems.create[0].unitPrice).toBe(55);
+    expect(createdItems.create[0].unitPriceEntered).toBe(48_500);
     expect(data.subtotal).toBe(110);
     expect(data.total).toBe(110);
+    expect(data.priceCurrency).toBe('VES');
+    expect(data.priceRate).toBe(970);
+    // Dos cafes de 50 USD: Bs 48.500,00 cada uno, Bs 97.000,00 el pedido.
+    expect(parsePriceBreakdown(data.priceBreakdown)?.total).toBe(97_000);
+  });
+
+  it('guarda el ticket en bolivares tal como lo vio el cajero', async () => {
+    // La venta del ticket: 16 USD de catalogo que la vitrina muestra a Bs 970 por
+    // dolar son Bs 15.520,00. El USD de venta se redondea a 17,60 y volver a
+    // multiplicarlo por la tasa da Bs 17.072,00: el pedido tiene que repetir el
+    // monto que se cobro, no re-derivarlo.
+    const rates = { saleDisplay: jest.fn(async () => liftedSale()) };
+    const { service, tx } = createService(null, rates);
+
+    await service.create(
+      COMPANY_ID,
+      { items: [{ productId: 'p1', quantity: 1, unitPrice: 16 }] },
+      'u1',
+    );
+
+    const data = tx.order.create.mock.calls[0][0].data;
+    const createdItems = data.items as {
+      create: { unitPrice: number; unitPriceEntered: number | null }[];
+    };
+    expect(createdItems.create[0].unitPrice).toBe(17.6);
+    expect(createdItems.create[0].unitPriceEntered).toBe(15_520);
+    expect(parsePriceBreakdown(data.priceBreakdown)).toEqual({
+      subtotal: 15_520,
+      discount: 0,
+      tax: 0,
+      tip: 0,
+      deliveryFee: 0,
+      total: 15_520,
+    });
+  });
+
+  it('no guarda snapshot cuando la vitrina cobra al precio del catalogo', async () => {
+    // Sin recargo el USD del pedido es el precio exacto: no hay nada que congelar.
+    const { service, tx } = createService(null);
+
+    await service.create(
+      COMPANY_ID,
+      { items: [{ productId: 'p1', quantity: 1 }] },
+      'u1',
+    );
+
+    const data = tx.order.create.mock.calls[0][0].data;
+    const createdItems = data.items as {
+      create: { unitPriceEntered: number | null }[];
+    };
+    expect(createdItems.create[0].unitPriceEntered).toBeNull();
+    expect(data.priceCurrency).toBeNull();
+    expect(data.priceRate).toBeNull();
+    expect(data.priceBreakdown).toBeNull();
+  });
+
+  it('el desglose sobrevive el viaje a texto sin perder centavos', () => {
+    // Se guarda en centavos enteros dentro del JSON de la columna: Bs 15.520,00
+    // vuelve a leerse como 15.520 y no como el redondeo de un float.
+    const json = encodePriceBreakdown({
+      subtotal: 15_520,
+      discount: 1_520,
+      tax: 2_520,
+      tip: 0,
+      deliveryFee: 0,
+      total: 16_520,
+    });
+
+    expect(json).toBe(
+      '{"subtotal":1552000,"discount":152000,"tax":252000,"tip":0,"deliveryFee":0,"total":1652000}',
+    );
+    expect(parsePriceBreakdown(json)).toEqual({
+      subtotal: 15_520,
+      discount: 1_520,
+      tax: 2_520,
+      tip: 0,
+      deliveryFee: 0,
+      total: 16_520,
+    });
+    // Un pedido viejo o con la columna corrupta se lee sin snapshot (nunca lanza).
+    expect(parsePriceBreakdown(null)).toBeNull();
+    expect(parsePriceBreakdown('')).toBeNull();
+    expect(parsePriceBreakdown('{')).toBeNull();
+    expect(parsePriceBreakdown('{"total":0}')).toBeNull();
   });
 
   it('deja el delivery en cero y sin contexto cuando el pedido no lo trae', async () => {
@@ -865,10 +991,16 @@ describe('OrdersService.update (costo de delivery)', () => {
   });
 
   it('no resuelve ninguna tasa cuando el costo ya viene en USD', async () => {
-    const { service, prisma } = createService(order(), { resolveAmount: jest.fn() });
+    const rates = {
+      resolveAmount: jest.fn(),
+      // La vitrina sin recargo deja el delivery tal cual.
+      saleFactor: jest.fn(async () => 1),
+    };
+    const { service, prisma } = createService(order(), rates);
 
     await service.update(COMPANY_ID, 'o1', { deliveryFee: 3 });
 
+    expect(rates.resolveAmount).not.toHaveBeenCalled();
     expect(prisma.order.update.mock.calls[0][0].data.deliveryFee).toBe(3);
     expect(prisma.order.update.mock.calls[0][0].data.total).toBe(103);
   });
@@ -1485,6 +1617,7 @@ describe('OrdersService (menus con receta)', () => {
         name: 'Parrilla',
         quantity: 2,
         unitPrice: 120,
+        unitPriceEntered: null,
         total: 240,
         // La receta se congela en la linea: `p2` va aunque no tenga control de
         // inventario, para que la devolucion repita exactamente lo descontado.
@@ -1540,6 +1673,7 @@ describe('OrdersService (menus con receta)', () => {
         name: 'Alitas BBQ 20 unidades',
         quantity: 2,
         unitPrice: 30,
+        unitPriceEntered: null,
         total: 60,
         consumption: null,
       },

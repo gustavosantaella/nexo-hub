@@ -37,6 +37,7 @@ import type {
   OrderStatus,
   OrderType,
   PaymentMethod,
+  SalePriceBreakdown,
 } from '../../core/models/operations.model';
 import { AuthService } from '../../core/services/auth.service';
 import { CashService } from '../../core/services/cash.service';
@@ -101,6 +102,9 @@ import { SidebarComponent } from '../../shared/components/sidebar.component';
 import { ConfirmService } from '../../shared/services/confirm.service';
 
 /** Mesas que dibuja el mapa del salón al abrir la vista (se ajusta en pantalla). */
+/** Campos del desglose congelado del pedido (`Order.priceBreakdown`). */
+type SalePriceField = keyof SalePriceBreakdown;
+
 const DEFAULT_TABLE_COUNT = 12;
 /** Tope de mesas numeradas del mapa. */
 const MAX_TABLE_COUNT = 60;
@@ -872,7 +876,7 @@ interface ChargeLineDraft {
                         </span>
                         <span class="flex flex-none flex-col items-end gap-1">
                           <span class="text-sm font-semibold text-slate-900">
-                            {{ orderMoney(item.total) }}
+                            {{ orderItemMoney(order, item) }}
                           </span>
                           <button
                             type="button"
@@ -1654,7 +1658,7 @@ interface ChargeLineDraft {
                     </p>
                     <p class="text-xs text-slate-500">{{ customerLabel(order) }}</p>
                     <p class="mt-1 text-sm font-semibold text-slate-900">
-                      {{ orderMoney(balance(order)) }}
+                      {{ saleBalanceMoney(order) }}
                     </p>
                     <div class="mt-2 flex gap-1">
                       <button
@@ -1806,7 +1810,7 @@ interface ChargeLineDraft {
                             {{ item.quantity }} × {{ item.name }}
                           </span>
                           <span class="flex-none text-xs font-medium text-slate-600">
-                            {{ orderMoney(item.total) }}
+                            {{ orderItemMoney(order, item) }}
                           </span>
                           <button
                             type="button"
@@ -1838,7 +1842,7 @@ interface ChargeLineDraft {
                   <div class="mt-2 flex items-end justify-between gap-2">
                     <div>
                       <p class="text-[11px] uppercase tracking-wide text-slate-400">Total</p>
-                      <p class="text-sm font-semibold text-slate-900">{{ orderMoney(order.total) }}</p>
+                      <p class="text-sm font-semibold text-slate-900">{{ saleMoney(order, 'total') }}</p>
                     </div>
                     <div class="text-right">
                       <p class="text-[11px] uppercase tracking-wide text-slate-400">Saldo</p>
@@ -1846,7 +1850,7 @@ interface ChargeLineDraft {
                         class="text-sm font-semibold"
                         [class]="isPaid(order) ? 'text-emerald-700' : 'text-amber-700'"
                       >
-                        {{ orderMoney(balance(order)) }}
+                        {{ saleBalanceMoney(order) }}
                       </p>
                     </div>
                   </div>
@@ -3806,6 +3810,62 @@ export class PosComponent implements OnInit, OnDestroy {
   orderMoney(value: number | null | undefined): string {
     const code = displayBaseCode();
     return moneyIn(this.rates.chargeAmount(value, code), code);
+  }
+
+  /**
+   * Monto congelado del pedido (`priceBreakdown`) en su `priceCurrency`.
+   *
+   * Con el catálogo en bolívares a una tasa con recargo, reconvertir el USD
+   * guardado devuelve otro monto (Bs 15.520,00 -> Bs 15.521,27): se pinta el
+   * desglose de la venta. `null` sin recargo o en pedidos anteriores.
+   */
+  saleEntered(order: Order | null | undefined, field: SalePriceField): number | null {
+    const value = order?.priceBreakdown?.[field];
+    return typeof value === 'number' && Number.isFinite(value) ? value : null;
+  }
+
+  /** Moneda en la que se congeló el desglose (`null` sin snapshot). */
+  saleCurrency(order: Order | null | undefined): string | null {
+    return order?.priceCurrency ?? null;
+  }
+
+  /** Monto del pedido tal como se cobró, o su conversión contable si no hay snapshot. */
+  saleMoney(order: Order | null | undefined, field: SalePriceField): string {
+    const entered = this.saleEntered(order, field);
+    if (entered != null) return moneyIn(entered, this.saleCurrency(order));
+    return this.orderMoney(order?.[field]);
+  }
+
+  /** Descuento del pedido en negativo (como se pinta en el resumen). */
+  saleDiscountMoney(order: Order | null | undefined): string {
+    const entered = this.saleEntered(order, 'discount');
+    if (entered != null) return moneyIn(-entered, this.saleCurrency(order));
+    return this.orderMoney(-(order?.discount ?? 0));
+  }
+
+  /**
+   * Total de la línea en la moneda de la vitrina (`unitPriceEntered` × cantidad),
+   * o su conversión contable si el pedido no guardó el precio cargado.
+   */
+  orderItemMoney(order: Order | null | undefined, item: OrderItem): string {
+    const unit = item.unitPriceEntered;
+    if (unit != null && Number.isFinite(unit)) {
+      return moneyIn(mulMoney(unit, item.quantity), this.saleCurrency(order));
+    }
+    return this.orderMoney(item.total);
+  }
+
+  /**
+   * Saldo del pedido en la moneda de la vitrina: el total congelado menos lo
+   * pagado (guardado en USD) pasado a la tasa del snapshot.
+   */
+  saleBalanceMoney(order: Order | null | undefined): string {
+    const total = this.saleEntered(order, 'total');
+    const rate = order?.priceRate;
+    if (total != null && rate != null) {
+      return moneyIn(total - mulMoney(order?.paidAmount ?? 0, rate), this.saleCurrency(order));
+    }
+    return order ? this.orderMoney(this.balance(order)) : this.orderMoney(0);
   }
 
   amountIn(value: number | null | undefined, currency?: string | null): string {

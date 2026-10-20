@@ -137,6 +137,29 @@ export interface OrderItem {
   name: string;
   quantity: number;
   unitPrice: number;
+  /**
+   * Precio de la unidad en la moneda de la vitrina (`Order.priceCurrency`), tal
+   * como lo vio el cajero. `null` en pedidos sin recargo o anteriores al
+   * snapshot: en esos casos el precio en USD es el monto exacto.
+   */
+  unitPriceEntered?: number | null;
+  total: number;
+}
+
+/**
+ * Desglose del pedido en la moneda de la vitrina (`Order.priceCurrency`),
+ * congelado al vender.
+ *
+ * Volver a multiplicar el USD guardado por la tasa devuelve otro monto
+ * (Bs 15.520,00 -> Bs 15.521,27): la pantalla muestra estos valores y no el
+ * resultado de reconvertir.
+ */
+export interface SalePriceBreakdown {
+  subtotal: number;
+  discount: number;
+  tax: number;
+  tip: number;
+  deliveryFee: number;
   total: number;
 }
 
@@ -211,6 +234,16 @@ export interface Order {
   deliveryFeeCurrency?: string;
   deliveryFeeRate?: number | null;
   deliveryFeeRateKey?: string | null;
+  /**
+   * Precios de la vitrina congelados al vender: moneda, tasa y desglose.
+   * Con el catalogo en bolivares a una tasa con recargo el monto en bolivares no
+   * se puede re-derivar del USD guardado (Bs 15.520,00 volveria como 15.521,27),
+   * asi que la pantalla muestra este snapshot. `null` sin recargo: el USD es el
+   * monto exacto.
+   */
+  priceCurrency?: string | null;
+  priceRate?: number | null;
+  priceBreakdown?: SalePriceBreakdown | null;
   total: number;
   paidAmount: number;
   cashSessionId?: string | null;

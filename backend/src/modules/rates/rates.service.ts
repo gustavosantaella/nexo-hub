@@ -197,6 +197,24 @@ export interface BaseCurrencyInfo {
   bsPerUsd: number;
 }
 
+/**
+ * Contexto con el que la vitrina muestra y el sistema cobra el catalogo.
+ * Ver `RatesService.saleDisplay`.
+ */
+export interface SaleDisplay {
+  /** Moneda en la que el cajero ve los precios (la base si no eligio otra). */
+  currency: string;
+  /** Bolivares por 1 USD del precio de vitrina (personalizada o BCV). */
+  displayRate: number;
+  /** Bolivares por 1 USD a la tasa oficial del BCV (la del cobro). */
+  chargeRate: number;
+  /** USD de venta por cada USD de catalogo (`displayRate / chargeRate`). */
+  factor: number;
+  /** `true` cuando la vitrina cobra por encima de la tasa oficial del BCV. */
+  lifted: boolean;
+}
+
+
 export interface RatesSnapshot {
   bcv: BcvSnapshot;
   custom: CustomRate | null;
@@ -650,15 +668,24 @@ export class RatesService {
   }
 
   /**
-   * Factor que convierte un precio de catalogo (USD base) al monto de venta en
-   * USD que se cobra: el precio de vitrina en bolivares usa la tasa personalizada
-   * y luego se valora a la tasa oficial del BCV.
+   * Contexto de precios con el que el cajero ve y cobra el catalogo.
    *
-   *   venta USD = precio USD × tasa personalizada ÷ tasa BCV
+   * La vitrina muestra el precio del catalogo en bolivares con la tasa
+   * personalizada del local (`displayRate`), pero el cobro se valora siempre a
+   * la tasa oficial del BCV (`chargeRate`). La venta en USD es, entonces:
    *
-   * Sin tasa personalizada el factor es 1 (se cobra el precio base).
+   *   venta USD = precio USD × displayRate ÷ chargeRate = precio USD × factor
+   *
+   * Sin tasa personalizada (o con la vitrina en otra moneda) `factor` es 1 y no
+   * hay recargo: el precio de venta es el precio del catalogo.
+   *
+   * `lifted` dice si la vitrina cobra por encima de la tasa oficial. En ese caso
+   * el pedido guarda ademas los montos en bolivares tal como los vio el cajero:
+   * volver a multiplicar el USD ya redondeado por la tasa devuelve bolivares
+   * distintos (Bs 15.520,00 -> Bs 15.521,27) y el ticket tiene que mostrar el
+   * monto exacto que se cobro.
    */
-  async saleFactor(companyId: string): Promise<number> {
+  async saleDisplay(companyId: string): Promise<SaleDisplay> {
     const [{ payload }, custom, baseCode, preferences] = await Promise.all([
       this.bcv(),
       this.customRate(companyId),
@@ -669,10 +696,40 @@ export class RatesService {
       normalizeCurrencyCode(preferences.priceCurrency) || baseCode;
     // La vitrina solo infla cuando el cajero ve los precios en bolivares. Si la
     // empresa muestra otra moneda, el precio de venta es el precio base.
-    if (displayCode !== LOCAL_CURRENCY_CODE) return 1;
+    if (displayCode !== LOCAL_CURRENCY_CODE) {
+      return {
+        currency: displayCode,
+        displayRate: payload.current.usd,
+        chargeRate: payload.current.usd,
+        factor: 1,
+        lifted: false,
+      };
+    }
     const displayRate = custom?.usd ?? payload.current.usd;
     const chargeRate = payload.current.usd;
-    return chargeRate > 0 ? displayRate / chargeRate : 1;
+    const factor = chargeRate > 0 ? displayRate / chargeRate : 1;
+    return {
+      currency: LOCAL_CURRENCY_CODE,
+      displayRate,
+      chargeRate,
+      factor,
+      // Con la tasa personalizada igual a la oficial no hay recargo real: el
+      // pedido no necesita snapshot de bolivares (el USD ya vale lo mismo).
+      lifted: custom !== null && displayRate > chargeRate,
+    };
+  }
+
+  /**
+   * Factor que convierte un precio de catalogo (USD base) al monto de venta en
+   * USD que se cobra: el precio de vitrina en bolivares usa la tasa personalizada
+   * y luego se valora a la tasa oficial del BCV.
+   *
+   *   venta USD = precio USD × tasa personalizada ÷ tasa BCV
+   *
+   * Sin tasa personalizada el factor es 1 (se cobra el precio base).
+   */
+  async saleFactor(companyId: string): Promise<number> {
+    return (await this.saleDisplay(companyId)).factor;
   }
 
   /** Lee la tasa personalizada de la empresa (o `null` si no existe). */

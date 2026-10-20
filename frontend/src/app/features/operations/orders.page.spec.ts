@@ -346,6 +346,60 @@ describe('OrdersPage (formulario del cajero)', () => {
       .forEach((request) => request.flush({ items: [], meta: META }));
   }
 
+  it('muestra los bolívares congelados del pedido en el detalle y en la grilla', () => {
+    const { fixture, page } = mount();
+    const detail = detailOrderWithItem({
+      // Venta en bolívares a la tasa personalizada (950) con recargo sobre el BCV.
+      priceCurrency: 'VES',
+      priceRate: 950,
+      priceBreakdown: {
+        subtotal: 15_520,
+        discount: 0,
+        tax: 0,
+        tip: 0,
+        deliveryFee: 0,
+        total: 15_520,
+      },
+      subtotal: 16.34,
+      total: 16.34,
+      items: [
+        {
+          id: 'i1',
+          orderId: 'o1',
+          productId: 'p1',
+          name: 'Pizza Familiar',
+          quantity: 2,
+          unitPrice: 7_760 / 950,
+          unitPriceEntered: 7_760,
+          total: 16.34,
+        },
+      ],
+    });
+
+    openDetailWithItem(fixture, page, detail);
+
+    expect(page.saleEntered(detail, 'total')).toBe(15_520);
+    expect(page.saleCurrency(detail)).toBe('VES');
+    // Con snapshot el monto se lee tal cual; sin snapshot manda la tasa del cobro.
+    expect(page.saleDisplayKey(detail)).toBeNull();
+    expect(page.saleDisplayKey(order())).toBe('BCV_USD');
+    expect(page.itemEnteredTotal(detail.items![0])).toBe(15_520);
+    expect(page.saleBalance(detail)).toBe(15_520);
+  });
+
+  it('cae al monto en dolares cuando el pedido no guardo el desglose', () => {
+    const { fixture, page } = mount();
+    const detail = detailOrderWithItem();
+
+    openDetailWithItem(fixture, page, detail);
+
+    expect(page.saleEntered(detail, 'total')).toBeNull();
+    expect(page.saleCurrency(detail)).toBeNull();
+    expect(page.itemEnteredTotal(detail.items![0])).toBeNull();
+    expect(page.saleBalance(detail)).toBeNull();
+  });
+
+
   it('la grilla muestra solo productos con stock y filtra por nombre o SKU', () => {
     const { fixture, page } = mount();
     openCreate(fixture, page);

@@ -269,7 +269,9 @@ function isAmountLoaded(
   code?: string | null,
 ): boolean {
   const amount = Number(entered ?? 0);
-  if (entered == null || !Number.isFinite(amount) || amount <= 0) return false;
+  // El signo no impide mostrar el monto cargado: los descuentos del pedido se
+  // pintan en negativo (`-order.discount`) y el snapshot también.
+  if (entered == null || !Number.isFinite(amount) || amount === 0) return false;
   return String(code ?? '').trim().toUpperCase() === displayBaseCode();
 }
 

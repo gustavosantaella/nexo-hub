@@ -482,6 +482,13 @@ export const moneyCodec = Prisma.defineExtension({
         needs: { unitPrice: true },
         compute: (row) => fromCents(row.unitPrice),
       },
+      unitPriceEntered: {
+        needs: { unitPriceEntered: true },
+        compute: (row) =>
+          row.unitPriceEntered == null
+            ? null
+            : fromCents(row.unitPriceEntered),
+      },
       total: {
         needs: { total: true },
         compute: (row) => fromCents(row.total),

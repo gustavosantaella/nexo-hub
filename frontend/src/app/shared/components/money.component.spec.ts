@@ -546,6 +546,33 @@ describe('MoneyComponent (monto tal como se cargó)', () => {
     expect(text).toContain('EUR · BCV € 0.32');
   });
 
+  it('muestra los bolívares congelados del pedido aunque el USD redondeado dé otro monto', () => {
+    load(withBase('VES'));
+    // El pedido guardó Bs 15.520,00 = 16,34 USD: reconvertir el USD a la tasa
+    // del BCV daría otro monto y el ticket no coincidiría con lo cobrado.
+    fixture.componentInstance.amount.set(16.34);
+    fixture.componentInstance.entered.set(15_520);
+    fixture.componentInstance.currency.set('VES');
+    fixture.detectChanges();
+
+    const base = (fixture.nativeElement as HTMLElement).querySelector('app-money span');
+
+    expect(base?.textContent?.trim()).toBe('Bs 15,520.00');
+  });
+
+  it('muestra en negativo un descuento congelado en la moneda del pedido', () => {
+    load(withBase('VES'));
+    fixture.componentInstance.amount.set(-1.52);
+    fixture.componentInstance.entered.set(-1_520);
+    fixture.componentInstance.currency.set('VES');
+    fixture.detectChanges();
+
+    const base = (fixture.nativeElement as HTMLElement).querySelector('app-money span');
+
+    expect(base?.textContent?.trim()).toBe('Bs -1,520.00');
+  });
+
+
   it('abrevia el monto cargado y deja el exacto en el tooltip', () => {
     load(withBase('VES'));
     fixture.componentInstance.entered.set(3500);

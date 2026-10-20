@@ -383,6 +383,23 @@ model Order {
   deliveryFeeCurrency String   @default("USD")
   deliveryFeeRate     Float?
   deliveryFeeRateKey  String?
+  // ---------------------------------------------------------------------------
+  // PRECIOS TAL COMO LOS VIO EL CAJERO (snapshot de la vitrina).
+  // Con la vitrina en bolivares y tasa personalizada el pedido se guarda en USD
+  // al valor de venta (Bs de vitrina ÷ tasa BCV), que se redondea a centavos de
+  // dolar. Volver a multiplicar ese USD por la tasa NO devuelve los bolivares
+  // cobrados (16,00 USD -> Bs 15.520,00 se releian como Bs 15.521,27). Por eso el
+  // pedido guarda ademas, congelados, los montos del ticket en `priceCurrency`:
+  //   `priceCurrency`  moneda en la que el cajero vio los precios (null = base)
+  //   `priceRate`      bolivares por 1 USD de esa vitrina
+  //   `priceBreakdown` JSON en texto con subtotal/descuento/IGV/propina/delivery/
+  //                    total en CENTAVOS de `priceCurrency` (ver `money-codec`).
+  // Son solo para MOSTRAR: la contabilidad sigue usando los montos en USD.
+  // `null` en pedidos sin recargo de vitrina o anteriores a estas columnas.
+  // ---------------------------------------------------------------------------
+  priceCurrency  String?
+  priceRate      Float?
+  priceBreakdown String?
   total         Int      @default(0)
   paidAmount    Int      @default(0)
   paymentStatus String   @default("UNPAID") // UNPAID | PARTIAL | PAID
@@ -417,6 +434,11 @@ model OrderItem {
   name      String // snapshot del nombre al momento de la venta
   quantity  Int
   unitPrice Int
+  // PRECIO TAL COMO LO VIO EL CAJERO: `unitPrice` en `Order.priceCurrency`
+  // (centavos). Se congela al vender para que el ticket repita el precio de
+  // vitrina (Bs 8.000,00) y no el resultante de revalorar el USD ya redondeado
+  // (Bs 8.049,02). `null` sin recargo de vitrina o en lineas anteriores.
+  unitPriceEntered Int?
   total     Int
   // CONSUMO DE INVENTARIO CONGELADO al vender (JSON `[{productId, quantity}]`).
   // `quantity` es lo que consume UNA unidad de la linea (en un menu, su receta).

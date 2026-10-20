@@ -10,6 +10,7 @@ import type {
   OrderType,
   PaymentMethod,
   PaymentStatus,
+  SalePriceBreakdown,
 } from '../../core/models/operations.model';
 import type { RateKey } from '../../core/models/rates.model';
 import {
@@ -87,6 +88,9 @@ interface OrderLine {
   /** Unidades que trae la presentación (1 = producto suelto). */
   unitsPerBox: number;
 }
+
+/** Campos del desglose congelado del pedido (`Order.priceBreakdown`). */
+type SalePriceField = keyof SalePriceBreakdown;
 
 const EMPTY_META: PaginationMeta = {
   total: 0,
@@ -203,6 +207,9 @@ const NEXT_STATUS: Partial<Record<OrderStatus, OrderStatus>> = {
               <app-money
                 class="mt-2 text-lg font-semibold text-slate-900"
                 [amount]="order.total"
+                [entered]="saleEntered(order, 'total')"
+                [currency]="saleCurrency(order)"
+                [displayRateKey]="saleDisplayKey(order)"
               />
 
               <div class="mt-3 flex flex-wrap gap-2">
@@ -322,7 +329,15 @@ const NEXT_STATUS: Partial<Record<OrderStatus, OrderStatus>> = {
                     <td>{{ order.customer?.name || '—' }}</td>
                     <td>{{ typeLabels[order.type] }}</td>
                     <td class="text-center">{{ order._count?.items ?? order.items?.length ?? 0 }}</td>
-                    <td class="text-right"><app-money displayRateKey="BCV_USD" [amount]="order.total" alignEnd="true" /></td>
+                    <td class="text-right">
+                      <app-money
+                        [amount]="order.total"
+                        [entered]="saleEntered(order, 'total')"
+                        [currency]="saleCurrency(order)"
+                        [displayRateKey]="saleDisplayKey(order)"
+                        alignEnd="true"
+                      />
+                    </td>
                     <td class="text-right"><app-money displayRateKey="BCV_USD" [amount]="order.paidAmount" alignEnd="true" /></td>
                     <td>
                       <span class="badge" [class]="statusClasses[order.status]">
@@ -957,8 +972,24 @@ const NEXT_STATUS: Partial<Record<OrderStatus, OrderStatus>> = {
                       {{ item.quantity }}
                     }
                   </td>
-                  <td class="text-right"><app-money [amount]="item.unitPrice" alignEnd="true" /></td>
-                  <td class="text-right"><app-money [amount]="item.total" alignEnd="true" /></td>
+                  <td class="text-right">
+                    <app-money
+                      [amount]="item.unitPrice"
+                      [entered]="item.unitPriceEntered"
+                      [currency]="saleCurrency(order)"
+                      [displayRateKey]="saleDisplayKey(order)"
+                      alignEnd="true"
+                    />
+                  </td>
+                  <td class="text-right">
+                    <app-money
+                      [amount]="item.total"
+                      [entered]="itemEnteredTotal(item)"
+                      [currency]="saleCurrency(order)"
+                      [displayRateKey]="saleDisplayKey(order)"
+                      alignEnd="true"
+                    />
+                  </td>
                   @if (canAddItems(order)) {
                     <td class="text-right">
                       <button
@@ -1052,22 +1083,87 @@ const NEXT_STATUS: Partial<Record<OrderStatus, OrderStatus>> = {
             }
           </div>
           <div class="space-y-1 text-sm">
-            <div class="flex justify-between"><span class="text-slate-500">Subtotal</span><app-money displayRateKey="BCV_USD" [amount]="order.subtotal" alignEnd="true" /></div>
-            <div class="flex justify-between"><span class="text-slate-500">Descuento</span><app-money [amount]="-order.discount" alignEnd="true" /></div>
-            <div class="flex justify-between"><span class="text-slate-500">IGV</span><app-money displayRateKey="BCV_USD" [amount]="order.tax" alignEnd="true" /></div>
+            <div class="flex justify-between">
+              <span class="text-slate-500">Subtotal</span>
+              <app-money
+                [amount]="order.subtotal"
+                [entered]="saleEntered(order, 'subtotal')"
+                [currency]="saleCurrency(order)"
+                [displayRateKey]="saleDisplayKey(order)"
+                alignEnd="true"
+              />
+            </div>
+            <div class="flex justify-between">
+              <span class="text-slate-500">Descuento</span>
+              <app-money
+                [amount]="-order.discount"
+                [entered]="saleDiscount(order)"
+                [currency]="saleCurrency(order)"
+                [displayRateKey]="saleDisplayKey(order)"
+                alignEnd="true"
+              />
+            </div>
+            <div class="flex justify-between">
+              <span class="text-slate-500">IGV</span>
+              <app-money
+                [amount]="order.tax"
+                [entered]="saleEntered(order, 'tax')"
+                [currency]="saleCurrency(order)"
+                [displayRateKey]="saleDisplayKey(order)"
+                alignEnd="true"
+              />
+            </div>
             @if (order.tip > 0) {
-              <div class="flex justify-between"><span class="text-slate-500">Propina</span><app-money displayRateKey="BCV_USD" [amount]="order.tip" alignEnd="true" /></div>
+              <div class="flex justify-between">
+                <span class="text-slate-500">Propina</span>
+                <app-money
+                  [amount]="order.tip"
+                  [entered]="saleEntered(order, 'tip')"
+                  [currency]="saleCurrency(order)"
+                  [displayRateKey]="saleDisplayKey(order)"
+                  alignEnd="true"
+                />
+              </div>
             }
             @if (order.deliveryFee > 0) {
-              <div class="flex justify-between"><span class="text-slate-500">Delivery</span><app-money displayRateKey="BCV_USD" [amount]="order.deliveryFee" alignEnd="true" /></div>
+              <div class="flex justify-between">
+                <span class="text-slate-500">Delivery</span>
+                <app-money
+                  [amount]="order.deliveryFee"
+                  [entered]="saleEntered(order, 'deliveryFee')"
+                  [currency]="saleCurrency(order)"
+                  [displayRateKey]="saleDisplayKey(order)"
+                  alignEnd="true"
+                />
+              </div>
             }
-            <div class="flex justify-between border-t border-slate-200 pt-1 text-base font-semibold"><span>Total</span><app-money displayRateKey="BCV_USD" [amount]="order.total" alignEnd="true" strong /></div>
+            <div class="flex justify-between border-t border-slate-200 pt-1 text-base font-semibold">
+              <span>Total</span>
+              <app-money
+                [amount]="order.total"
+                [entered]="saleEntered(order, 'total')"
+                [currency]="saleCurrency(order)"
+                [displayRateKey]="saleDisplayKey(order)"
+                alignEnd="true"
+                strong
+              />
+            </div>
             <app-rate-conversions
-              [amount]="orderDisplayAmount(order.total)"
-              [currency]="moneyBaseCode()"
+              [amount]="saleEntered(order, 'total') ?? orderDisplayAmount(order.total)"
+              [currency]="saleCurrency(order) ?? moneyBaseCode()"
             />
             <div class="flex justify-between"><span class="text-slate-500">Pagado</span><app-money displayRateKey="BCV_USD" [amount]="order.paidAmount" alignEnd="true" /></div>
-            <div class="flex justify-between font-semibold text-brand-700"><span>Saldo</span><app-money displayRateKey="BCV_USD" [amount]="balance(order)" alignEnd="true" strong /></div>
+            <div class="flex justify-between font-semibold text-brand-700">
+              <span>Saldo</span>
+              <app-money
+                [amount]="balance(order)"
+                [entered]="saleBalance(order)"
+                [currency]="saleCurrency(order)"
+                [displayRateKey]="saleDisplayKey(order)"
+                alignEnd="true"
+                strong
+              />
+            </div>
           </div>
         </div>
       }
@@ -1393,11 +1489,26 @@ const NEXT_STATUS: Partial<Record<OrderStatus, OrderStatus>> = {
       @if (payOrder(); as order) {
         <div class="space-y-3">
           <div class="rounded-lg bg-slate-50 px-3 py-2 text-sm">
-            <div class="flex justify-between"><span class="text-slate-500">Total</span><app-money displayRateKey="BCV_USD" [amount]="order.total" alignEnd="true" /></div>
+            <div class="flex justify-between">
+              <span class="text-slate-500">Total</span>
+              <app-money
+                [amount]="order.total"
+                [entered]="saleEntered(order, 'total')"
+                [currency]="saleCurrency(order)"
+                [displayRateKey]="saleDisplayKey(order)"
+                alignEnd="true"
+              />
+            </div>
             @if (order.deliveryFee > 0) {
               <div class="flex justify-between">
                 <span class="text-slate-500">Delivery (incluido)</span>
-                <app-money displayRateKey="BCV_USD" [amount]="order.deliveryFee" alignEnd="true" />
+                <app-money
+                  [amount]="order.deliveryFee"
+                  [entered]="saleEntered(order, 'deliveryFee')"
+                  [currency]="saleCurrency(order)"
+                  [displayRateKey]="saleDisplayKey(order)"
+                  alignEnd="true"
+                />
               </div>
             }
             <div class="flex justify-between"><span class="text-slate-500">Pagado</span><app-money displayRateKey="BCV_USD" [amount]="order.paidAmount" alignEnd="true" /></div>
@@ -2113,6 +2224,60 @@ export class OrdersPage implements OnInit {
   /** Formatea un monto en la moneda indicada. */
   amountIn(value: number | null | undefined, currency?: string | null): string {
     return moneyIn(value, currency);
+  }
+
+  /**
+   * Monto del pedido tal como se cobró en la vitrina (`priceBreakdown`), en
+   * `order.priceCurrency`.
+   *
+   * El pedido se guarda en USD redondeado a centavos, así que reconvertirlo da
+   * otro monto (Bs 15.520,00 -> Bs 15.521,27). `null` en pedidos sin recargo o
+   * anteriores al snapshot: ahí el monto en USD es el exacto.
+   */
+  saleEntered(order: Order | null | undefined, field: SalePriceField): number | null {
+    const value = order?.priceBreakdown?.[field];
+    return typeof value === 'number' && Number.isFinite(value) ? value : null;
+  }
+
+  /** Moneda en la que se congeló el desglose (`null` sin snapshot). */
+  saleCurrency(order: Order | null | undefined): string | null {
+    return order?.priceCurrency ?? null;
+  }
+
+  /**
+   * Tasa forzada con la que se pinta un monto del pedido: sin snapshot se lee a
+   * la tasa oficial del cobro (`BCV_USD`); con snapshot manda el monto en
+   * bolívares que vio el cajero.
+   */
+  saleDisplayKey(order: Order | null | undefined): string | null {
+    return order?.priceBreakdown ? null : CHARGE_RATE_KEY;
+  }
+
+  /** Descuento congelado en negativo: la línea se pinta con signo. */
+  saleDiscount(order: Order | null | undefined): number | null {
+    const discount = this.saleEntered(order, 'discount');
+    return discount == null ? null : -discount;
+  }
+
+  /**
+   * Saldo del pedido en la moneda de la vitrina: total congelado menos lo pagado
+   * (guardado en USD) a la tasa del snapshot.
+   */
+  saleBalance(order: Order | null | undefined): number | null {
+    const total = this.saleEntered(order, 'total');
+    const rate = order?.priceRate;
+    if (total == null || rate == null) return null;
+    return total - mulMoney(order?.paidAmount ?? 0, rate);
+  }
+
+  /**
+   * Total de la línea en la moneda de la vitrina: el unitario congelado por la
+   * cantidad, que es la misma cuenta con la que el backend armó el desglose.
+   */
+  itemEnteredTotal(item: OrderItem): number | null {
+    const unit = item.unitPriceEntered;
+    if (unit == null || !Number.isFinite(unit)) return null;
+    return mulMoney(unit, item.quantity);
   }
 
   /**

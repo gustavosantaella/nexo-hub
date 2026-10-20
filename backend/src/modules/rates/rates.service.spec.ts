@@ -414,6 +414,71 @@ describe('RatesService', () => {
       );
     });
 
+    it('marca como lifted la vitrina en bolivares con tasa personalizada', async () => {
+      const { service } = buildService({
+        fetchImpl: fetchMock,
+        setting: {
+          key: CUSTOM_RATE_KEY,
+          value: '950',
+          updatedAt: new Date('2026-10-13T12:00:00.000Z'),
+        },
+      });
+
+      await expect(service.saleDisplay(COMPANY_ID)).resolves.toMatchObject({
+        currency: 'VES',
+        displayRate: 950,
+        chargeRate: 876.7976,
+        lifted: true,
+      });
+    });
+
+    it('no marca lifted cuando la tasa personalizada iguala a la oficial', async () => {
+      const { service } = buildService({
+        fetchImpl: fetchMock,
+        setting: {
+          key: CUSTOM_RATE_KEY,
+          value: '876.7976',
+          updatedAt: new Date('2026-10-13T12:00:00.000Z'),
+        },
+      });
+
+      const display = await service.saleDisplay(COMPANY_ID);
+
+      // El USD del pedido ya vale los mismos bolivares: no hace falta snapshot.
+      expect(display.lifted).toBe(false);
+      expect(display.factor).toBeCloseTo(1, 8);
+    });
+
+    it('no infla la venta cuando la vitrina muestra otra moneda', async () => {
+      const { service } = buildService({
+        fetchImpl: fetchMock,
+        preferencePriceCurrency: 'USD',
+        setting: {
+          key: CUSTOM_RATE_KEY,
+          value: '950',
+          updatedAt: new Date('2026-10-13T12:00:00.000Z'),
+        },
+      });
+
+      await expect(service.saleDisplay(COMPANY_ID)).resolves.toMatchObject({
+        currency: 'USD',
+        factor: 1,
+        lifted: false,
+      });
+    });
+
+    it('explica el redondeo que obliga a congelar los bolivares del ticket', () => {
+      // Bs 15.520,00 a 950 Bs/USD son 16,336842... USD: el pedido guarda 16,34 y
+      // al volver a bolivares (lo que hace la pantalla sin snapshot) da otro monto.
+      const usd = Math.round((15_520 / 950) * 100) / 100;
+      const reread = Math.round(usd * 950 * 100) / 100;
+
+      expect(usd).toBe(16.34);
+      expect(reread).toBe(15_523);
+      expect(reread).not.toBe(15_520);
+    });
+
+
     it('toma del BCV la tasa del euro cuando no hay tasa manual', async () => {
       const { service } = buildService({
         fetchImpl: fetchMock,

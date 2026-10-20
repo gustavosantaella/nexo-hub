@@ -7,6 +7,7 @@ import {
 } from '@nestjs/common';
 import {
   BASE_CURRENCY_CODE,
+  LOCAL_CURRENCY_CODE,
   normalizeCurrencyCode,
 } from '../../common/constants/currencies';
 import {
@@ -34,6 +35,8 @@ import {
   fitToBalance,
   fromCents,
   money,
+  moneyFieldsFromCents,
+  moneyFieldsToCents,
   toCents,
   toMoney,
 } from '../../common/utils/money.util';
@@ -51,6 +54,7 @@ import {
   normalizeRateKey,
   type RateHistory,
   type RateHistoryEntry,
+  type SaleDisplay,
 } from '../rates/rates.service';
 import {
   AddOrderItemsDto,
@@ -162,6 +166,11 @@ interface ResolvedOrderItem {
   name: string;
   quantity: number;
   unitPrice: number;
+  /**
+   * `unitPrice` en la moneda de la vitrina (lo que vio el cajero). `null` cuando
+   * no hay recargo de vitrina: ahi el USD del catalogo ya es el precio exacto.
+   */
+  unitPriceEntered: number | null;
   total: number;
   /**
    * Cuanto consume del inventario UNA unidad de esta linea, en la unidad de cada
@@ -187,6 +196,8 @@ interface MergedOrderLine {
   name: string;
   quantity: number;
   unitPrice: number;
+  /** Precio unitario tal como lo vio el cajero (ver `ResolvedOrderItem`). */
+  unitPriceEntered: number | null;
   total: number;
   /**
    * Consumo de inventario de UNA unidad de la linea, congelado al vender. Si el
@@ -289,6 +300,92 @@ export function parseRatesHistory(value: unknown): RateHistory | null {
   };
 }
 
+/**
+ * Montos del pedido en la moneda de la vitrina (los que vio el cajero).
+ *
+ * Es un snapshot independiente del guardado en USD: `Order.total` sigue siendo
+ * la verdad contable (en USD) y este desglose solo sirve para imprimir/repintar
+ * el ticket con los montos exactos de la venta.
+ */
+export interface OrderPriceBreakdown {
+  subtotal: number;
+  discount: number;
+  tax: number;
+  tip: number;
+  deliveryFee: number;
+  total: number;
+}
+
+/** Campos del desglose (se guardan en centavos dentro del JSON). */
+const PRICE_BREAKDOWN_FIELDS = [
+  'subtotal',
+  'discount',
+  'tax',
+  'tip',
+  'deliveryFee',
+  'total',
+] as const;
+
+/** Columnas del snapshot de precios de la vitrina (todas juntas o todas nulas). */
+export interface OrderPriceWrite {
+  priceCurrency: string | null;
+  priceRate: number | null;
+  priceBreakdown: string | null;
+}
+
+/**
+ * Serializa el desglose en la moneda de la vitrina.
+ *
+ * Igual que el resto del dinero, los montos viajan en CENTAVOS enteros dentro
+ * del JSON de texto: `900000` son Bs 9.000,00 y no se pierde precision al
+ * releerlo. Se lee con `parsePriceBreakdown`.
+ */
+export function encodePriceBreakdown(
+  breakdown: OrderPriceBreakdown,
+): string {
+  const [cents] = moneyFieldsToCents([breakdown], PRICE_BREAKDOWN_FIELDS);
+  return JSON.stringify(cents);
+}
+
+/**
+ * Lee el desglose guardado en el pedido.
+ *
+ * Tolera vacios y JSON corrupto (devuelve `null`, nunca lanza): un pedido viejo
+ * -o uno guardado antes de existir esta columna- se sigue mostrando con los
+ * montos en USD.
+ */
+export function parsePriceBreakdown(
+  value: unknown,
+): OrderPriceBreakdown | null {
+  if (value === null || value === undefined) return null;
+
+  let parsed: unknown = value;
+  if (typeof value === 'string') {
+    const raw = value.trim();
+    if (!raw) return null;
+    try {
+      parsed = JSON.parse(raw);
+    } catch {
+      return null;
+    }
+  }
+
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return null;
+  const row = parsed as Record<string, unknown>;
+  const [breakdown] = moneyFieldsFromCents([row], PRICE_BREAKDOWN_FIELDS);
+  const total = Number(breakdown.total);
+  if (!Number.isFinite(total) || total <= 0) return null;
+  const out: OrderPriceBreakdown = {
+    subtotal: Number(breakdown.subtotal) || 0,
+    discount: Number(breakdown.discount) || 0,
+    tax: Number(breakdown.tax) || 0,
+    tip: Number(breakdown.tip) || 0,
+    deliveryFee: Number(breakdown.deliveryFee) || 0,
+    total,
+  };
+  return out;
+}
+
 @Injectable()
 export class OrdersService {
   constructor(
@@ -302,19 +399,32 @@ export class OrdersService {
 
   /** Crea el pedido, descuenta stock y guarda el snapshot de precios. */
   async create(companyId: string, dto: CreateOrderDto, userId: string) {
-    const items = await this.resolveItems(companyId, dto.items);
+    const sale = await this.rates.saleDisplay(companyId);
+    const items = await this.resolveItems(companyId, dto.items, sale);
     const deliveryFee = await this.resolveDeliveryFee(companyId, {
       amount: dto.deliveryFee,
       currency: dto.deliveryFeeCurrency,
       rateKey: dto.deliveryFeeRateKey,
     });
 
+    const taxRate = toMoney(dto.taxRate ?? 0);
     const totals = computeOrderTotals({
       items,
       discount: dto.discount,
-      taxRate: dto.taxRate,
+      taxRate,
       tip: dto.tip,
       deliveryFee: deliveryFee?.base,
+    });
+
+    // Montos del ticket en la moneda de la vitrina (solo para mostrar).
+    const priceWrite = this.priceSnapshot({
+      sale: this.saleContext(sale),
+      lines: items,
+      totals,
+      taxRate,
+      deliveryEntered: deliveryFee
+        ? { amount: deliveryFee.entered, currency: deliveryFee.currency }
+        : null,
     });
 
     return this.orders.transaction(async (tx) => {
@@ -332,6 +442,7 @@ export class OrdersService {
           tax: totals.tax,
           tip: totals.tip,
           ...this.deliveryFeeWrite(deliveryFee),
+          ...priceWrite,
           total: totals.total,
           createdById: userId,
           items: {
@@ -342,6 +453,7 @@ export class OrdersService {
               name: item.name,
               quantity: item.quantity,
               unitPrice: item.unitPrice,
+              unitPriceEntered: item.unitPriceEntered,
               total: item.total,
               // Consumo congelado: cancelar o corregir el pedido devuelve
               // exactamente lo descontado hoy, no lo que diga la receta despues.
@@ -362,7 +474,7 @@ export class OrdersService {
         userId,
       });
 
-      return this.withRatesHistory(order);
+      return this.withStoredDetails(order);
     });
   }
 
@@ -398,15 +510,34 @@ export class OrdersService {
       );
     }
 
-    const newItems = await this.resolveItems(companyId, dto.items);
+    const sale = await this.rates.saleDisplay(companyId);
+    const newItems = await this.resolveItems(companyId, dto.items, sale);
     const lines = this.mergeLines(order.items, newItems);
 
+    const taxRate = this.effectiveTaxRate(order);
     const totals = computeOrderTotals({
       items: lines,
       discount: order.discount,
-      taxRate: this.effectiveTaxRate(order),
+      taxRate,
       tip: order.tip,
       deliveryFee: order.deliveryFee,
+    });
+
+    // El snapshot en bolivares se rehace con las lineas resultantes: las nuevas
+    // entran con el precio de vitrina de hoy y las que ya estaban conservan el
+    // suyo (guardado en la linea), asi que el subtotal sigue siendo exacto.
+    const priceWrite = this.priceSnapshot({
+      sale: this.saleContext(sale) ?? this.storedSaleContext(order),
+      lines,
+      totals,
+      taxRate,
+      deliveryEntered:
+        order.deliveryFeeEntered != null
+          ? {
+              amount: order.deliveryFeeEntered,
+              currency: order.deliveryFeeCurrency,
+            }
+          : null,
     });
 
     if (compareMoney(totals.total, order.paidAmount) < 0) {
@@ -439,6 +570,7 @@ export class OrdersService {
         id,
         {
           ...totals,
+          ...priceWrite,
           paymentStatus,
           items: {
             ...(toCreate.length > 0
@@ -450,6 +582,7 @@ export class OrdersService {
                     name: line.name,
                     quantity: line.quantity,
                     unitPrice: line.unitPrice,
+                    unitPriceEntered: line.unitPriceEntered,
                     total: line.total,
                     consumption: serializeConsumption(line.consumption),
                   })),
@@ -488,7 +621,7 @@ export class OrdersService {
         userId,
       });
 
-      return this.withRatesHistory(updated);
+      return this.withStoredDetails(updated);
     });
   }
 
@@ -607,6 +740,7 @@ export class OrdersService {
           name: item.name,
           quantity: item.quantity,
           unitPrice: item.unitPrice,
+          unitPriceEntered: item.unitPriceEntered,
           total: item.total,
           consumption: parseConsumption(item.consumption),
         });
@@ -615,6 +749,7 @@ export class OrdersService {
       // Fila duplicada del mismo producto y precio: se consolida en la primera.
       const previousQuantity = current.quantity;
       current.quantity += item.quantity;
+      current.unitPriceEntered ??= item.unitPriceEntered;
       current.total = money.mul(current.unitPrice, current.quantity);
       current.consumption = blendConsumption({
         existing: current.consumption,
@@ -637,6 +772,7 @@ export class OrdersService {
           name: item.name,
           quantity: item.quantity,
           unitPrice: item.unitPrice,
+          unitPriceEntered: item.unitPriceEntered,
           total: item.total,
           consumption: blendConsumption({
             existing: null,
@@ -652,6 +788,7 @@ export class OrdersService {
       // aunque la receta haya cambiado entre una carga y otra.
       const previousQuantity = current.quantity;
       current.quantity += item.quantity;
+      current.unitPriceEntered ??= item.unitPriceEntered;
       current.total = money.mul(current.unitPrice, current.quantity);
       current.consumption = blendConsumption({
         existing: current.consumption,
@@ -681,6 +818,7 @@ export class OrdersService {
   private async resolveItems(
     companyId: string,
     lines: OrderItemDto[],
+    sale: SaleDisplay,
   ): Promise<ResolvedOrderItem[]> {
     for (const line of lines) {
       if (!line.productId && !line.menuId) {
@@ -709,7 +847,12 @@ export class OrdersService {
     // Precio de venta: el catalogo esta en USD, pero la vitrina lo muestra en
     // bolivares con la tasa personalizada. El pedido se guarda en USD al valor
     // que resulta de esos bolivares a la tasa oficial del BCV.
-    const saleFactor = await this.rates.saleFactor(companyId);
+    //
+    // Con recargo de vitrina la linea guarda ademas su precio en bolivares
+    // (`unitPriceEntered`), calculado sobre el MISMO precio de catalogo y la
+    // tasa de vitrina: es el monto exacto que se le mostro al cliente y el que
+    // vuelve en el ticket. Revalorar el USD ya redondeado a la tasa daria otro
+    // monto (Bs 15.520,00 -> Bs 15.521,27).
 
     if (products.length !== productIds.length) {
       const found = new Set(products.map((product) => product.id));
@@ -749,15 +892,17 @@ export class OrdersService {
             `El menu "${recipe.name}" usa ${names}, un producto inactivo. Actualiza la receta para poder venderlo.`,
           );
         }
-        const unitPrice = toMoney(
-          money.mul(toMoney(line.unitPrice ?? recipe.price), saleFactor),
-        );
+        const catalogUnitPrice = toMoney(line.unitPrice ?? recipe.price);
+        const unitPrice = toMoney(money.mul(catalogUnitPrice, sale.factor));
         return {
           productId: null,
           menuId: recipe.id,
           name: recipe.name,
           quantity,
           unitPrice,
+          unitPriceEntered: sale.lifted
+            ? toMoney(money.mul(catalogUnitPrice, sale.displayRate))
+            : null,
           total: money.mul(unitPrice, quantity),
           consumption: recipe.ingredients.map((ingredient) => ({
             productId: ingredient.productId,
@@ -772,20 +917,108 @@ export class OrdersService {
           `El producto "${product.name}" esta inactivo y no puede venderse`,
         );
       }
-      const unitPrice = toMoney(
-        money.mul(toMoney(line.unitPrice ?? product.price), saleFactor),
-      );
+      const catalogUnitPrice = toMoney(line.unitPrice ?? product.price);
+      const unitPrice = toMoney(money.mul(catalogUnitPrice, sale.factor));
       return {
         productId: product.id,
         menuId: null,
         name: product.name,
         quantity,
         unitPrice,
+        unitPriceEntered: sale.lifted
+          ? toMoney(money.mul(catalogUnitPrice, sale.displayRate))
+          : null,
         total: money.mul(unitPrice, quantity),
         // Un producto suelto se consume a si mismo: 1 unidad por unidad vendida.
         consumption: [{ productId: product.id, quantity: 1 }],
       };
     });
+  }
+
+  /**
+   * Snapshot de los montos del pedido en la moneda de la vitrina.
+   *
+   * Se calcula sobre los precios CONGELADOS de cada linea (`unitPriceEntered`)
+   * y la tasa de vitrina, con el mismo `computeOrderTotals` del pedido: asi el
+   * desglose en bolivares cuadra consigo mismo (subtotal - descuento + IGV +
+   * propina + delivery = total) y repite el monto que se le cobro al cliente.
+   *
+   * `null` (sin snapshot) cuando:
+   *  - no hay recargo de vitrina (el monto en USD es el precio exacto), o
+   *  - alguna linea no trae su precio en la moneda de la vitrina (pedido armado
+   *    antes de existir el snapshot): recalcular ahi seria inventar montos.
+   */
+  private priceSnapshot(input: {
+    sale: { currency: string; rate: number } | null;
+    lines: {
+      quantity: number;
+      unitPrice: number;
+      unitPriceEntered?: number | null;
+    }[];
+    totals: OrderTotals;
+    taxRate: number;
+    deliveryEntered?: { amount: number; currency: string } | null;
+  }): OrderPriceWrite {
+    const empty: OrderPriceWrite = {
+      priceCurrency: null,
+      priceRate: null,
+      priceBreakdown: null,
+    };
+    const sale = input.sale;
+    if (!sale || !Number.isFinite(sale.rate) || sale.rate <= 0) return empty;
+    if (input.lines.length === 0) return empty;
+    if (input.lines.some((line) => line.unitPriceEntered == null)) return empty;
+
+    const local = computeOrderTotals({
+      items: input.lines.map((line) => ({
+        quantity: line.quantity,
+        unitPrice: line.unitPriceEntered as number,
+      })),
+      // El descuento y la propina se capturan en USD (moneda base) y el delivery
+      // puede venir escrito en bolivares: en ese caso se usa el monto tal cual.
+      discount: money.mul(input.totals.discount, sale.rate),
+      taxRate: input.taxRate,
+      tip: money.mul(input.totals.tip, sale.rate),
+      deliveryFee:
+        input.deliveryEntered?.currency === LOCAL_CURRENCY_CODE
+          ? input.deliveryEntered.amount
+          : money.mul(input.totals.deliveryFee, sale.rate),
+    });
+
+    return {
+      priceCurrency: sale.currency,
+      priceRate: sale.rate,
+      priceBreakdown: encodePriceBreakdown(local),
+    };
+  }
+
+  /**
+   * Contexto de vitrina de una venta nueva.
+   * `null` sin recargo: el pedido se guarda y se muestra en USD, sin snapshot.
+   */
+  private saleContext(
+    sale: SaleDisplay,
+  ): { currency: string; rate: number } | null {
+    return sale.lifted ? { currency: sale.currency, rate: sale.displayRate } : null;
+  }
+
+  /**
+   * Contexto de vitrina YA GUARDADO en el pedido.
+   *
+   * Al corregir cantidades o montos de un pedido existente se usa la tasa con la
+   * que se vendio, no la vigente: cambiar la cantidad de una venta de ayer no
+   * puede revalorizar sus precios a la tasa de hoy.
+   */
+  private storedSaleContext(order: {
+    priceCurrency: string | null;
+    priceRate: number | null;
+  }): { currency: string; rate: number } | null {
+    const currency = order.priceCurrency;
+    const rate = order.priceRate;
+    if (!currency || rate == null || !Number.isFinite(rate) || rate <= 0) {
+      return null;
+    }
+    return { currency, rate };
   }
 
   /** Tasa de IGV efectiva guardada en el pedido (para recalcular el impuesto). */
@@ -857,36 +1090,46 @@ export class OrdersService {
   }
 
   // =========================================================================
-  //  HISTORIAL DE TASAS DE LOS COBROS
+  //  DATOS GUARDADOS EN JSON DE TEXTO
   // =========================================================================
 
   /**
-   * Decodifica el historial de tasas de los cobros de un pedido.
+   * Decodifica lo que el pedido guarda como JSON de texto (SQLite no tiene
+   * columnas JSON) para entregarlo ya leido en la API:
+   *  - `priceBreakdown`: montos del ticket en la moneda de la vitrina, con los
+   *    montos en decimales (mismo criterio que el codec de dinero).
+   *  - `payments[].ratesHistory`, `parts` y `change`: foto de tasas y desglose
+   *    del cobro y del vuelto.
    *
-   * La columna `ratesHistory` guarda la foto de las tasas en JSON de texto
-   * (SQLite no tiene columnas JSON) y la API entrega el objeto ya leido, igual
-   * que hace el codec de dinero con los montos. Un pedido sin pagos -o con un
-   * historial corrupto, que `parseRatesHistory` degrada a `null`- pasa intacto.
+   * Tolera valores vacios o corruptos (los `parse*` devuelven `null`/`[]` y
+   * nunca lanzan): un pedido viejo se sigue leyendo igual.
    */
-  private withRatesHistory<T>(order: T): T {
-    const payments = (order as { payments?: unknown } | null)?.payments;
-    if (!Array.isArray(payments)) return order;
+  private withStoredDetails<T>(order: T): T {
+    if (!order || typeof order !== 'object') return order;
 
-    const decoded = payments.map((payment: unknown) => {
+    const row = order as Record<string, unknown>;
+    const decodedOrder = {
+      ...row,
+      priceBreakdown: parsePriceBreakdown(row.priceBreakdown),
+    } as Record<string, unknown>;
+
+    const payments = decodedOrder.payments;
+    if (!Array.isArray(payments)) return decodedOrder as T;
+
+    decodedOrder.payments = payments.map((payment: unknown) => {
       if (!payment || typeof payment !== 'object') return payment;
-      const row = payment as Record<string, unknown>;
+      const paymentRow = payment as Record<string, unknown>;
       return {
-        ...row,
-        ratesHistory: parseRatesHistory(row.ratesHistory),
-        // El desglose del cobro y del vuelto se guarda como JSON de texto (SQLite
-        // no tiene columnas JSON): la API lo entrega ya leido, con los montos en
-        // decimales, igual que el codec de dinero.
-        parts: parsePaymentLines(row.parts),
-        change: parsePaymentLines(row.change),
+        ...paymentRow,
+        ratesHistory: parseRatesHistory(paymentRow.ratesHistory),
+        // El desglose del cobro y del vuelto se guarda como JSON de texto: la API
+        // lo entrega ya leido, con los montos en decimales.
+        parts: parsePaymentLines(paymentRow.parts),
+        change: parsePaymentLines(paymentRow.change),
       };
     });
 
-    return { ...(order as object), payments: decoded } as T;
+    return decodedOrder as T;
   }
 
   // =========================================================================
@@ -895,18 +1138,24 @@ export class OrdersService {
 
   async findAll(companyId: string, query: OrderQueryDto) {
     const { items, total } = await this.orders.findPage(companyId, query);
-    return buildPaginatedResult(items, total, query.page, query.limit);
+    return buildPaginatedResult(
+      items.map((order) => this.withStoredDetails(order)),
+      total,
+      query.page,
+      query.limit,
+    );
   }
 
   /** Pedidos activos (no terminados) para el tablero operativo. */
-  findActiveOrders(companyId: string) {
-    return this.orders.findActive(companyId);
+  async findActiveOrders(companyId: string) {
+    const orders = await this.orders.findActive(companyId);
+    return orders.map((order) => this.withStoredDetails(order));
   }
 
   async findOne(companyId: string, id: string) {
     const order = await this.orders.findDetail(companyId, id);
     if (!order) throw new NotFoundException('Pedido no encontrado');
-    return this.withRatesHistory(order);
+    return this.withStoredDetails(order);
   }
 
   /** Actualiza datos editables y recalcula totales sobre los items existentes. */
@@ -923,10 +1172,11 @@ export class OrdersService {
       rateKey: dto.deliveryFeeRateKey,
     });
 
+    const taxRate = dto.taxRate ?? this.effectiveTaxRate(order);
     const totals = computeOrderTotals({
       items: order.items,
       discount: dto.discount ?? order.discount,
-      taxRate: dto.taxRate ?? this.effectiveTaxRate(order),
+      taxRate,
       tip: dto.tip ?? order.tip,
       // Sin `deliveryFee` en la peticion se conserva lo que ya tenia el pedido;
       // enviarlo (aunque sea 0) reemplaza el costo y sus datos de moneda.
@@ -934,6 +1184,28 @@ export class OrdersService {
         dto.deliveryFee !== undefined
           ? (deliveryFee?.base ?? 0)
           : order.deliveryFee,
+    });
+
+    // Descuento, IGV y propina se editan en USD: el desglose en la moneda de la
+    // vitrina se rehace sobre los precios ya congelados de las lineas y la tasa
+    // con la que se vendio, para que el ticket siga mostrando los mismos montos.
+    const enteredDelivery =
+      dto.deliveryFee !== undefined
+        ? deliveryFee
+          ? { amount: deliveryFee.entered, currency: deliveryFee.currency }
+          : null
+        : order.deliveryFeeEntered != null
+          ? {
+              amount: order.deliveryFeeEntered,
+              currency: order.deliveryFeeCurrency,
+            }
+          : null;
+    const priceWrite = this.priceSnapshot({
+      sale: this.storedSaleContext(order),
+      lines: order.items,
+      totals,
+      taxRate,
+      deliveryEntered: enteredDelivery,
     });
 
     if (compareMoney(totals.total, order.paidAmount) < 0) {
@@ -956,13 +1228,14 @@ export class OrdersService {
       ...(dto.tableNumber !== undefined ? { tableNumber: dto.tableNumber } : {}),
       ...(dto.notes !== undefined ? { notes: dto.notes } : {}),
       ...totals,
+      ...priceWrite,
       ...(dto.deliveryFee !== undefined
         ? this.deliveryFeeWrite(deliveryFee)
         : {}),
       paymentStatus,
     });
 
-    return this.withRatesHistory(updated);
+    return this.withStoredDetails(updated);
   }
 
   // =========================================================================
@@ -1263,7 +1536,7 @@ export class OrdersService {
         tx,
       );
 
-      return this.withRatesHistory(updated);
+      return this.withStoredDetails(updated);
     });
 
     const payments = paid.payments ?? [];
@@ -1419,7 +1692,7 @@ export class OrdersService {
 
     const updated = await this.orders.updateStatus(companyId, id, dto.status);
 
-    return this.withRatesHistory(updated);
+    return this.withStoredDetails(updated);
   }
 
   /** Elimina un pedido sin pagos, devolviendo el stock consumido. */
@@ -1464,7 +1737,7 @@ export class OrdersService {
 
       const updated = await this.orders.findDetailById(order.id, tx);
 
-      return this.withRatesHistory(updated);
+      return this.withStoredDetails(updated);
     });
   }
 
@@ -1683,12 +1956,30 @@ export class OrdersService {
     }[],
     userId: string,
   ) {
+    const taxRate = this.effectiveTaxRate(order);
     const totals = computeOrderTotals({
       items: lines,
       discount: order.discount,
-      taxRate: this.effectiveTaxRate(order),
+      taxRate,
       tip: order.tip,
       deliveryFee: order.deliveryFee,
+    });
+
+    // El ticket en la moneda de la vitrina se recalcula con el precio congelado
+    // de cada linea y la tasa de la venta: quitar o corregir una cantidad no
+    // revaloriza el resto del pedido.
+    const priceWrite = this.priceSnapshot({
+      sale: this.storedSaleContext(order),
+      lines,
+      totals,
+      taxRate,
+      deliveryEntered:
+        order.deliveryFeeEntered != null
+          ? {
+              amount: order.deliveryFeeEntered,
+              currency: order.deliveryFeeCurrency,
+            }
+          : null,
     });
 
     if (compareMoney(totals.total, order.paidAmount) < 0) {
@@ -1724,6 +2015,7 @@ export class OrdersService {
         order.id,
         {
           ...totals,
+          ...priceWrite,
           paymentStatus,
           items: {
             ...(changed.length > 0
@@ -1764,7 +2056,7 @@ export class OrdersService {
         );
       }
 
-      return this.withRatesHistory(updated);
+      return this.withStoredDetails(updated);
     });
   }
 
