@@ -2211,7 +2211,9 @@ export class OrdersPage implements OnInit {
     }
 
     this.saving.set(true);
-    const rateKey = this.chargeRateKey();
+    // La tasa de cobro solo viaja si el pago va en una moneda distinta a la que
+    // se ve en pantalla: en la misma moneda el monto ya es el precio final.
+    const rateKey = this.rates.chargeKeyFor(currency);
     // Una sola forma de pago: se envia el efectivo RECIBIDO y el vuelto como
     // lineas separadas para que la caja muestre ambos movimientos.
     const received = Number(this.payForm.received) || 0;
@@ -2702,11 +2704,18 @@ export class OrdersPage implements OnInit {
   /** Cobra de inmediato la venta recien creada (monto = total del pedido). */
   private payCreatedOrder(order: Order): void {
     const currency = this.chargeCurrency || BASE_CURRENCY.code;
-    const rateKey = this.chargeRateKey();
+    const configuredRateKey = this.chargeRateKey();
     // El monto se envia en la moneda del cobro; el backend guarda ademas el
     // equivalente en la moneda base del sistema y compara el cobro con el saldo
     // del pedido usando esta misma tasa de cobro.
-    const amount = this.rates.chargeAmount(order.total, currency, rateKey);
+    const amount = this.rates.chargeAmount(
+      order.total,
+      currency,
+      configuredRateKey,
+    );
+    // La tasa de cobro solo viaja si el pago va en una moneda distinta a la que
+    // se ve en pantalla: en la misma moneda el monto ya es el precio final.
+    const rateKey = this.rates.chargeKeyFor(currency);
     // Igual que en el cobro de un pedido abierto: se envia lo recibido y el
     // vuelto para que la caja registre ambos movimientos.
     const received = Number(this.receivedAmount) || 0;

@@ -3999,12 +3999,22 @@ export class PosComponent implements OnInit, OnDestroy {
       return;
     }
 
+    /**
+     * La tasa solo viaja con las partes que se cobran en una moneda DISTINTA a
+     * la que el cajero ve en pantalla. Si el cliente paga en la misma moneda,
+     * el monto ya es el precio final y el backend debe valorarlo con la tasa
+     * de visualización (la activa), no reexpresarlo con la tasa de cobro.
+     */
+    const chargeRate = (lineCurrency: string) => {
+      const key = this.rates.chargeKeyFor(lineCurrency);
+      return key ? { rateKey: key } : {};
+    };
+
     const payload = mixed
       ? {
           amount,
           method: 'MIXED' as PaymentMethod,
           currency,
-          ...(rateKey ? { rateKey } : {}),
           ...this.paymentProofPayload(),
           parts: this.charge.parts
             .filter((part) => Number(part.amount) > 0)
@@ -4012,6 +4022,7 @@ export class PosComponent implements OnInit, OnDestroy {
               amount: Number(part.amount),
               method: part.method,
               currency: part.currency,
+              ...chargeRate(part.currency),
             })),
           change: this.charge.changes
             .filter((line) => Number(line.amount) > 0)
@@ -4019,9 +4030,14 @@ export class PosComponent implements OnInit, OnDestroy {
               amount: Number(line.amount),
               method: line.method,
               currency: line.currency,
+              ...chargeRate(line.currency),
             })),
         }
-      : this.singlePaymentPayload(amount, currency, rateKey);
+      : this.singlePaymentPayload(
+          amount,
+          currency,
+          this.rates.chargeKeyFor(currency),
+        );
 
     this.orders
       .pay(order.id, payload)

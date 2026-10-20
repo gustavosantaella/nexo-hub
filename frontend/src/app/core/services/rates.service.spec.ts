@@ -167,6 +167,7 @@ const POS_SNAPSHOT: RatesSnapshot = {
 describe('RatesService (conversión de monedas)', () => {
   let http: HttpTestingController;
   let rates: RatesService;
+  let preferences: PreferencesService;
 
   beforeEach(() => {
     // La moneda de los precios se lee de aquí: sin limpiarlo, una preferencia que
@@ -178,6 +179,7 @@ describe('RatesService (conversión de monedas)', () => {
 
     http = TestBed.inject(HttpTestingController);
     rates = TestBed.inject(RatesService);
+    preferences = TestBed.inject(PreferencesService);
 
     rates.load();
     http.expectOne(`${API}/rates`).flush(SNAPSHOT);
@@ -338,6 +340,26 @@ describe('RatesService (conversión de monedas)', () => {
     expect(rates.chargeAmount(10, 'USD', 'BCV_USD')).toBe(10.83);
     // Pagando en bolívares el cliente entrega el precio de la pantalla, tal cual.
     expect(rates.chargeAmount(10, 'VES', 'BCV_USD')).toBe(9500);
+  });
+
+  /**
+   * Regresion del saldo negativo: si el cajero ve los precios en bolivares y el
+   * cliente paga en bolivares, el monto ya es el precio de pantalla. Mandar la
+   * tasa de cobro (BCV) haria que el backend revalorizara esos bolivares con otra
+   * tasa y el pedido terminara con saldo -$1,60.
+   */
+  it('no manda la tasa de cobro cuando el pago va en la moneda de pantalla', () => {
+    rates.load(true);
+    http.expectOne(`${API}/rates?refresh=true`).flush(POS_SNAPSHOT);
+    preferences.setChargeRateKey('BCV_USD');
+    http
+      .expectOne({ method: 'PATCH', url: `${API}/preferences` })
+      .flush({ chargeRateKey: 'BCV_USD' });
+
+    expect(rates.chargeKeyFor('VES')).toBeNull();
+    // En otra moneda la tasa si reexpresa el precio de pantalla.
+    expect(rates.chargeKeyFor('USD')).toBe('BCV_USD');
+    expect(rates.chargeKeyFor('COP')).toBe('BCV_USD');
   });
 
   it('cobra el monto guardado cuando la tasa de cobro es la activa', () => {

@@ -1,6 +1,7 @@
 import { BadRequestException, ServiceUnavailableException } from '@nestjs/common';
 import type { ConfigService } from '@nestjs/config';
 import { compare } from 'bcryptjs';
+import type { RateHistory } from '../rates/rates.service';
 import { NotificationsService, randomUppercaseCode } from './notifications.service';
 import type {
   NotificationSettingRow,
@@ -9,6 +10,37 @@ import type {
 import type { TelegramService } from './telegram.service';
 
 const COMPANY_ID = 'company-1';
+
+/** Foto de tasas del cobro: personalizada, BCV dolar y BCV euro. */
+const SALE_RATES: RateHistory = {
+  capturedAt: '2026-10-20T14:00:00.000Z',
+  bcvDate: '2026-10-20',
+  stale: false,
+  activeKey: 'CUSTOM_USD',
+  rates: [
+    {
+      key: 'BCV_USD',
+      currency: 'USD',
+      source: 'BCV',
+      rate: 876.7976,
+      date: '2026-10-20',
+    },
+    {
+      key: 'BCV_EUR',
+      currency: 'EUR',
+      source: 'BCV',
+      rate: 982.00454402,
+      date: '2026-10-20',
+    },
+    {
+      key: 'CUSTOM_USD',
+      currency: 'USD',
+      source: 'CUSTOM',
+      rate: 905.5,
+      date: null,
+    },
+  ],
+};
 
 /** Fila de configuracion con Telegram vinculado y todos los avisos activos. */
 function settingsRow(
@@ -180,7 +212,6 @@ describe('NotificationsService', () => {
         total: 30,
         paidNow: 10,
         paidTotal: 10,
-        balance: 20,
         paymentCurrency: 'USD',
         method: 'CASH',
         items: [{ name: 'Cafe', quantity: 1 }],
@@ -201,7 +232,6 @@ describe('NotificationsService', () => {
         total: 1,
         paidNow: 1,
         paidTotal: 1,
-        balance: 0,
         paymentCurrency: 'USD',
         method: 'CASH',
         items: [],
@@ -209,6 +239,75 @@ describe('NotificationsService', () => {
     ).toBe(false);
     expect(disabled.telegram.sendMessage).not.toHaveBeenCalled();
   });
+
+  it('en un pago en VES muestra equivalencias en USD y EUR y no muestra saldo', async () => {
+    const { service, telegram } = createService();
+
+    await service.notifySale(COMPANY_ID, {
+      orderCode: 'PED-0005',
+      total: 100,
+      paidNow: 3650,
+      paidTotal: 100,
+      paymentCurrency: 'VES',
+      method: 'CASH',
+      rates: SALE_RATES,
+      items: [{ name: 'Cafe', quantity: 1 }],
+    });
+
+    const message = telegram.sendMessage.mock.calls[0][1] as string;
+    expect(message).not.toContain('Saldo');
+    expect(message).toContain('<b>Equivalencias:</b>');
+    expect(message).toContain('• Dólares (tasa personalizada): $4.03');
+    expect(message).toContain('• Dólares (BCV): $4.16');
+    expect(message).toContain('• Euros (BCV): €3.72');
+  });
+
+  it('en un pago en USD muestra equivalencias en bolívares y EUR', async () => {
+    const { service, telegram } = createService();
+
+    await service.notifySale(COMPANY_ID, {
+      orderCode: 'PED-0006',
+      total: 100,
+      paidNow: 100,
+      paidTotal: 100,
+      paymentCurrency: 'USD',
+      method: 'CASH',
+      rates: SALE_RATES,
+      items: [{ name: 'Cafe', quantity: 1 }],
+    });
+
+    const message = telegram.sendMessage.mock.calls[0][1] as string;
+    expect(message).not.toContain('Saldo');
+    expect(message).toContain('• Bolívares (tasa personalizada): Bs 90550.00');
+    expect(message).toContain('• Bolívares (BCV): Bs 87679.76');
+    expect(message).toContain('• Euros (BCV): €89.29');
+  });
+
+  it('sin tasa personalizada solo muestra las equivalencias disponibles', async () => {
+    const { service, telegram } = createService();
+
+    await service.notifySale(COMPANY_ID, {
+      orderCode: 'PED-0007',
+      total: 100,
+      paidNow: 3650,
+      paidTotal: 100,
+      paymentCurrency: 'VES',
+      method: 'CASH',
+      rates: {
+        ...SALE_RATES,
+        activeKey: 'BCV_USD',
+        rates: SALE_RATES.rates.filter((rate) => rate.key !== 'CUSTOM_USD'),
+      },
+      items: [],
+    });
+
+    const message = telegram.sendMessage.mock.calls[0][1] as string;
+    expect(message).not.toContain('tasa personalizada');
+    expect(message).toContain('• Dólares (BCV): $4.16');
+    expect(message).toContain('• Euros (BCV): €3.72');
+  });
+
+
 
   it('envia la foto del comprobante con la referencia en el pie', async () => {
     const { service, telegram } = createService();
@@ -219,7 +318,6 @@ describe('NotificationsService', () => {
       total: 30,
       paidNow: 30,
       paidTotal: 30,
-      balance: 0,
       paymentCurrency: 'USD',
       method: 'TRANSFER',
       paymentReference: '123456',
@@ -245,7 +343,6 @@ describe('NotificationsService', () => {
       total: 30,
       paidNow: 30,
       paidTotal: 30,
-      balance: 0,
       paymentCurrency: 'USD',
       method: 'PLIN',
       paymentReference: '9876',

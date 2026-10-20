@@ -1287,6 +1287,47 @@ describe('PosComponent (vista de cajero)', () => {
     flushReload();
   });
 
+  /**
+   * Regresion del saldo negativo: con los precios en Bs (tasa personalizada) y
+   * la tasa de cobro en el BCV, un cobro en Bs debe enviar el monto tal cual se
+   * lee en pantalla SIN la tasa de cobro. Si viajara el BCV, el backend valoraria
+   * esos mismos bolivares con otra tasa y el pedido quedaria sobrepagado.
+   */
+  it('no envia la tasa de cobro cuando el cliente paga en la moneda de pantalla', () => {
+    localStorage.setItem(CHARGE_RATE_KEY, 'BCV_USD');
+    const { fixture, pos } = mount();
+    TestBed.inject(RatesService).load();
+    http.expectOne(`${API}/rates`).flush(RATES);
+    fixture.detectChanges();
+
+    pos.setTip(false);
+    pos.addProduct(PRODUCTS[0]);
+    pos.charge.method = 'CARD';
+    pos.charge.currency = 'VES';
+
+    // 30 USD se leen como Bs 28.500 a la tasa personalizada (950).
+    expect(pos.chargeAmount).toBe(28500);
+
+    pos.submitSale(true);
+    fixture.detectChanges();
+
+    const createRequest = http.expectOne(
+      (request) => request.method === 'POST' && request.url === `${API}/orders`,
+    );
+    createRequest.flush(order({ total: 30 }));
+
+    const payRequest = http.expectOne(`${API}/orders/o1/payments`);
+    expect(payRequest.request.body).toEqual({
+      amount: 28500,
+      method: 'CARD',
+      currency: 'VES',
+      parts: [{ amount: 28500, method: 'CARD', currency: 'VES' }],
+      change: [],
+    });
+    payRequest.flush(order({ total: 30, paymentStatus: 'PAID' }));
+    flushReload();
+  });
+
   it('cobra un pago mixto con varias formas y su vuelto', () => {
     const { fixture, pos } = mount();
     pos.setTip(false);
@@ -1298,6 +1339,8 @@ describe('PosComponent (vista de cajero)', () => {
       { method: 'TRANSFER', currency: 'USD', amount: 20 },
     ];
     pos.charge.changes = [{ method: 'CASH', currency: 'USD', amount: 10 }];
+    // La transferencia exige la referencia del comprobante.
+    pos.charge.paymentReference = '1234';
 
     expect(pos.mixedPaidBase).toBe(40);
     expect(pos.mixedChangeBase).toBe(10);
@@ -1317,6 +1360,7 @@ describe('PosComponent (vista de cajero)', () => {
       amount: 30,
       method: 'MIXED',
       currency: 'USD',
+      paymentReference: '1234',
       parts: [
         { amount: 20, method: 'CASH', currency: 'USD' },
         { amount: 20, method: 'TRANSFER', currency: 'USD' },

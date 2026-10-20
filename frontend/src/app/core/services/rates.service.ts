@@ -459,6 +459,23 @@ export class RatesService {
     return this.fromBase(base, target, key) ?? shown;
   }
 
+  /**
+   * Clave de tasa que debe viajar con un cobro en `currency`.
+   *
+   * La tasa de cobro solo reexpresa el precio que se ve en pantalla cuando el
+   * cliente paga en otra moneda. Si paga en la misma moneda que tiene delante
+   * (por ejemplo, los precios se ven en bolívares y paga con tarjeta en
+   * bolívares), el monto ya es el precio final y NO se le aplica tasa: mandarla
+   * haría que el backend valorara esos bolívares con otra tasa (el BCV sobre un
+   * precio mostrado con la personalizada) y el pedido quedaría con saldo
+   * negativo aunque el cliente pagó exactamente lo que decía la pantalla.
+   */
+  chargeKeyFor(currency?: string | null): RateKey | null {
+    const target =
+      String(currency ?? '').trim().toUpperCase() || BASE_CURRENCY_CODE;
+    return target === displayBaseCode() ? null : this.preferences.chargeRateKey();
+  }
+
   // ===========================================================================
   //  CONVERSIONES QUE VE EL CAJERO
   // ===========================================================================

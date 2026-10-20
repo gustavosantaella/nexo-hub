@@ -1268,9 +1268,9 @@ export class OrdersService {
           total: paid.total,
           paidNow: payment.amount,
           paidTotal: paid.paidAmount,
-          balance: money.sub(paid.total, paid.paidAmount),
           paymentCurrency: payment.currency,
           method: payment.method,
+          rates: parseRatesHistory(payment.ratesHistory),
           paymentReference: payment.paymentReference,
           paymentPhotoUrl: payment.paymentPhotoUrl,
           items: (paid.items ?? []).map((item) => ({

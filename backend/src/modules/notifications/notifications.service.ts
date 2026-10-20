@@ -9,6 +9,7 @@ import {
 import { ConfigService } from '@nestjs/config';
 import { compare, hash } from 'bcryptjs';
 import { randomInt } from 'crypto';
+import type { RateHistory } from '../rates/rates.service';
 import type { UpdateNotificationSettingsDto } from './dto/update-notification-settings.dto';
 import {
   NotificationsRepository,
@@ -64,9 +65,10 @@ export interface SaleNotification {
   total: number;
   paidNow: number;
   paidTotal: number;
-  balance: number;
   paymentCurrency: string;
   method: string;
+  /** Tasas vigentes al momento del cobro (para mostrar equivalencias exactas). */
+  rates?: RateHistory | null;
   /** Referencia bancaria del comprobante (transferencia / pago movil). */
   paymentReference?: string | null;
   /** Foto del comprobante como data URL. */
@@ -142,6 +144,62 @@ export function randomUppercaseCode(length = CODE_LENGTH): string {
 /** Formato corto de montos en la moneda base (USD). */
 function usd(value: number): string {
   return `$${Number(value ?? 0).toFixed(2)}`;
+}
+
+/** Monto con dos decimales para las equivalencias del aviso. */
+function amount(value: number): string {
+  return Number(value ?? 0).toFixed(2);
+}
+
+/** Tasa de una clave de la foto tomada al momento del cobro. */
+function rateOf(sale: SaleNotification, key: string): number | null {
+  const found = sale.rates?.rates.find((rate) => rate.key === key);
+  return found && Number.isFinite(found.rate) && found.rate > 0
+    ? found.rate
+    : null;
+}
+
+/**
+ * Equivalencias del monto cobrado en las otras monedas del local.
+ *
+ * Se usan las tasas guardadas con el cobro (no las vigentes ahora), para que el
+ * aviso muestre exactamente la conversion de ese pago:
+ * - pago en VES -> dolares a la tasa personalizada (si existe), dolares BCV y euros BCV.
+ * - pago en USD -> bolivares a la tasa personalizada (si existe), bolivares BCV y euros BCV.
+ */
+function equivalenceLines(sale: SaleNotification): string[] {
+  const paid = Number(sale.paidNow);
+  if (!Number.isFinite(paid) || paid <= 0) return [];
+
+  const currency = String(sale.paymentCurrency ?? '').trim().toUpperCase();
+  const bcvUsd = rateOf(sale, 'BCV_USD');
+  const bcvEur = rateOf(sale, 'BCV_EUR');
+  const customUsd = rateOf(sale, 'CUSTOM_USD');
+  const lines: string[] = [];
+
+  if (currency === 'VES') {
+    if (customUsd) {
+      lines.push(`• Dólares (tasa personalizada): $${amount(paid / customUsd)}`);
+    }
+    if (bcvUsd) {
+      lines.push(`• Dólares (BCV): $${amount(paid / bcvUsd)}`);
+    }
+    if (bcvEur) {
+      lines.push(`• Euros (BCV): €${amount(paid / bcvEur)}`);
+    }
+  } else if (currency === 'USD') {
+    if (customUsd) {
+      lines.push(`• Bolívares (tasa personalizada): Bs ${amount(paid * customUsd)}`);
+    }
+    if (bcvUsd) {
+      lines.push(`• Bolívares (BCV): Bs ${amount(paid * bcvUsd)}`);
+    }
+    if (bcvUsd && bcvEur) {
+      lines.push(`• Euros (BCV): €${amount((paid * bcvUsd) / bcvEur)}`);
+    }
+  }
+
+  return lines;
 }
 
 /** Fecha/hora local corta para los mensajes de Telegram. */
@@ -433,7 +491,7 @@ export class NotificationsService implements OnModuleInit, OnModuleDestroy {
   //  AVISOS AUTOMATICOS
   // =========================================================================
 
-  /** Avisa una venta/cobro con el resumen de lo cobrado y el saldo. */
+  /** Avisa una venta/cobro con el resumen de lo cobrado y sus equivalencias. */
   async notifySale(
     companyId: string,
     sale: SaleNotification,
@@ -460,18 +518,21 @@ export class NotificationsService implements OnModuleInit, OnModuleDestroy {
     const cashier = userId
       ? await this.notifications.findUserName(userId)
       : null;
+    const equivalents = equivalenceLines(sale);
     const text = [
       '💳 <b>Venta / cobro registrado</b>',
       '',
       `<b>Pedido:</b> ${escapeHtml(sale.orderCode)}`,
       `<b>Cobrado ahora:</b> ${escapeHtml(sale.paymentCurrency)} ${sale.paidNow.toFixed(2)}`,
+      ...(equivalents.length > 0
+        ? ['<b>Equivalencias:</b>', ...equivalents]
+        : []),
       `<b>Método:</b> ${escapeHtml(sale.method)}`,
       ...(sale.paymentReference
         ? [`<b>Referencia:</b> ${escapeHtml(sale.paymentReference)}`]
         : []),
       `<b>Total del pedido:</b> ${usd(sale.total)}`,
       `<b>Acumulado:</b> ${usd(sale.paidTotal)}`,
-      `<b>Saldo:</b> ${usd(sale.balance)}`,
       `<b>Cajero:</b> ${escapeHtml(cashier?.name ?? '—')}`,
       `<b>Fecha:</b> ${when(new Date())}`,
       '',
