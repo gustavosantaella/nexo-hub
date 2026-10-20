@@ -463,6 +463,11 @@ model OrderPayment {
   change           String?
   // Total del vuelto en USD (moneda base), para consultas y reportes rapidos.
   changeBaseAmount Int      @default(0)
+  // COMPROBANTE DE TRANSFERENCIA / PAGO MOVIL: referencia bancaria de 4 a 6
+  // digitos y foto opcional del comprobante (data URL). Solo se guardan cuando
+  // el cobro incluye un metodo que lo exige.
+  paymentReference String?
+  paymentPhotoUrl  String?
   cashMovementId String?  @unique
   note           String?
   createdById    String?
@@ -775,6 +780,10 @@ model CashMovement {
   description   String?
   referenceType String? // ORDER | EXPENSE | PAYABLE | RECEIVABLE | MANUAL
   referenceId   String?
+  // Comprobante que respalda un cobro por transferencia/pago movil. Se copia
+  // al movimiento para poder verlo desde la caja sin cruzar el pedido.
+  paymentReference String?
+  paymentPhotoUrl  String?
   createdById   String?
   createdAt     DateTime @default(now())
 

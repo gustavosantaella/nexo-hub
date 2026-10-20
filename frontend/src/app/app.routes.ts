@@ -96,34 +96,34 @@ export const routes: Routes = [
             (m) => m.CustomersPage,
           ),
       },
-      {
-        path: 'gastos',
-        title: 'Gastos · Nexo Hub',
-        loadComponent: () =>
-          import('./features/finance/expenses.page').then(
-            (m) => m.ExpensesPage,
-          ),
-      },
-      {
-        path: 'cuentas-por-pagar',
-        title: 'Cuentas por pagar · Nexo Hub',
-        loadComponent: () =>
-          import('./features/finance/payables.page').then((m) => m.PayablesPage),
-      },
-      {
-        path: 'cuentas-por-cobrar',
-        title: 'Cuentas por cobrar · Nexo Hub',
-        loadComponent: () =>
-          import('./features/finance/receivables.page').then(
-            (m) => m.ReceivablesPage,
-          ),
-      },
-      {
-        path: 'reportes',
-        title: 'Reportes · Nexo Hub',
-        loadComponent: () =>
-          import('./features/reports/stats.page').then((m) => m.StatsPage),
-      },
+      // {
+      //   path: 'gastos',
+      //   title: 'Gastos · Nexo Hub',
+      //   loadComponent: () =>
+      //     import('./features/finance/expenses.page').then(
+      //       (m) => m.ExpensesPage,
+      //     ),
+      // },
+      // {
+      //   path: 'cuentas-por-pagar',
+      //   title: 'Cuentas por pagar · Nexo Hub',
+      //   loadComponent: () =>
+      //     import('./features/finance/payables.page').then((m) => m.PayablesPage),
+      // },
+      // {
+      //   path: 'cuentas-por-cobrar',
+      //   title: 'Cuentas por cobrar · Nexo Hub',
+      //   loadComponent: () =>
+      //     import('./features/finance/receivables.page').then(
+      //       (m) => m.ReceivablesPage,
+      //     ),
+      // },
+      // {
+      //   path: 'reportes',
+      //   title: 'Reportes · Nexo Hub',
+      //   loadComponent: () =>
+      //     import('./features/reports/stats.page').then((m) => m.StatsPage),
+      // },
       {
         path: 'configuracion',
         title: 'Configuración · Nexo Hub',

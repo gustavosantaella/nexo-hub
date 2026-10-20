@@ -161,6 +161,10 @@ export interface OrderPayment {
   /** Monto aplicado al pedido (pagos menos vuelto) en `currency`. */
   amount: number;
   method: PaymentMethod;
+  /** Referencia bancaria del comprobante (transferencia / pago movil). */
+  paymentReference?: string | null;
+  /** Foto del comprobante como data URL. */
+  paymentPhotoUrl?: string | null;
   /** Moneda en la que pago el cliente (USD, VES, ...). */
   currency: string;
   /** Bolivares por 1 unidad de `currency` al momento del cobro. */
@@ -266,6 +270,10 @@ export interface CashMovement {
   description?: string | null;
   referenceType?: string | null;
   referenceId?: string | null;
+  /** Referencia bancaria del comprobante (transferencia / pago movil). */
+  paymentReference?: string | null;
+  /** Foto del comprobante como data URL. */
+  paymentPhotoUrl?: string | null;
   createdAt: string;
   createdBy?: { id: string; name: string } | null;
 }

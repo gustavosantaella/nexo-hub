@@ -14,6 +14,7 @@ import {
   CashMovementType,
   OrderStatus,
   OrderType,
+  PAYMENT_PROOF_METHODS,
   PaymentMethod,
   PaymentStatus,
   Role,
@@ -1007,6 +1008,22 @@ export class OrdersService {
             ];
       const inputChange = dto.change ?? [];
 
+      // Transferencias y pagos moviles se respaldan con la referencia bancaria
+      // (4-6 digitos) y, opcionalmente, la foto del comprobante. La referencia
+      // es obligatoria si CUALQUIER parte del cobro usa uno de esos metodos.
+      const needsProof = inputParts.some((part) =>
+        PAYMENT_PROOF_METHODS.includes(part.method),
+      );
+      const paymentReference = needsProof
+        ? (dto.paymentReference ?? '').trim()
+        : null;
+      if (needsProof && !/^\d{4,6}$/.test(paymentReference ?? '')) {
+        throw new BadRequestException(
+          'La referencia del comprobante debe tener entre 4 y 6 digitos',
+        );
+      }
+      const paymentPhotoUrl = needsProof ? (dto.paymentPhotoUrl ?? null) : null;
+
       // Cada parte se convierte con SU moneda y SU tasa: en un pago mixto el
       // cliente puede entregar dolares en efectivo y bolivares por transferencia.
       const parts: PaymentBreakdownLine[] = [];
@@ -1126,6 +1143,13 @@ export class OrdersService {
                 : `Cobro pedido ${order.code}`,
             referenceType: 'ORDER',
             referenceId: order.id,
+            // Solo la parte cobrada por banco/billetera lleva el comprobante.
+            ...(PAYMENT_PROOF_METHODS.includes(part.method)
+              ? {
+                  paymentReference,
+                  paymentPhotoUrl: paymentPhotoUrl ?? undefined,
+                }
+              : {}),
             createdById: userId,
           },
           tx,
@@ -1202,6 +1226,8 @@ export class OrdersService {
           change: encodePaymentLines(changes),
           changeBaseAmount: changeBase,
           cashMovementId: partMovements[0]?.id,
+          paymentReference: paymentReference ?? undefined,
+          paymentPhotoUrl: paymentPhotoUrl ?? undefined,
           note: dto.note,
           createdById: userId,
         },
@@ -1245,6 +1271,8 @@ export class OrdersService {
           balance: money.sub(paid.total, paid.paidAmount),
           paymentCurrency: payment.currency,
           method: payment.method,
+          paymentReference: payment.paymentReference,
+          paymentPhotoUrl: payment.paymentPhotoUrl,
           items: (paid.items ?? []).map((item) => ({
             name: item.name,
             quantity: item.quantity,

@@ -459,6 +459,32 @@ describe('CashService (arqueo multimoneda)', () => {
       });
     });
 
+    it('guarda la referencia y la foto del comprobante bancario', async () => {
+      const created: unknown[] = [];
+      const { service, tx } = build(created);
+      const photo = 'data:image/jpeg;base64,/9j/4AAQSkZJRg==';
+
+      await service.registerMovement(
+        COMPANY_ID,
+        {
+          type: 'IN',
+          category: 'SALE',
+          paymentMethod: 'TRANSFER',
+          amount: 1000,
+          currency: 'VES',
+          paymentReference: '123456',
+          paymentPhotoUrl: photo,
+        },
+        tx as never,
+      );
+
+      expect(created[0]).toMatchObject({
+        paymentMethod: 'TRANSFER',
+        paymentReference: '123456',
+        paymentPhotoUrl: photo,
+      });
+    });
+
     it('rechaza montos no positivos', async () => {
       const { service, tx } = build([]);
 

@@ -87,6 +87,15 @@ export type PaymentMethod = (typeof PaymentMethod)[keyof typeof PaymentMethod];
 export const PAYMENT_METHODS = Object.values(PaymentMethod);
 /** Metodos que impactan el efectivo fisico de la caja. */
 export const CASH_PAYMENT_METHOD = PaymentMethod.CASH;
+/**
+ * Metodos que se cobran contra una cuenta bancaria/billetera y por eso exigen
+ * la referencia del comprobante (4-6 digitos) y admiten una foto opcional.
+ */
+export const PAYMENT_PROOF_METHODS: PaymentMethod[] = [
+  PaymentMethod.TRANSFER,
+  PaymentMethod.YAPE,
+  PaymentMethod.PLIN,
+];
 
 // -------------------------------- Finanzas ----------------------------------
 export const AccountStatus = {

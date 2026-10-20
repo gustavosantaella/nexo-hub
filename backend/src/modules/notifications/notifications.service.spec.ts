@@ -57,6 +57,13 @@ function createService(row: NotificationSettingRow | null = settingsRow()) {
     sendMessage: jest.fn(
       async (_chatId: string, _html: string): Promise<boolean> => true,
     ),
+    sendPhoto: jest.fn(
+      async (
+        _chatId: string,
+        _photo: string,
+        _caption: string,
+      ): Promise<boolean> => true,
+    ),
   };
   const config = {
     get: jest.fn((key: string) =>
@@ -201,6 +208,56 @@ describe('NotificationsService', () => {
       }),
     ).toBe(false);
     expect(disabled.telegram.sendMessage).not.toHaveBeenCalled();
+  });
+
+  it('envia la foto del comprobante con la referencia en el pie', async () => {
+    const { service, telegram } = createService();
+    const photo = 'data:image/png;base64,iVBORw0KGgo=';
+
+    const sent = await service.notifySale(COMPANY_ID, {
+      orderCode: 'PED-0003',
+      total: 30,
+      paidNow: 30,
+      paidTotal: 30,
+      balance: 0,
+      paymentCurrency: 'USD',
+      method: 'TRANSFER',
+      paymentReference: '123456',
+      paymentPhotoUrl: photo,
+      items: [{ name: 'Cafe', quantity: 1 }],
+    });
+
+    expect(sent).toBe(true);
+    expect(telegram.sendPhoto).toHaveBeenCalledWith(
+      '123456',
+      photo,
+      expect.stringContaining('<b>Referencia:</b> 123456'),
+    );
+    expect(telegram.sendMessage).not.toHaveBeenCalled();
+  });
+
+  it('si la foto falla, el resumen de venta se envia como texto', async () => {
+    const { service, telegram } = createService();
+    telegram.sendPhoto.mockResolvedValue(false);
+
+    const sent = await service.notifySale(COMPANY_ID, {
+      orderCode: 'PED-0004',
+      total: 30,
+      paidNow: 30,
+      paidTotal: 30,
+      balance: 0,
+      paymentCurrency: 'USD',
+      method: 'PLIN',
+      paymentReference: '9876',
+      paymentPhotoUrl: 'data:image/png;base64,iVBORw0KGgo=',
+      items: [],
+    });
+
+    expect(sent).toBe(true);
+    expect(telegram.sendMessage).toHaveBeenCalledWith(
+      '123456',
+      expect.stringContaining('PED-0004'),
+    );
   });
 
   it('el aviso de stock minimo incluye producto y minimo', async () => {

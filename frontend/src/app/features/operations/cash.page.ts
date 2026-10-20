@@ -388,6 +388,7 @@ const EMPTY_META: PaginationMeta = {
                 <th class="text-right">Equivalente ({{ moneyBaseCode() }})</th>
                 <th>Descripción</th>
                 <th>Usuario</th>
+                <th class="text-right">Acciones</th>
               </tr>
             </thead>
             <tbody>
@@ -419,6 +420,15 @@ const EMPTY_META: PaginationMeta = {
                   </td>
                   <td>{{ movement.description || '—' }}</td>
                   <td>{{ movement.createdBy?.name || '—' }}</td>
+                  <td class="text-right">
+                    <button
+                      type="button"
+                      class="btn-ghost btn-sm"
+                      (click)="openMovementDetail(movement)"
+                    >
+                      Ver detalle
+                    </button>
+                  </td>
                 </tr>
               }
             </tbody>
@@ -891,6 +901,119 @@ const EMPTY_META: PaginationMeta = {
         <button type="button" class="btn-secondary" (click)="closeSessionDetail()">Cerrar</button>
       </div>
     </ng-template>
+
+    <!-- Detalle de un movimiento: incluye el comprobante de transferencia. -->
+    <app-dialog
+      [open]="movementDetailOpen()"
+      [variant]="dialogView()"
+      title="Detalle del movimiento"
+      subtitle="Pago, comprobante y datos del registro"
+      size="md"
+      [body]="movementDetailBody"
+      [footer]="movementDetailFooter"
+      (closed)="closeMovementDetail()"
+    />
+
+    <ng-template #movementDetailBody>
+      @if (movementDetail(); as movement) {
+        <div class="space-y-4">
+          <div class="grid grid-cols-2 gap-3 text-sm">
+            <div class="rounded-lg bg-slate-50 px-3 py-2">
+              <p class="text-slate-500">Fecha</p>
+              <p class="font-medium">{{ dateTime(movement.createdAt) }}</p>
+            </div>
+            <div class="rounded-lg bg-slate-50 px-3 py-2">
+              <p class="text-slate-500">Tipo</p>
+              @if (movement.type === 'IN') {
+                <span class="badge bg-emerald-100 text-emerald-700">Entrada</span>
+              } @else {
+                <span class="badge bg-rose-100 text-rose-700">Salida</span>
+              }
+            </div>
+            <div class="rounded-lg bg-slate-50 px-3 py-2">
+              <p class="text-slate-500">Categoría</p>
+              <p class="font-medium">{{ categoryLabels[movement.category] || movement.category }}</p>
+            </div>
+            <div class="rounded-lg bg-slate-50 px-3 py-2">
+              <p class="text-slate-500">Método de pago</p>
+              <p class="font-medium">{{ methodLabels[movement.paymentMethod] || movement.paymentMethod }}</p>
+            </div>
+            <div class="rounded-lg bg-slate-50 px-3 py-2">
+              <p class="text-slate-500">Monto</p>
+              <p class="font-medium" [class.text-emerald-600]="movement.type === 'IN'" [class.text-rose-600]="movement.type === 'OUT'">
+                {{ amountIn(movement.type === 'IN' ? movement.amount : -movement.amount, movement.currency) }}
+              </p>
+            </div>
+            <div class="rounded-lg bg-slate-50 px-3 py-2">
+              <p class="text-slate-500">Equivalente ({{ moneyBaseCode() }})</p>
+              <app-money
+                [amount]="movement.type === 'IN' ? movement.baseAmount : -movement.baseAmount"
+              />
+            </div>
+            @if (movement.exchangeRate) {
+              <div class="rounded-lg bg-slate-50 px-3 py-2">
+                <p class="text-slate-500">Tasa aplicada</p>
+                <p class="font-medium">{{ rate(movement.exchangeRate) }}</p>
+              </div>
+            }
+            <div class="rounded-lg bg-slate-50 px-3 py-2">
+              <p class="text-slate-500">Registrado por</p>
+              <p class="font-medium">{{ movement.createdBy?.name || '—' }}</p>
+            </div>
+          </div>
+
+          <div class="rounded-lg border border-slate-200 px-3 py-2 text-sm">
+            <p class="text-slate-500">Descripción</p>
+            <p class="font-medium">{{ movement.description || '—' }}</p>
+          </div>
+
+          @if (movement.paymentReference || movement.paymentPhotoUrl) {
+            <div class="space-y-2 rounded-lg border border-amber-200 bg-amber-50 p-3">
+              <p class="text-xs font-semibold uppercase tracking-wide text-amber-800">
+                Comprobante de transferencia / pago móvil
+              </p>
+              <div class="text-sm">
+                <p class="text-slate-500">Referencia bancaria</p>
+                <p class="font-mono text-base font-semibold tracking-wider text-slate-900">
+                  {{ movement.paymentReference || '—' }}
+                </p>
+              </div>
+              @if (movement.paymentPhotoUrl) {
+                <button
+                  type="button"
+                  class="block w-full overflow-hidden rounded-lg border border-amber-200 bg-white"
+                  [attr.aria-expanded]="movementPhotoExpanded()"
+                  (click)="toggleMovementPhoto()"
+                >
+                  <img
+                    [src]="movement.paymentPhotoUrl"
+                    alt="Comprobante de pago"
+                    class="w-full object-contain"
+                    [class.max-h-72]="!movementPhotoExpanded()"
+                  />
+                </button>
+                <button
+                  type="button"
+                  class="btn-ghost btn-sm px-2 text-amber-800"
+                  (click)="toggleMovementPhoto()"
+                >
+                  <app-icon [name]="movementPhotoExpanded() ? 'close' : 'eye'" size="h-4 w-4" />
+                  {{ movementPhotoExpanded() ? 'Reducir comprobante' : 'Ver comprobante en tamaño completo' }}
+                </button>
+              } @else {
+                <p class="text-xs text-slate-500">El cobro no tiene foto adjunta.</p>
+              }
+            </div>
+          }
+        </div>
+      }
+    </ng-template>
+
+    <ng-template #movementDetailFooter>
+      <div class="flex w-full justify-end gap-2">
+        <button type="button" class="btn-secondary" (click)="closeMovementDetail()">Cerrar</button>
+      </div>
+    </ng-template>
     }
   `,
 })
@@ -1002,6 +1125,11 @@ export class CashPage implements OnInit {
 
   readonly detailOpen = signal(false);
   readonly detailSession = signal<CashSession | null>(null);
+
+  readonly movementDetailOpen = signal(false);
+  readonly movementDetail = signal<CashMovement | null>(null);
+  /** El comprobante se muestra pequeño y se expande dentro del mismo dialogo. */
+  readonly movementPhotoExpanded = signal(false);
 
   ngOnInit(): void {
     this.load();
@@ -1384,6 +1512,22 @@ export class CashPage implements OnInit {
     this.cash.session(sessionRow.id).subscribe({
       next: (detail) => this.detailSession.set(detail),
     });
+  }
+
+  openMovementDetail(movement: CashMovement): void {
+    this.movementDetail.set(movement);
+    this.movementPhotoExpanded.set(false);
+    this.movementDetailOpen.set(true);
+  }
+
+  toggleMovementPhoto(): void {
+    this.movementPhotoExpanded.update((expanded) => !expanded);
+  }
+
+  closeMovementDetail(): void {
+    this.movementDetailOpen.set(false);
+    this.movementDetail.set(null);
+    this.movementPhotoExpanded.set(false);
   }
 
   closeSessionDetail(): void {

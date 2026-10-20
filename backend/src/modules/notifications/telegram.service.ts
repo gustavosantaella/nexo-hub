@@ -123,6 +123,54 @@ export class TelegramService {
     }
   }
 
+  /**
+   * Envia una foto (data URL) con pie de foto HTML. Se usa para el comprobante
+   * de una transferencia/pago movil. Igual que `sendMessage`, nunca lanza: si
+   * Telegram falla la venta ya quedo cobrada y solo se registra el aviso.
+   */
+  async sendPhoto(
+    chatId: string | null | undefined,
+    dataUrl: string,
+    html: string,
+  ): Promise<boolean> {
+    if (!this.configured || !chatId) return false;
+    const image = parseImageDataUrl(dataUrl);
+    if (!image) return false;
+
+    try {
+      const form = new FormData();
+      form.set('chat_id', chatId);
+      form.set('caption', html.slice(0, 1024));
+      form.set('parse_mode', 'HTML');
+      form.set(
+        'photo',
+        new Blob([image.bytes], { type: image.mime }),
+        image.filename,
+      );
+
+      const response = await fetch(`${this.apiBase}/sendPhoto`, {
+        method: 'POST',
+        body: form,
+        signal: AbortSignal.timeout(20000),
+      });
+      const payload = (await response.json().catch(() => null)) as
+        | { ok?: boolean; description?: string }
+        | null;
+
+      if (!response.ok || !payload?.ok) {
+        throw new Error(
+          payload?.description ?? `Telegram respondio ${response.status}`,
+        );
+      }
+      return true;
+    } catch (error) {
+      this.logger.warn(
+        `No se pudo enviar la foto de Telegram al chat ${chatId}: ${this.errorText(error)}`,
+      );
+      return false;
+    }
+  }
+
   /** Llama a un metodo de la Bot API y devuelve `result`. */
   private async call<T>(
     method: string,
@@ -162,4 +210,21 @@ export function escapeHtml(value: unknown): string {
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;');
+}
+
+/** Decodifica un data URL de imagen aceptado por el POS. */
+function parseImageDataUrl(
+  value: string,
+): { bytes: Uint8Array<ArrayBuffer>; mime: string; filename: string } | null {
+  const match = /^data:(image\/(?:jpeg|png|webp));base64,([A-Za-z0-9+/=]+)$/.exec(
+    value,
+  );
+  if (!match) return null;
+
+  const bytes = Uint8Array.from(Buffer.from(match[2], 'base64'));
+  // Telegram acepta fotos de hasta 10 MB; se guarda margen para el formulario.
+  if (bytes.byteLength === 0 || bytes.byteLength > 8 * 1024 * 1024) return null;
+
+  const extension = match[1] === 'image/jpeg' ? 'jpg' : match[1].split('/')[1];
+  return { bytes, mime: match[1], filename: `comprobante.${extension}` };
 }

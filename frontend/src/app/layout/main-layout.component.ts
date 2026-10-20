@@ -305,20 +305,20 @@ export class MainLayoutComponent {
         { label: 'Clientes', route: '/panel/clientes', icon: 'users' },
       ],
     },
-    {
-      title: 'Finanzas',
-      items: [
-        { label: 'Gastos', route: '/panel/gastos', icon: 'money' },
-        { label: 'Cuentas por pagar', route: '/panel/cuentas-por-pagar', icon: 'trend-down' },
-        { label: 'Cuentas por cobrar', route: '/panel/cuentas-por-cobrar', icon: 'trend-up' },
-        {
-          label: 'Reportes',
-          route: '/panel/reportes',
-          icon: 'chart',
-          roles: ['ADMIN', 'MANAGER'],
-        },
-      ],
-    },
+    // {
+    //   title: 'Finanzas',
+    //   items: [
+    //     { label: 'Gastos', route: '/panel/gastos', icon: 'money' },
+    //     { label: 'Cuentas por pagar', route: '/panel/cuentas-por-pagar', icon: 'trend-down' },
+    //     { label: 'Cuentas por cobrar', route: '/panel/cuentas-por-cobrar', icon: 'trend-up' },
+    //     {
+    //       label: 'Reportes',
+    //       route: '/panel/reportes',
+    //       icon: 'chart',
+    //       roles: ['ADMIN', 'MANAGER'],
+    //     },
+    //   ],
+    // },
     {
       title: 'Sistema',
       items: [

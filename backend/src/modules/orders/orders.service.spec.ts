@@ -970,6 +970,75 @@ describe('OrdersService.addPayment (tasa de cobro del cajero)', () => {
     expect(parseRatesHistory(payment.ratesHistory)?.rates).toHaveLength(3);
   });
 
+  it('guarda la referencia y la foto del comprobante en el cobro y en la caja', async () => {
+    const { service, tx } = createService(order(), rates, cash);
+    const photo = 'data:image/png;base64,iVBORw0KGgo=';
+
+    await service.addPayment(
+      COMPANY_ID,
+      'o1',
+      {
+        amount: 3650,
+        method: PaymentMethod.TRANSFER,
+        currency: 'VES',
+        paymentReference: '123456',
+        paymentPhotoUrl: photo,
+      },
+      'u1',
+    );
+
+    const payment = tx.orderPayment.create.mock.calls[0][0].data;
+    expect(payment.paymentReference).toBe('123456');
+    expect(payment.paymentPhotoUrl).toBe(photo);
+
+    // El movimiento de caja lleva el comprobante para poder verlo en su detalle.
+    const movement = (cash.registerMovement as jest.Mock).mock.lastCall?.[1] as {
+      paymentReference?: string;
+      paymentPhotoUrl?: string;
+    };
+    expect(movement.paymentReference).toBe('123456');
+    expect(movement.paymentPhotoUrl).toBe(photo);
+  });
+
+  it('exige referencia cuando el cobro es por transferencia', async () => {
+    const { service, tx } = createService(order(), rates, cash);
+
+    await expect(
+      service.addPayment(
+        COMPANY_ID,
+        'o1',
+        {
+          amount: 3650,
+          method: PaymentMethod.TRANSFER,
+          currency: 'VES',
+        },
+        'u1',
+      ),
+    ).rejects.toBeInstanceOf(BadRequestException);
+    expect(tx.orderPayment.create).not.toHaveBeenCalled();
+  });
+
+  it('no guarda comprobante en un cobro en efectivo', async () => {
+    const { service, tx } = createService(order(), rates, cash);
+
+    await service.addPayment(
+      COMPANY_ID,
+      'o1',
+      {
+        amount: 3650,
+        method: PaymentMethod.CASH,
+        currency: 'VES',
+        paymentReference: '123456',
+        paymentPhotoUrl: 'data:image/png;base64,iVBORw0KGgo=',
+      },
+      'u1',
+    );
+
+    const payment = tx.orderPayment.create.mock.calls[0][0].data;
+    expect(payment.paymentReference).toBeUndefined();
+    expect(payment.paymentPhotoUrl).toBeUndefined();
+  });
+
   it('entrega el historial del cobro ya decodificado al leer el pedido', async () => {
     const { service } = createService(
       order({
@@ -1102,6 +1171,7 @@ describe('OrdersService.addPayment (tasa de cobro del cajero)', () => {
         amount: 100,
         method: PaymentMethod.MIXED,
         currency: 'USD',
+        paymentReference: '1234',
         parts: [
           { amount: 60, method: PaymentMethod.CASH, currency: 'USD' },
           { amount: 2000, method: PaymentMethod.TRANSFER, currency: 'VES' },
@@ -1128,6 +1198,7 @@ describe('OrdersService.addPayment (tasa de cobro del cajero)', () => {
         amount: 2000,
         currency: 'VES',
         baseAmount: 50,
+        paymentReference: '1234',
       }),
       expect.objectContaining({
         type: 'OUT',

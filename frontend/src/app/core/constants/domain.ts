@@ -66,6 +66,18 @@ export const PAYMENT_METHOD_LABELS: Record<string, string> = {
 };
 export const PAYMENT_METHOD_OPTIONS = toOptions(PAYMENT_METHOD_LABELS);
 
+/**
+ * Metodos que se cobran contra una cuenta bancaria/billetera y por eso piden la
+ * referencia del comprobante (4-6 digitos) y admiten una foto opcional.
+ * Debe coincidir con `PAYMENT_PROOF_METHODS` del backend.
+ */
+export const PAYMENT_PROOF_METHODS = ['TRANSFER', 'YAPE', 'PLIN'] as const;
+
+/** `true` si el cobro por ese metodo exige comprobante bancario. */
+export function needsPaymentProof(method: string): boolean {
+  return PAYMENT_PROOF_METHODS.some((proofMethod) => proofMethod === method);
+}
+
 export const PRODUCT_UNIT_LABELS: Record<string, string> = {
   UND: 'Unidad',
   KG: 'Kilogramo',

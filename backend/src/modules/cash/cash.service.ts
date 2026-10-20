@@ -153,6 +153,10 @@ export interface RegisterMovementInput {
   description?: string;
   referenceType?: string;
   referenceId?: string;
+  /** Referencia bancaria del comprobante (transferencia / pago movil). */
+  paymentReference?: string | null;
+  /** Foto del comprobante como data URL. */
+  paymentPhotoUrl?: string | null;
   createdById?: string;
 }
 
@@ -890,6 +894,8 @@ export class CashService {
         description: input.description,
         referenceType: input.referenceType,
         referenceId: input.referenceId,
+        paymentReference: input.paymentReference ?? undefined,
+        paymentPhotoUrl: input.paymentPhotoUrl ?? undefined,
         createdById: input.createdById,
       },
       tx,

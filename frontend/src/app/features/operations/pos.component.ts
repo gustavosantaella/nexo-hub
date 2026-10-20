@@ -18,6 +18,7 @@ import {
   PAYMENT_METHOD_OPTIONS,
   PAYMENT_STATUS_CLASSES,
   PAYMENT_STATUS_LABELS,
+  needsPaymentProof,
 } from '../../core/constants/domain';
 import type {
   Category,
@@ -56,6 +57,7 @@ import {
 import { RatesService } from '../../core/services/rates.service';
 import { ToastService } from '../../core/services/toast.service';
 import { categoryOptionLabel, categoryScopeIds } from '../../core/utils/category-tree';
+import { toPaymentProofDataUrl } from '../../core/utils/image';
 import {
   apiErrorMessage,
   dateTime,
@@ -1444,6 +1446,66 @@ interface ChargeLineDraft {
                     </div>
                   }
 
+                  @if (chargeNeedsProof) {
+                    <!-- Transferencia / pago movil: referencia obligatoria y foto opcional. -->
+                    <div class="space-y-2 rounded-lg border border-amber-200 bg-amber-50 p-2">
+                      <p class="text-xs font-semibold uppercase tracking-wide text-amber-800">
+                        Comprobante de transferencia / pago móvil
+                      </p>
+                      <div>
+                        <label class="label">Referencia bancaria</label>
+                        <input
+                          class="input"
+                          type="text"
+                          inputmode="numeric"
+                          maxlength="6"
+                          placeholder="4 a 6 dígitos"
+                          [ngModel]="charge.paymentReference"
+                          (ngModelChange)="onPaymentReferenceChange($event)"
+                        />
+                      </div>
+
+                      @if (charge.paymentPhotoUrl) {
+                        <div class="flex items-start gap-2 rounded-lg border border-amber-200 bg-white p-2">
+                          <img
+                            [src]="charge.paymentPhotoUrl"
+                            alt="Comprobante de pago"
+                            class="h-20 w-16 rounded object-cover"
+                          />
+                          <div class="min-w-0 flex-1">
+                            <p class="truncate text-xs font-medium text-slate-700">
+                              {{ charge.paymentPhotoName || 'Comprobante adjunto' }}
+                            </p>
+                            <p class="text-xs text-emerald-700">Se enviará al administrador.</p>
+                            <button
+                              type="button"
+                              class="btn-ghost btn-sm mt-1 px-2 text-rose-600"
+                              (click)="removePaymentPhoto()"
+                            >
+                              <app-icon name="trash" size="h-3.5 w-3.5" />
+                              Quitar foto
+                            </button>
+                          </div>
+                        </div>
+                      } @else {
+                        <label class="btn-secondary btn-sm inline-flex cursor-pointer items-center gap-1">
+                          <app-icon name="image" size="h-4 w-4" />
+                          {{ paymentPhotoBusy() ? 'Procesando…' : 'Adjuntar foto (opcional)' }}
+                          <input
+                            type="file"
+                            class="hidden"
+                            accept="image/jpeg,image/png,image/webp"
+                            [disabled]="paymentPhotoBusy()"
+                            (change)="onPaymentPhotoSelected($event)"
+                          />
+                        </label>
+                      }
+                      <p class="text-xs text-slate-500">
+                        La foto es opcional; la referencia es obligatoria para validar el cobro.
+                      </p>
+                    </div>
+                  }
+
                   <p class="text-xs text-slate-500">
                     @if (charge.method === 'MIXED') {
                       @if (mixedMissingDisplay > 0) {
@@ -2084,6 +2146,8 @@ export class PosComponent implements OnInit, OnDestroy {
   readonly loadingTables = signal(false);
   readonly saving = signal(false);
   readonly formError = signal<string | null>(null);
+  /** `true` mientras se comprime la foto del comprobante elegida por el cajero. */
+  readonly paymentPhotoBusy = signal(false);
   readonly tab = signal<'sale' | 'tables' | 'saved'>('sale');
   /**
    * La tarjeta de cobro vive en un panel lateral que arranca cerrado y se abre
@@ -2186,6 +2250,12 @@ export class PosComponent implements OnInit, OnDestroy {
      * «Recalcular» lo vuelve a encender.
      */
     changeAuto: boolean;
+    /** Referencia bancaria del comprobante (4-6 digitos). */
+    paymentReference: string;
+    /** Foto opcional del comprobante como data URL. */
+    paymentPhotoUrl: string | null;
+    /** Nombre del archivo elegido (solo se muestra en el POS). */
+    paymentPhotoName: string;
   } = {
     method: 'CASH',
     currency: BASE_CURRENCY.code,
@@ -2193,6 +2263,9 @@ export class PosComponent implements OnInit, OnDestroy {
     parts: [],
     changes: [],
     changeAuto: true,
+    paymentReference: '',
+    paymentPhotoUrl: null,
+    paymentPhotoName: '',
   };
 
   /** Registro rápido de cliente desde el POS. */
@@ -3441,6 +3514,19 @@ export class PosComponent implements OnInit, OnDestroy {
   }
 
   /**
+   * `true` cuando el cobro incluye transferencia, Yape o Plin y por lo tanto
+   * hay que pedir la referencia del comprobante (la foto es opcional).
+   */
+  get chargeNeedsProof(): boolean {
+    if (this.charge.method === 'MIXED') {
+      return this.charge.parts.some(
+        (part) => Number(part.amount) > 0 && needsPaymentProof(part.method),
+      );
+    }
+    return needsPaymentProof(this.charge.method);
+  }
+
+  /**
    * Total de la cuenta tal como se está mostrando (la moneda de los precios del
    * cajero): el bloque de conversiones del total tiene que hablar de la misma
    * moneda que el total que se lee arriba.
@@ -3592,6 +3678,49 @@ export class PosComponent implements OnInit, OnDestroy {
   /** El cajero tocó un pago: se recalcula el vuelto si sigue en automático. */
   onChargePartChange(): void {
     this.syncAutoChange();
+  }
+
+  /** La referencia bancaria solo admite digitos (4 a 6). */
+  onPaymentReferenceChange(value: string): void {
+    this.charge.paymentReference = String(value ?? '')
+      .replace(/\D/g, '')
+      .slice(0, 6);
+  }
+
+  /** Comprime y adjunta la foto del comprobante elegida por el cajero. */
+  async onPaymentPhotoSelected(event: Event): Promise<void> {
+    const input = event.target as HTMLInputElement;
+    const file = input.files?.[0];
+    // Permite volver a elegir el mismo archivo despues de quitarlo.
+    input.value = '';
+    if (!file) return;
+
+    if (!file.type.startsWith('image/')) {
+      this.toast.error('El comprobante debe ser una imagen (JPG, PNG o WebP).');
+      return;
+    }
+    if (file.size > 12 * 1024 * 1024) {
+      this.toast.error('La foto del comprobante no puede superar los 12 MB.');
+      return;
+    }
+
+    this.paymentPhotoBusy.set(true);
+    try {
+      this.charge.paymentPhotoUrl = await toPaymentProofDataUrl(file);
+      this.charge.paymentPhotoName = file.name;
+    } catch {
+      this.toast.error('No se pudo procesar la foto del comprobante.');
+      this.charge.paymentPhotoUrl = null;
+      this.charge.paymentPhotoName = '';
+    } finally {
+      this.paymentPhotoBusy.set(false);
+    }
+  }
+
+  /** Quita la foto del comprobante (la referencia se conserva). */
+  removePaymentPhoto(): void {
+    this.charge.paymentPhotoUrl = null;
+    this.charge.paymentPhotoName = '';
   }
 
   /** El cajero editó el vuelto: se respeta y deja de calcularse solo. */
@@ -3774,6 +3903,20 @@ export class PosComponent implements OnInit, OnDestroy {
 
   /** Valida el cobro antes de tocar el backend (tasas y pago mixto completo). */
   private validateCharge(): boolean {
+    if (this.paymentPhotoBusy()) {
+      this.formError.set('Espera a que termine de procesarse la foto del comprobante.');
+      return false;
+    }
+    if (
+      this.chargeNeedsProof &&
+      !/^\d{4,6}$/.test(this.charge.paymentReference.trim())
+    ) {
+      this.formError.set(
+        'Escribe la referencia del comprobante: de 4 a 6 dígitos.',
+      );
+      return false;
+    }
+
     const currencies = new Set<string>();
     if (this.charge.method === 'MIXED') {
       const parts = this.charge.parts.filter((part) => Number(part.amount) > 0);
@@ -3862,6 +4005,7 @@ export class PosComponent implements OnInit, OnDestroy {
           method: 'MIXED' as PaymentMethod,
           currency,
           ...(rateKey ? { rateKey } : {}),
+          ...this.paymentProofPayload(),
           parts: this.charge.parts
             .filter((part) => Number(part.amount) > 0)
             .map((part) => ({
@@ -3916,8 +4060,26 @@ export class PosComponent implements OnInit, OnDestroy {
       method,
       currency,
       ...(rateKey ? { rateKey } : {}),
+      ...this.paymentProofPayload(),
       parts: [{ amount: tendered, method, currency }],
       change: change > 0 ? [{ amount: change, method, currency }] : [],
+    };
+  }
+
+  /**
+   * Comprobante que viaja con el cobro. Solo se envia cuando algun metodo lo
+   * exige (transferencia / Yape / Plin) y la referencia ya se valido.
+   */
+  private paymentProofPayload(): {
+    paymentReference?: string;
+    paymentPhotoUrl?: string;
+  } {
+    if (!this.chargeNeedsProof) return {};
+    return {
+      paymentReference: this.charge.paymentReference.trim(),
+      ...(this.charge.paymentPhotoUrl
+        ? { paymentPhotoUrl: this.charge.paymentPhotoUrl }
+        : {}),
     };
   }
 
@@ -3972,6 +4134,9 @@ export class PosComponent implements OnInit, OnDestroy {
       parts: [],
       changes: [],
       changeAuto: true,
+      paymentReference: '',
+      paymentPhotoUrl: null,
+      paymentPhotoName: '',
     };
     this.formError.set(null);
   }

@@ -143,6 +143,18 @@ El seed deja la base lista para probar **todo** el sistema:
 
 Para partir de cero: `npm run db:reset` (borra la base, la recrea y siembra).
 
+### Limpiar operaciones sin borrar catálogo ni usuarios
+
+Para vaciar pedidos, cobros, caja, gastos, cuentas por cobrar/pagar y
+movimientos de inventario conservando empresas, usuarios/roles, catálogo,
+configuración, notificaciones y el stock actual de los productos:
+
+```bash
+cd backend
+npm run db:clear            # muestra lo que borraría, sin tocar la base
+npm run db:clear -- --yes   # borra y crea un respaldo .db antes
+```
+
 ### Reglas de negocio destacadas
 
 - **Categorías y subcategorías (opcionales)**: las categorías de **productos**

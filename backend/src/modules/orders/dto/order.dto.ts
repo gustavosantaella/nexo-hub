@@ -8,6 +8,8 @@ import {
   IsNumber,
   IsOptional,
   IsString,
+  Matches,
+  MaxLength,
   Min,
   ValidateNested,
 } from 'class-validator';
@@ -300,6 +302,30 @@ export class AddOrderPaymentDto {
   @IsOptional()
   @IsString()
   note?: string;
+
+  @ApiPropertyOptional({
+    example: '123456',
+    description:
+      'Referencia bancaria del comprobante (4 a 6 digitos). Obligatoria cuando el cobro incluye transferencia, Yape o Plin.',
+  })
+  @IsOptional()
+  @IsString()
+  @Matches(/^\d{4,6}$/, {
+    message: 'La referencia debe tener entre 4 y 6 digitos',
+  })
+  paymentReference?: string;
+
+  @ApiPropertyOptional({
+    description:
+      'Foto opcional del comprobante como data URL (JPEG, PNG o WebP). Se envia al administrador por Telegram.',
+  })
+  @IsOptional()
+  @IsString()
+  @MaxLength(2_000_000, { message: 'La foto del comprobante es demasiado grande' })
+  @Matches(/^data:image\/(?:jpeg|png|webp);base64,[A-Za-z0-9+/=]+$/, {
+    message: 'La foto del comprobante no es una imagen valida',
+  })
+  paymentPhotoUrl?: string;
 
   @ApiPropertyOptional({
     type: [OrderPaymentPartDto],

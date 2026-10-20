@@ -67,6 +67,10 @@ export interface SaleNotification {
   balance: number;
   paymentCurrency: string;
   method: string;
+  /** Referencia bancaria del comprobante (transferencia / pago movil). */
+  paymentReference?: string | null;
+  /** Foto del comprobante como data URL. */
+  paymentPhotoUrl?: string | null;
   items: { name: string; quantity: number }[];
 }
 
@@ -462,6 +466,9 @@ export class NotificationsService implements OnModuleInit, OnModuleDestroy {
       `<b>Pedido:</b> ${escapeHtml(sale.orderCode)}`,
       `<b>Cobrado ahora:</b> ${escapeHtml(sale.paymentCurrency)} ${sale.paidNow.toFixed(2)}`,
       `<b>Método:</b> ${escapeHtml(sale.method)}`,
+      ...(sale.paymentReference
+        ? [`<b>Referencia:</b> ${escapeHtml(sale.paymentReference)}`]
+        : []),
       `<b>Total del pedido:</b> ${usd(sale.total)}`,
       `<b>Acumulado:</b> ${usd(sale.paidTotal)}`,
       `<b>Saldo:</b> ${usd(sale.balance)}`,
@@ -470,6 +477,17 @@ export class NotificationsService implements OnModuleInit, OnModuleDestroy {
       '',
       itemsText(sale.items),
     ].join('\n');
+
+    // El comprobante viaja como foto con el resumen de pie de foto. Si el
+    // envio de la imagen falla, el aviso de texto igual llega.
+    if (sale.paymentPhotoUrl) {
+      const sentPhoto = await this.telegram.sendPhoto(
+        row.telegramChatId,
+        sale.paymentPhotoUrl,
+        text,
+      );
+      if (sentPhoto) return true;
+    }
 
     return this.telegram.sendMessage(row.telegramChatId, text);
   }

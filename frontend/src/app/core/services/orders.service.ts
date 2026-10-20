@@ -103,6 +103,10 @@ export class OrdersService {
       currency?: string;
       rateKey?: string;
       note?: string;
+      /** Referencia bancaria del comprobante (4-6 digitos). */
+      paymentReference?: string;
+      /** Foto opcional del comprobante como data URL. */
+      paymentPhotoUrl?: string;
       /** Desglose del pago cuando el cliente entrega varias formas/monedas. */
       parts?: {
         amount: number;

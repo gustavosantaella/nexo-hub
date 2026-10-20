@@ -21,6 +21,15 @@ export const PRODUCT_IMAGE_MAX_SIZE = 320;
 /** Calidad JPEG de la foto del producto (buena vista, poco peso). */
 export const PRODUCT_IMAGE_QUALITY = 0.82;
 
+/**
+ * Lado máximo de la foto del comprobante de pago. Se guarda en la fila del pago
+ * y se envía a Telegram, así que se mantiene legible pero liviana.
+ */
+export const PAYMENT_PROOF_MAX_SIZE = 1280;
+
+/** Calidad JPEG del comprobante de pago. */
+export const PAYMENT_PROOF_QUALITY = 0.72;
+
 /** Ancho y alto (en píxeles) de una imagen. */
 export interface Size {
   width: number;
@@ -117,4 +126,16 @@ export function toProductImageDataUrl(
   max = PRODUCT_IMAGE_MAX_SIZE,
 ): Promise<string> {
   return toCanvasDataUrl(file, max, 'image/jpeg', PRODUCT_IMAGE_QUALITY);
+}
+
+/**
+ * Convierte la foto del comprobante de pago (transferencia / pago móvil) en un
+ * data URL JPEG reducido. Debe quedar legible el número de referencia y el
+ * monto, por eso usa más resolución que la foto de un producto.
+ */
+export function toPaymentProofDataUrl(
+  file: Blob,
+  max = PAYMENT_PROOF_MAX_SIZE,
+): Promise<string> {
+  return toCanvasDataUrl(file, max, 'image/jpeg', PAYMENT_PROOF_QUALITY);
 }
