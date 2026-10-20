@@ -181,16 +181,54 @@ export class MoneyComponent {
    * Configuración → Cajero, salvo que esa línea ya venga entre las conversiones
    * (con la base en bolívares la lista de tasas ya trae el dólar del BCV).
    *
-   * Los bolívares de la línea son los que escribió el operador cuando el registro
-   * los guarda: así el dólar que se ve es el de los bolívares cobrados y no el del
-   * equivalente redondeado a centavos.
+   * Los bolívares de la línea son los que el cajero está leyendo en el monto base
+   * (los que escribió el operador o, si no hay monto cargado, el precio en
+   * bolívares de la vitrina): así el dólar que se ve es el de los bolívares
+   * cobrados y no el del equivalente guardado en dólares.
    */
   private withBcvPrice(items: readonly RateConversion[]): RateConversion[] {
     const all = [...items];
     if (!this.rates.showBcvPrice()) return all;
     if (all.some((item) => item.key === BCV_USD_RATE_KEY)) return all;
-    const line = this.rates.bcvUsdConversion(this.amount, this.loadedRate?.amount);
+    const line = this.rates.bcvUsdConversion(this.amount, this.shownBsAmount);
     return line ? [...all, line] : all;
+  }
+
+  /**
+   * Bolívares que se están leyendo en el monto base (`base`), para la línea del
+   * dólar oficial.
+   *
+   * La línea los divide entre la tasa del BCV. Si en su lugar se usa el monto
+   * guardado en dólares, un precio de Bs 15.520,00 (USD 16,00 a la tasa del local
+   * de 970) mostraba `USD · BCV $ 16,00` —los dólares de la vitrina— cuando esos
+   * bolívares al BCV (883,30) son `$ 17,57`.
+   */
+  private get shownBsAmount(): number | null {
+    if (displayBaseCode() !== LOCAL_CURRENCY_CODE) return null;
+
+    // La base forzada a una tasa del sistema (`displayRateKey`) ya son esos
+    // bolívares: las ventas y la caja los pintan a la tasa oficial.
+    const forced = String(this.displayRateKey ?? '').trim();
+    if (forced) {
+      return this.rates.fromBase(this.amount, LOCAL_CURRENCY_CODE, forced as RateKey);
+    }
+
+    // El registro guarda lo que escribió el operador: esos son los bolívares
+    // cobrados, no el equivalente en dólares redondeado a centavos.
+    const entered = Number(this.entered ?? 0);
+    const loaded =
+      this.entered != null &&
+      Number.isFinite(entered) &&
+      entered !== 0 &&
+      String(this.currency ?? '').trim().toUpperCase() === LOCAL_CURRENCY_CODE;
+    if (loaded) return entered;
+
+    // Sin monto cargado la base la pinta `money()`: dólares × tasa de vitrina (la
+    // personalizada del local si existe), el precio que el cajero está leyendo.
+    const amount = Math.round(Number(this.amount ?? 0) * 100) / 100;
+    const bsPerUsd = this.rates.bsPerUsd();
+    if (!amount || !bsPerUsd) return null;
+    return amount * bsPerUsd;
   }
 
   /**

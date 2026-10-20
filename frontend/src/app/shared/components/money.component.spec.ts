@@ -215,6 +215,50 @@ function withCustomDollar(): RatesSnapshot {
   };
 }
 
+/**
+ * Caja con los precios en bolívares a la tasa del local (970 Bs por dólar) y el
+ * BCV en 883,30: el caso del reporte —Bs 15.520,00 son USD 16,00 de vitrina y, al
+ * BCV, USD 17,57—.
+ */
+function withLocalPrice(): RatesSnapshot {
+  const custom = 970;
+  return {
+    ...withBase('VES'),
+    bcv: { ...BCV, current: { ...BCV.current, usd: 883.3 } },
+    custom: {
+      usd: custom,
+      updatedAt: '2026-10-13T12:05:00.000Z',
+      updatedBy: 'Administrador',
+    },
+    rates: [
+      { ...BCV_ONLY.rates[0], rate: 883.3 },
+      BCV_ONLY.rates[1],
+      {
+        key: 'CUSTOM_USD',
+        currency: 'USD',
+        source: 'CUSTOM',
+        rate: custom,
+        date: null,
+        previousRate: null,
+        changePercentage: null,
+      },
+    ],
+    baseCurrency: {
+      code: 'VES',
+      label: 'Bolívares',
+      symbol: 'Bs',
+      decimals: 2,
+      bsPerUnit: 1,
+      bsPerUsd: custom,
+    },
+    currencies: currenciesFor(custom).map((item) => ({
+      ...item,
+      isDisplayBase: item.code === 'VES',
+      source: item.code === 'USD' ? ('CUSTOM' as const) : item.source,
+    })),
+  };
+}
+
 /** Montos "al cambio": equivalente en bolívares con cada tasa activa. */
 describe('MoneyComponent (montos al cambio)', () => {
   let http: HttpTestingController;
@@ -711,14 +755,49 @@ describe('MoneyComponent (precio en dólares del BCV)', () => {
     expect(text).toContain('USD · BCV $ 10.00');
   });
 
-  it('con tasa personalizada la línea del BCV usa la tasa oficial', () => {
+  it('con tasa personalizada la línea del BCV convierte los bolívares de la vitrina', () => {
     companyPrefs({ showBcvPrice: true });
     const text = load(withCustomDollar());
 
-    // El monto ya está en los bolívares del BCV, aunque la vitrina se muestre con
-    // la personalizada: la línea oficial debe devolver los mismos dólares.
-    expect(text).toContain('USD · BCV $ 10.00');
-    expect(text).not.toContain('USD · BCV $ 10.33');
+    // El monto se lee en los bolívares de la vitrina ($ 10,00 × 905,42 = Bs 9.054,20)
+    // y la línea oficial son ESOS bolívares al BCV: 9.054,20 / 876,7976 = $ 10,33.
+    // Con el monto guardado en dólares salía $ 10,00: los de la vitrina, no el BCV.
+    expect(text).toContain('Bs 9,054.20');
+    expect(text).toContain('USD · BCV $ 10.33');
+    expect(text).not.toContain('USD · BCV $ 10.00');
+    expect(bcvLines(text)).toBe(1);
+  });
+
+  it('el monto congelado del pedido manda sobre los dólares guardados', () => {
+    companyPrefs({ showBcvPrice: true });
+    load(withCustomDollar());
+    // Monto cargado a mano en bolívares (Bs 9.054,20): los dólares guardados son el
+    // equivalente de vitrina y no deben mandar en la línea oficial.
+    fixture.componentInstance.amount.set(9.92);
+    fixture.componentInstance.entered.set(9054.2);
+    fixture.componentInstance.currency.set('VES');
+    fixture.detectChanges();
+
+    const text = fixture.nativeElement.textContent as string;
+
+    expect(text).toContain('Bs 9,054.20');
+    expect(text).toContain('USD · BCV $ 10.33');
+    expect(text).not.toContain('USD · BCV $ 9.92');
+  });
+
+  it('la línea del BCV sale de los bolívares del precio, no del monto en dólares', () => {
+    // Reporte de caja: Bs 15.520,00 (USD 16,00 a la tasa del local de 970) mostraba
+    // `USD · BCV $ 16,00`; esos bolívares al BCV (883,30) son $ 17,57.
+    companyPrefs({ showBcvPrice: true });
+    load(withLocalPrice());
+    fixture.componentInstance.amount.set(16);
+    fixture.detectChanges();
+
+    const text = fixture.nativeElement.textContent as string;
+
+    expect(text).toContain('Bs 15,520.00');
+    expect(text).toContain('USD · BCV $ 17.57');
+    expect(text).not.toContain('USD · BCV $ 16.00');
     expect(bcvLines(text)).toBe(1);
   });
 
