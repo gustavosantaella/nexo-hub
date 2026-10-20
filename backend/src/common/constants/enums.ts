@@ -133,6 +133,10 @@ export const CashMovementCategory = {
   DEPOSIT: 'DEPOSIT',
   REFUND: 'REFUND',
   PAYMENT: 'PAYMENT',
+  // Vuelto entregado al cliente en un cobro (egreso de caja). No es una
+  // devolucion: se registra para que el arqueo y los movimientos muestren como
+  // se devolvio el cambio, en la moneda y el metodo que sea.
+  CHANGE: 'CHANGE',
   ADJUSTMENT: 'ADJUSTMENT',
   OTHER: 'OTHER',
 } as const;
@@ -185,4 +189,5 @@ export const CASH_OUT_CATEGORIES: string[] = [
   CashMovementCategory.WITHDRAWAL,
   CashMovementCategory.REFUND,
   CashMovementCategory.PAYMENT,
+  CashMovementCategory.CHANGE,
 ];

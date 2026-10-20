@@ -17,6 +17,15 @@ export interface AppConfig {
     /** Si es true solo se permite UNA sesion de caja abierta en todo el sistema. */
     singleOpenSession: boolean;
   };
+  telegram: {
+    /** Token del bot creado en BotFather. Vacio = bot deshabilitado. */
+    botToken: string;
+    /**
+     * Escucha los mensajes del bot con `getUpdates` para vincular el chat del
+     * administrador (`/vincular CODIGO`). Se apaga en las pruebas.
+     */
+    polling: boolean;
+  };
   rates: {
     /** Endpoint publico del BCV (dolarvzla) que devuelve la tasa del dia. */
     bcvUrl: string;
@@ -59,6 +68,12 @@ export default (): AppConfig => {
     },
     cash: {
       singleOpenSession: toBool(process.env.CASH_SINGLE_OPEN_SESSION, true),
+    },
+    telegram: {
+      botToken: process.env.TELEGRAM_BOT_API_TOKEN ?? '',
+      polling:
+        env !== 'test' &&
+        toBool(process.env.TELEGRAM_POLLING, true),
     },
     rates: {
       bcvUrl:

@@ -937,7 +937,13 @@ export class CashPage implements OnInit {
     this.loadMovements();
   }
   readonly categoryLabels = CASH_CATEGORY_LABELS;
-  readonly categoryOptions = CASH_CATEGORY_OPTIONS;
+  /**
+   * Categorias del movimiento manual. `CHANGE` (vuelto) lo genera el cobro de un
+   * pedido con su metodo y moneda; no se captura a mano.
+   */
+  readonly categoryOptions = CASH_CATEGORY_OPTIONS.filter(
+    (option) => option.value !== 'CHANGE',
+  );
   readonly methodLabels = PAYMENT_METHOD_LABELS;
   readonly methodOptions = PAYMENT_METHOD_OPTIONS;
   readonly movementTypeOptions = [

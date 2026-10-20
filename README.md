@@ -53,6 +53,35 @@ npm run start:dev           # http://localhost:3000/api
 - Documentación Swagger: <http://localhost:3000/api/docs>
 - Health check: <http://localhost:3000/api/health>
 
+### Notificaciones por Telegram
+
+El bot es único para todo el sistema y se configura en `backend/.env`:
+
+```env
+TELEGRAM_BOT_API_TOKEN="token-del-bot"
+# Opcional: false para no escuchar mensajes (por ejemplo, si usas webhook).
+TELEGRAM_POLLING=true
+```
+
+El QR que se muestra en **Configuración → Notificaciones** es
+`backend/public/bot/qr.jpeg` (se sirve en `GET /api/notifications/telegram/qr`).
+Flujo de vinculación:
+
+1. Un ADMIN/MANAGER activa **Telegram** y pulsa **Generar código de vinculación**.
+2. El administrador escanea el QR, abre el bot y envía `/vincular CODIGO`
+   (también vale `/start CODIGO`).
+3. La API escucha con long polling (`getUpdates`), guarda el chat del
+   administrador y confirma por Telegram.
+
+Avisos disponibles, todos configurables por empresa: stock al mínimo,
+venta/cobro con resumen, cierre de caja con total recaudado y cancelaciones.
+
+**Cancelación con OTP:** cuando un `CASHIER` cancela un pedido, el backend exige
+un código de 8 letras mayúsculas que se envía al administrador por Telegram.
+Vale 10 minutos, es de un solo uso y solo se guarda su hash. Sin Telegram
+vinculado, el cajero no puede cancelar; ADMIN y MANAGER siguen cancelando
+directo.
+
 ### Usuarios demo (`npm run prisma:seed`)
 
 Los **roles son por empresa**: cada usuario tiene una *membresía* en cada
@@ -145,6 +174,13 @@ Para partir de cero: `npm run db:reset` (borra la base, la recrea y siembra).
   cobros (primero se cubre el consumo y la propina entra con el pago que lo completa),
   `salesTotal` queda sin propina y la tarjeta *Propinas* de la caja muestra lo recaudado
   en el turno (la vista de cajero/POS no la muestra).
+  El **pago mixto** (`MIXED`) se desglosa por método y moneda (`OrderPayment.parts`):
+  cada parte impacta la caja como un ingreso propio, y el **vuelto** (`OrderPayment.change`)
+  se registra como uno o varios egresos con categoría `CHANGE`, en la moneda y el método
+  con que realmente se devolvió. Así el arqueo descuenta el vuelto del efectivo esperado,
+  `salesTotal` queda neto de vueltos y el historial de movimientos muestra cada entrega.
+  La conversión del cobro parte del monto **redondeado a 2 decimales** que lee el cajero
+  (USD 9,35 × tasa BCV 881,87 = Bs 8.245,48), no de decimales ocultos del total.
 - **Pedidos**: máquina de estados `PENDING → CONFIRMED → PREPARING → READY → COMPLETED`;
   cancelar exige que el pedido no tenga pagos; el pago total marca el pedido como `COMPLETED`.
   A un pedido en curso se le pueden **agregar productos** (`POST /orders/:id/items`, botón

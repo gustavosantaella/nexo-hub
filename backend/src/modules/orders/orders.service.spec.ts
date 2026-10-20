@@ -4,6 +4,7 @@ import {
   OrderType,
   PaymentMethod,
   PaymentStatus,
+  Role,
   StockMovementType,
   StockReferenceType,
 } from '../../common/constants/enums';
@@ -11,11 +12,14 @@ import type { PrismaService } from '../../prisma/prisma.service';
 import type { CashService } from '../cash/cash.service';
 import type { InventoryService } from '../inventory/inventory.service';
 import type { MenusService } from '../menus/menus.service';
+import type { NotificationsService } from '../notifications/notifications.service';
 import type { RatesService, RateHistory } from '../rates/rates.service';
 import {
   OrdersService,
   computeOrderTotals,
+  encodePaymentLines,
   encodeRatesHistory,
+  parsePaymentLines,
   parseRatesHistory,
 } from './orders.service';
 import { OrdersRepository } from './orders.repository';
@@ -216,6 +220,7 @@ function createService(
   current: OrderFixture | null,
   rates: Partial<RatesService> = {},
   cash: Partial<CashService> = {},
+  notifications?: Partial<NotificationsService>,
 ) {
   const trackedProducts = jest.fn(
     async (args: { where: { id: { in: string[] } } }) =>
@@ -307,9 +312,10 @@ function createService(
     // historial de tasas del dia, asi que viene simulado por defecto.
     { ratesHistory: jest.fn(async () => RATES_HISTORY), ...rates } as unknown as RatesService,
     menus as unknown as MenusService,
+    notifications as unknown as NotificationsService | undefined,
   );
 
-  return { service, prisma, tx, inventory, menus, cash };
+  return { service, prisma, tx, inventory, menus, cash, notifications };
 }
 
 /** Datos enviados a `tx.order.update` en la primera llamada. */
@@ -1058,6 +1064,114 @@ describe('OrdersService.addPayment (tasa de cobro del cajero)', () => {
     expect(payment.baseAmount).toBe(110);
   });
 
+  /**
+   * Pago mixto: el cliente entrega USD 60 en efectivo y Bs 2.000 por
+   * transferencia, y recibe USD 10 de vuelto. La caja debe mostrar TRES
+   * movimientos (dos ingresos y un egreso por el vuelto) y el pedido queda
+   * pagado por los USD 100 que realmente se aplicaron.
+   */
+  it('registra cada parte del pago mixto y el vuelto como movimientos de caja', async () => {
+    const mixedRates = {
+      resolvePayment: jest.fn(
+        async (_companyId: string, amount: number, currency: string) =>
+          currency === 'VES'
+            ? { currency: 'VES', exchangeRate: 40, baseAmount: amount / 40 }
+            : { currency: 'USD', exchangeRate: null, baseAmount: amount },
+      ),
+      chargeBalance: jest.fn(async (_companyId: string, balance: number) => balance),
+    };
+    const registerMovement = jest.fn(
+      async (_companyId: string, input: Record<string, unknown>) => ({
+        id: `mv-${input.paymentMethod}-${input.type}-${input.amount}`,
+      }),
+    );
+    const mixedCash = {
+      getOpenSessionOrThrow: jest.fn(async () => ({ id: 's1' })),
+      registerMovement,
+    };
+    const { service, tx } = createService(
+      order({ total: 100 }),
+      mixedRates,
+      mixedCash as unknown as Partial<CashService>,
+    );
+
+    await service.addPayment(
+      COMPANY_ID,
+      'o1',
+      {
+        amount: 100,
+        method: PaymentMethod.MIXED,
+        currency: 'USD',
+        parts: [
+          { amount: 60, method: PaymentMethod.CASH, currency: 'USD' },
+          { amount: 2000, method: PaymentMethod.TRANSFER, currency: 'VES' },
+        ],
+        change: [{ amount: 10, method: PaymentMethod.CASH, currency: 'USD' }],
+      },
+      'u1',
+    );
+
+    const movements = registerMovement.mock.calls.map(([, input]) => input);
+    expect(movements).toEqual([
+      expect.objectContaining({
+        type: 'IN',
+        category: 'SALE',
+        paymentMethod: 'CASH',
+        amount: 60,
+        currency: 'USD',
+        baseAmount: 60,
+      }),
+      expect.objectContaining({
+        type: 'IN',
+        category: 'SALE',
+        paymentMethod: 'TRANSFER',
+        amount: 2000,
+        currency: 'VES',
+        baseAmount: 50,
+      }),
+      expect.objectContaining({
+        type: 'OUT',
+        category: 'CHANGE',
+        paymentMethod: 'CASH',
+        amount: 10,
+        currency: 'USD',
+        baseAmount: 10,
+      }),
+    ]);
+
+    const payment = tx.orderPayment.create.mock.calls[0][0].data as Record<string, unknown>;
+    expect(payment.method).toBe('MIXED');
+    expect(payment.baseAmount).toBe(100);
+    expect(payment.changeBaseAmount).toBe(10);
+    expect(parsePaymentLines(payment.parts).map((line) => line.amount)).toEqual([60, 2000]);
+    expect(parsePaymentLines(payment.change).map((line) => line.baseAmount)).toEqual([10]);
+  });
+
+  it('serializa y lee el desglose del pago con los montos en decimales', () => {
+    const encoded = encodePaymentLines([
+      {
+        method: PaymentMethod.CASH,
+        currency: 'VES',
+        amount: 8245.48,
+        exchangeRate: 881.87,
+        rateKey: 'BCV_USD',
+        baseAmount: 9.35,
+      },
+    ]);
+
+    expect(encoded).toContain('"amount":824548');
+    expect(parsePaymentLines(encoded)).toEqual([
+      {
+        method: PaymentMethod.CASH,
+        currency: 'VES',
+        amount: 8245.48,
+        exchangeRate: 881.87,
+        rateKey: 'BCV_USD',
+        baseAmount: 9.35,
+      },
+    ]);
+  });
+
   it('rechaza el cobro que supera el precio en pantalla', async () => {
     const posRates = {
       resolvePayment: jest.fn(async () => ({
@@ -1588,6 +1702,76 @@ describe('historial de tasas del cobro (JSON de la columna)', () => {
     expect(parsed?.activeKey).toBe('BCV_USD');
     expect(parsed?.stale).toBe(false);
     expect(parsed?.bcvDate).toBeNull();
+  });
+
+  it('exige el OTP al cajero antes de cancelar un pedido', async () => {
+    const notifications = {
+      validateCancellationCode: jest.fn(async () => null),
+      consumeCancellationCode: jest.fn(async () => undefined),
+      notifyCancellation: jest.fn(async () => true),
+    };
+    const { service } = createService(
+      order({ _count: { payments: 0 } }),
+      {},
+      {},
+      notifications,
+    );
+
+    await expect(
+      service.updateStatus(
+        COMPANY_ID,
+        'o1',
+        { status: OrderStatus.CANCELLED },
+        'cashier-1',
+        Role.CASHIER,
+      ),
+    ).rejects.toBeInstanceOf(BadRequestException);
+    expect(notifications.validateCancellationCode).not.toHaveBeenCalled();
+
+    await expect(
+      service.updateStatus(
+        COMPANY_ID,
+        'o1',
+        { status: OrderStatus.CANCELLED, code: 'ZZZZZZZZ' },
+        'cashier-1',
+        Role.CASHIER,
+      ),
+    ).rejects.toBeInstanceOf(BadRequestException);
+    expect(notifications.validateCancellationCode).toHaveBeenCalledWith(
+      COMPANY_ID,
+      'o1',
+      'ZZZZZZZZ',
+    );
+  });
+
+  it('cancela con el OTP valido, lo consume y avisa al administrador', async () => {
+    const notifications = {
+      validateCancellationCode: jest.fn(async () => 'otp-1'),
+      consumeCancellationCode: jest.fn(async () => undefined),
+      notifyCancellation: jest.fn(async () => true),
+    };
+    const { service } = createService(
+      order({ _count: { payments: 0 } }),
+      {},
+      {},
+      notifications,
+    );
+
+    const cancelled = await service.updateStatus(
+      COMPANY_ID,
+      'o1',
+      { status: OrderStatus.CANCELLED, code: 'ABCDEFGH' },
+      'cashier-1',
+      Role.CASHIER,
+    );
+
+    expect(cancelled).toBeTruthy();
+    expect(notifications.consumeCancellationCode).toHaveBeenCalledWith('otp-1');
+    expect(notifications.notifyCancellation).toHaveBeenCalledWith(
+      COMPANY_ID,
+      expect.objectContaining({ orderCode: 'PED-20260101-0001', usedOtp: true }),
+      'cashier-1',
+    );
   });
 });
 

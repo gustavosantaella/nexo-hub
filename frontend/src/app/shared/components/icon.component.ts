@@ -27,6 +27,9 @@ const ICONS: Record<string, string> = {
   close: '<path d="M6 6l12 12M18 6 6 18"/>',
   check: '<path d="m5 13 4.5 4.5L19 7"/>',
   alert: '<path d="M12 4.5 21 20H3L12 4.5Z"/><path d="M12 10v5M12 17.5h.01"/>',
+  bell: '<path d="M18 9a6 6 0 0 0-12 0c0 5-2 6-2 6h16s-2-1-2-6Z"/><path d="M10 19h4"/>',
+  send: '<path d="m21 3-7 18-4-7-7-4 18-7Z"/><path d="M21 3 10 14"/>',
+
   info: '<circle cx="12" cy="12" r="8.5"/><path d="M12 11v5M12 8.2h.01"/>',
   menu: '<path d="M4 7h16M4 12h16M4 17h16"/>',
   'chevron-left': '<path d="m14 6-6 6 6 6"/>',

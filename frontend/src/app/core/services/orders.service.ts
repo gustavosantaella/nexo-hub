@@ -65,8 +65,26 @@ export class OrdersService {
     return this.http.delete<Order>(`${this.baseUrl}/${id}/items/${itemId}`);
   }
 
-  updateStatus(id: string, status: OrderStatus) {
-    return this.http.patch<Order>(`${this.baseUrl}/${id}/status`, { status });
+  /**
+   * Cambia el estado del pedido. Para que un CAJERO cancele, el backend exige
+   * el OTP de 8 letras que el administrador recibió por Telegram.
+   */
+  updateStatus(id: string, status: OrderStatus, code?: string) {
+    return this.http.patch<Order>(`${this.baseUrl}/${id}/status`, {
+      status,
+      ...(code ? { code: code.trim().toUpperCase() } : {}),
+    });
+  }
+
+  /**
+   * Pide al backend que envíe al administrador el código de cancelación. El
+   * código nunca vuelve al navegador del cajero: solo viaja por Telegram.
+   */
+  requestCancellationOtp(id: string) {
+    return this.http.post<{ expiresAt: string }>(
+      `${this.baseUrl}/${id}/cancellation-otp`,
+      {},
+    );
   }
 
   /**
@@ -85,6 +103,20 @@ export class OrdersService {
       currency?: string;
       rateKey?: string;
       note?: string;
+      /** Desglose del pago cuando el cliente entrega varias formas/monedas. */
+      parts?: {
+        amount: number;
+        method: PaymentMethod;
+        currency?: string;
+        rateKey?: string;
+      }[];
+      /** Vuelto entregado por metodo/moneda (se registra como egreso de caja). */
+      change?: {
+        amount: number;
+        method: PaymentMethod;
+        currency?: string;
+        rateKey?: string;
+      }[];
     },
   ) {
     return this.http.post<Order>(`${this.baseUrl}/${id}/payments`, payload);

@@ -666,6 +666,8 @@ describe('OrdersPage (formulario del cajero)', () => {
       amount: 30,
       method: 'CASH',
       currency: 'USD',
+      parts: [{ amount: 30, method: 'CASH', currency: 'USD' }],
+      change: [],
     });
     payRequest.flush(order({ total: 30, paymentStatus: 'PAID', status: 'COMPLETED' }));
 
@@ -937,6 +939,8 @@ describe('OrdersPage (formulario del cajero)', () => {
       amount: 28934.32,
       method: 'CASH',
       currency: 'VES',
+      parts: [{ amount: 28934.32, method: 'CASH', currency: 'VES' }],
+      change: [],
     });
     payRequest.flush(order({ tip: 3, total: 33, paymentStatus: 'PAID' }));
 
@@ -984,6 +988,8 @@ describe('OrdersPage (formulario del cajero)', () => {
       method: 'CASH',
       currency: 'USD',
       rateKey: 'BCV_USD',
+      parts: [{ amount: 32.5, method: 'CASH', currency: 'USD' }],
+      change: [],
     });
     payRequest.flush(order({ total: 30, paidAmount: 32.5, paymentStatus: 'PAID' }));
 
@@ -1153,5 +1159,34 @@ describe('OrdersPage (formulario del cajero)', () => {
     fixture.detectChanges();
     expect(page.detailOpen()).toBeFalse();
     expect(root.querySelector('app-sidebar aside')).toBeNull();
+  });
+
+  it('cancela con el OTP de 8 letras en mayúsculas', () => {
+    const { fixture, page } = mount();
+    const target = order({ id: 'o-otp', code: 'PED-OTP' });
+
+    const reload = spyOn(
+      page as unknown as { reload: () => void },
+      'reload',
+    );
+    page.cancelOpen.set(true);
+    page.cancelOrder.set(target);
+    page.setCancelCode('abcdefgh');
+    expect(page.cancelCode()).toBe('ABCDEFGH');
+
+    page.submitCancellation();
+    const request = http.expectOne({
+      method: 'PATCH',
+      url: `${API}/orders/o-otp/status`,
+    });
+    expect(request.request.body).toEqual({
+      status: 'CANCELLED',
+      code: 'ABCDEFGH',
+    });
+    request.flush({ ...target, status: 'CANCELLED' });
+    fixture.detectChanges();
+
+    expect(page.cancelOpen()).toBeFalse();
+    expect(reload).toHaveBeenCalled();
   });
 });

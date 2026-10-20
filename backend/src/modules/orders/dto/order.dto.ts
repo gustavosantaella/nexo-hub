@@ -221,8 +221,54 @@ export class UpdateOrderItemDto {
   quantity!: number;
 }
 
+/**
+ * Una parte del cobro: lo que el cliente entrego con un metodo y una moneda.
+ *
+ * En un pago mixto el cliente puede entregar, por ejemplo, USD 10 en efectivo y
+ * Bs 4.000 por transferencia. Cada parte se registra como un movimiento de caja
+ * propio (metodo + moneda) para que el arqueo y el historial la muestren tal cual.
+ */
+export class OrderPaymentPartDto {
+  @ApiProperty({ example: 10 })
+  @Type(() => Number)
+  @IsNumber()
+  @Min(0.01, { message: 'El monto de la parte debe ser mayor a 0' })
+  amount!: number;
+
+  @ApiProperty({ enum: PAYMENT_METHODS })
+  @IsIn(PAYMENT_METHODS, { message: 'Metodo de pago invalido' })
+  method!: PaymentMethod;
+
+  @ApiPropertyOptional({
+    description: 'Moneda en la que entrego esa parte (USD por defecto)',
+    example: 'VES',
+  })
+  @IsOptional()
+  @IsString()
+  currency?: string;
+
+  @ApiPropertyOptional({
+    description: 'Tasa elegida para convertir esa parte (sin tasa = la del cobro)',
+    enum: RATE_KEYS,
+  })
+  @IsOptional()
+  @IsIn(RATE_KEYS, { message: 'Tasa de conversion invalida' })
+  rateKey?: string;
+}
+
+/**
+ * Una parte del vuelto: como se le devolvio el cambio al cliente. Puede ser en
+ * otra moneda y por otro metodo distinto al del pago (efectivo en Bs, vuelto a
+ * una transferencia, etc.). Cada parte queda como egreso de caja.
+ */
+export class OrderPaymentChangeDto extends OrderPaymentPartDto {}
+
 export class AddOrderPaymentDto {
-  @ApiProperty({ example: 50 })
+  @ApiProperty({
+    example: 50,
+    description:
+      'Monto aplicado al pedido en `currency`. Con `parts` es el total aplicado que resulta de pagos menos vuelto; el backend lo valida contra el saldo.',
+  })
   @Type(() => Number)
   @IsNumber()
   @Min(0.01, { message: 'El monto debe ser mayor a 0' })
@@ -254,4 +300,27 @@ export class AddOrderPaymentDto {
   @IsOptional()
   @IsString()
   note?: string;
+
+  @ApiPropertyOptional({
+    type: [OrderPaymentPartDto],
+    description:
+      'Desglose del pago (pagos mixtos): cada metodo/moneda con lo que entrego el cliente. Sin `parts` se cobra una sola parte con `amount`/`method`/`currency`.',
+  })
+  @IsOptional()
+  @IsArray()
+  @ArrayMinSize(1, { message: 'Debe indicar al menos una parte del pago' })
+  @ValidateNested({ each: true })
+  @Type(() => OrderPaymentPartDto)
+  parts?: OrderPaymentPartDto[];
+
+  @ApiPropertyOptional({
+    type: [OrderPaymentChangeDto],
+    description:
+      'Vuelto entregado al cliente (puede ser en varias monedas/metodos). Se registra como egresos de caja separados.',
+  })
+  @IsOptional()
+  @IsArray()
+  @ValidateNested({ each: true })
+  @Type(() => OrderPaymentChangeDto)
+  change?: OrderPaymentChangeDto[];
 }

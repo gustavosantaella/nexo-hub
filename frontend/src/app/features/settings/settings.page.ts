@@ -1,6 +1,7 @@
 import {
   ChangeDetectionStrategy,
   Component,
+  OnDestroy,
   OnInit,
   computed,
   effect,
@@ -29,12 +30,16 @@ import {
 import type {
   Company,
   CompanyPayload,
+  NotificationSettings,
+  NotificationSettingsPayload,
+  TelegramLinkCode,
   UpdateProfilePayload,
 } from '../../core/models/api.model';
 import { AuthService } from '../../core/services/auth.service';
 import { CompaniesService } from '../../core/services/companies.service';
 import { CurrenciesService } from '../../core/services/currencies.service';
 import { DataTransferService } from '../../core/services/data-transfer.service';
+import { NotificationsService } from '../../core/services/notifications.service';
 import {
   catalogFileName,
   catalogFileOverview,
@@ -75,7 +80,14 @@ import { ConfirmService } from '../../shared/services/confirm.service';
  * de la empresa activa, `profile` los del usuario y `data` el respaldo del
  * catálogo (exportar / importar), que solo ven ADMIN y MANAGER.
  */
-export type SettingsSection = 'rates' | 'appearance' | 'pos' | 'company' | 'profile' | 'data';
+export type SettingsSection =
+  | 'rates'
+  | 'appearance'
+  | 'pos'
+  | 'notifications'
+  | 'company'
+  | 'profile'
+  | 'data';
 
 /**
  * Configuración del sistema, dividida en pestañas (Tasas, Apariencia, Empresa y
@@ -561,6 +573,208 @@ interface CurrencyRow {
         </section>
 
       }
+
+      <!-- Sección: Notificaciones (Telegram) -->
+      @if (section() === 'notifications') {
+        @if (notificationsLoading()) {
+          <app-loader label="Cargando la configuración de notificaciones…" />
+        } @else if (!notificationDraft()) {
+          <app-empty-state
+            title="Sin configuración de notificaciones"
+            message="No se pudo cargar la configuración de Telegram. Vuelve a intentarlo."
+            icon="bell"
+          >
+            <button type="button" class="btn-primary" (click)="loadNotificationSettings()">
+              Reintentar
+            </button>
+          </app-empty-state>
+        } @else {
+          @if (notificationDraft(); as notif) {
+
+          @if (!notif.telegramConfigured) {
+            <div class="mb-4 flex items-start gap-2 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
+              <app-icon name="alert" size="h-4 w-4 shrink-0" />
+              <span>
+                El servidor no tiene configurado <code>TELEGRAM_BOT_API_TOKEN</code>.
+                Añade el token del bot en el <code>.env</code> y reinicia la API.
+              </span>
+            </div>
+          }
+
+          <!-- Interruptor general + QR de vinculación -->
+          <section class="card mb-4">
+            <div class="card-header">
+              <div>
+                <h2 class="text-sm font-semibold text-slate-900">Telegram del administrador</h2>
+                <p class="mt-0.5 text-xs text-slate-500">
+                  Activa los avisos y vincula el chat privado del administrador. El QR abre
+                  el bot; el vínculo se confirma con un código temporal.
+                </p>
+              </div>
+              <span
+                class="badge"
+                [class]="
+                  notif.telegramLinked
+                    ? 'bg-emerald-100 text-emerald-700'
+                    : notif.telegramEnabled
+                      ? 'bg-amber-100 text-amber-700'
+                      : 'bg-slate-100 text-slate-600'
+                "
+              >
+                {{ notif.telegramLinked ? 'Conectado' : notif.telegramEnabled ? 'Sin vincular' : 'Apagado' }}
+              </span>
+            </div>
+
+            <div class="card-body space-y-4">
+              <app-switch
+                [checked]="notif.telegramEnabled"
+                label="Activar Telegram"
+                hint="Interruptor general: sin él no se envían avisos ni códigos de cancelación."
+                (checkedChange)="setNotificationFlag('telegramEnabled', $event)"
+              />
+
+              @if (notif.telegramEnabled) {
+                <div class="grid gap-4 md:grid-cols-[auto,1fr]">
+                  <div class="flex flex-col items-center gap-2 rounded-xl border border-slate-200 bg-white p-3">
+                    <img
+                      [src]="telegramQrUrl"
+                      alt="QR del bot de Telegram"
+                      class="h-44 w-44 rounded-lg object-contain"
+                    />
+                    <span class="text-xs text-slate-500">Escanea con Telegram</span>
+                  </div>
+
+                  <div class="space-y-3">
+                    @if (notif.telegramLinked) {
+                      <div class="rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-800">
+                        <p class="font-semibold">
+                          {{ notif.telegramChatTitle || 'Chat del administrador' }}
+                        </p>
+                        <p class="mt-0.5 text-xs">
+                          Vinculado {{ notif.telegramLinkedAt ? 'el ' + dateTime(notif.telegramLinkedAt) : '' }}.
+                          Este chat recibe los avisos de la empresa.
+                        </p>
+                      </div>
+                      <div class="flex flex-wrap gap-2">
+                        <button
+                          type="button"
+                          class="btn-secondary btn-sm"
+                          [disabled]="testingTelegram()"
+                          (click)="sendTelegramTest()"
+                        >
+                          <app-icon name="send" size="h-4 w-4" />
+                          {{ testingTelegram() ? 'Enviando…' : 'Enviar prueba' }}
+                        </button>
+                        <button type="button" class="btn-danger btn-sm" (click)="unlinkTelegram()">
+                          Desvincular
+                        </button>
+                      </div>
+                    } @else {
+                      <ol class="list-decimal space-y-1 pl-5 text-sm text-slate-600">
+                        <li>Abre Telegram y escanea el QR (o toca el enlace del bot).</li>
+                        <li>Pulsa <strong>Iniciar</strong> para abrir el chat.</li>
+                        <li>Envía al bot el código de 8 letras que aparece abajo.</li>
+                      </ol>
+
+                      @if (activeLinkCode(); as code) {
+                        <div class="rounded-xl border border-brand-200 bg-brand-50/70 px-4 py-3">
+                          <p class="text-xs font-medium text-brand-700">Envía este mensaje al bot:</p>
+                          <p class="mt-1 select-all font-mono text-lg font-bold tracking-widest text-brand-900">
+                            /vincular {{ code }}
+                          </p>
+                          @if (linkExpiresLabel()) {
+                            <p class="mt-1 text-xs text-brand-700">Vence el {{ linkExpiresLabel() }}.</p>
+                          }
+                          @if (telegramDeepLink(); as deepLink) {
+                            <a
+                              class="mt-2 inline-flex text-xs font-semibold text-brand-700 underline"
+                              [href]="deepLink"
+                              target="_blank"
+                              rel="noopener"
+                            >
+                              Abrir el bot con el código cargado
+                            </a>
+                          }
+                        </div>
+                      }
+
+                      <div class="flex flex-wrap gap-2">
+                        <button
+                          type="button"
+                          class="btn-primary btn-sm"
+                          [disabled]="linkingTelegram() || !notif.telegramConfigured"
+                          (click)="generateTelegramLinkCode()"
+                        >
+                          <app-icon name="keypad" size="h-4 w-4" />
+                          {{ activeLinkCode() ? 'Generar otro código' : 'Generar código de vinculación' }}
+                        </button>
+                        <button
+                          type="button"
+                          class="btn-secondary btn-sm"
+                          [disabled]="!activeLinkCode()"
+                          (click)="refreshTelegramStatus()"
+                        >
+                          <app-icon name="refresh" size="h-4 w-4" />
+                          Ya lo envié: verificar
+                        </button>
+                      </div>
+                    }
+                  </div>
+                </div>
+              }
+            </div>
+          </section>
+
+          <!-- Qué avisos recibe el administrador -->
+          <section class="card mb-4">
+            <div class="card-header">
+              <div>
+                <h2 class="text-sm font-semibold text-slate-900">Avisos que recibirá</h2>
+                <p class="mt-0.5 text-xs text-slate-500">
+                  Elige qué eventos llegan al Telegram del administrador. Se guardan para
+                  toda la empresa.
+                </p>
+              </div>
+              <span class="badge bg-slate-100 text-slate-600">
+                {{ notif.notifyLowStock || notif.notifySales || notif.notifyCashClose || notif.notifyCancellations ? 'Con avisos' : 'Sin avisos' }}
+              </span>
+            </div>
+            <div class="card-body grid gap-4 sm:grid-cols-2">
+              @for (option of notificationOptions; track option.key) {
+                <app-switch
+                  [checked]="notif[option.key]"
+                  [label]="option.label"
+                  [hint]="option.hint"
+                  (checkedChange)="setNotificationFlag(option.key, $event)"
+                />
+              }
+            </div>
+          </section>
+
+          <section class="card">
+            <div class="card-body flex flex-wrap items-center gap-3">
+              <p class="flex items-start gap-2 rounded-lg bg-slate-50 px-3 py-2 text-xs text-slate-500">
+                <app-icon name="alert" size="h-3.5 w-3.5 shrink-0" />
+                <span>
+                  Los cajeros necesitan Telegram vinculado para pedir el código de
+                  cancelación de un pedido. El código vence a los 10 minutos.
+                </span>
+              </p>
+              <button
+                type="button"
+                class="btn-primary ml-auto"
+                [disabled]="!notificationsDirty() || notificationsSaving()"
+                (click)="saveNotificationSettings()"
+              >
+                <app-icon name="check" size="h-4 w-4" />
+                {{ notificationsSaving() ? 'Guardando…' : 'Guardar cambios' }}
+              </button>
+            </div>
+          </section>
+        }
+      }
+      }
+
 
       <!-- Sección: Tasas -->
       @if (section() === 'rates') {
@@ -1622,9 +1836,10 @@ interface CurrencyRow {
 
   `,
 })
-export class SettingsPage implements OnInit {
+export class SettingsPage implements OnInit, OnDestroy {
   private readonly ratesService = inject(RatesService);
   private readonly currenciesService = inject(CurrenciesService);
+  private readonly notificationsService = inject(NotificationsService);
   private readonly toast = inject(ToastService);
   private readonly confirm = inject(ConfirmService);
   private readonly companiesService = inject(CompaniesService);
@@ -1639,6 +1854,7 @@ export class SettingsPage implements OnInit {
   readonly rate = rate;
   readonly bs = bs;
   readonly money = money;
+  readonly dateTime = dateTime;
   readonly signedPercent = signedPercent;
   readonly canManage = this.auth.canManage;
 
@@ -1670,6 +1886,12 @@ export class SettingsPage implements OnInit {
       hint: 'Vista del catálogo, propina sugerida, moneda, conversiones, precio en dólares BCV y tasa de cobro del cajero.',
     },
     {
+      value: 'notifications',
+      label: 'Notificaciones',
+      icon: 'bell',
+      hint: 'Telegram, QR de vinculación y avisos de stock, ventas, caja y cancelaciones.',
+    },
+    {
       value: 'company',
       label: 'Empresa',
       icon: 'building',
@@ -1695,7 +1917,11 @@ export class SettingsPage implements OnInit {
    * el resto de los roles, así que no se ofrece un botón que no puede funcionar.
    */
   readonly visibleTabs = computed(() =>
-    this.tabs.filter((tab) => tab.value !== 'data' || this.canManage()),
+    this.tabs.filter(
+      (tab) =>
+        (tab.value !== 'data' && tab.value !== 'notifications') ||
+        this.canManage(),
+    ),
   );
 
   /** Bajada de la cabecera según la pestaña activa. */
@@ -2058,6 +2284,77 @@ export class SettingsPage implements OnInit {
   readonly lastUpdate = () => dateTime(this.bcv()?.fetchedAt);
   readonly referenceAsOf = () => dateTime(this.reference()?.asOf);
   readonly referenceFetchedAt = () => dateTime(this.reference()?.fetchedAt);
+
+  // ------------------------------- Notificaciones ----------------------------
+  /** Configuración guardada y borrador editable de los avisos. */
+  readonly notificationSettings = signal<NotificationSettings | null>(null);
+  readonly notificationDraft = signal<NotificationSettings | null>(null);
+  readonly notificationsLoading = signal(false);
+  readonly notificationsSaving = signal(false);
+  readonly notificationsDirty = signal(false);
+  readonly linkingTelegram = signal(false);
+  readonly testingTelegram = signal(false);
+  /** Código recién generado (el backend también lo devuelve en `getSettings`). */
+  readonly telegramLink = signal<TelegramLinkCode | null>(null);
+  /** `true` mientras se espera que el admin envíe el código al bot. */
+  private linkPoll: ReturnType<typeof setInterval> | null = null;
+
+  /** QR público del bot; el `<img>` no puede enviar la cabecera JWT. */
+  readonly telegramQrUrl = this.notificationsService.qrUrl;
+
+  /** Código vigente que debe enviarse al bot (recién generado o guardado). */
+  readonly activeLinkCode = computed(
+    () =>
+      this.telegramLink()?.code ??
+      this.notificationSettings()?.linkCode ??
+      null,
+  );
+
+  /** Enlace directo al bot con el código ya cargado (si se conoce el usuario). */
+  readonly telegramDeepLink = computed(() => {
+    const link = this.telegramLink();
+    if (link?.deepLink) return link.deepLink;
+    const username = this.notificationSettings()?.botUsername;
+    const code = this.activeLinkCode();
+    return username && code ? `https://t.me/${username}?start=${code}` : null;
+  });
+
+  /** Vencimiento visible del código de vinculación. */
+  readonly linkExpiresLabel = computed(() => {
+    const expires =
+      this.telegramLink()?.expiresAt ??
+      this.notificationSettings()?.linkCodeExpiresAt ??
+      null;
+    return expires ? dateTime(expires) : '';
+  });
+
+  /** Opciones de aviso, con su explicación, en el orden de la pantalla. */
+  readonly notificationOptions: {
+    key: keyof NotificationSettingsPayload;
+    label: string;
+    hint: string;
+  }[] = [
+    {
+      key: 'notifyLowStock',
+      label: 'Stock en el mínimo',
+      hint: 'Cuando un producto cruza su stock mínimo (una sola vez por bajada).',
+    },
+    {
+      key: 'notifySales',
+      label: 'Ventas y cobros',
+      hint: 'Cada cobro con el resumen de productos, monto, método y saldo.',
+    },
+    {
+      key: 'notifyCashClose',
+      label: 'Cierre de caja',
+      hint: 'Al cerrar la sesión: ventas netas, total recaudado y diferencia del arqueo.',
+    },
+    {
+      key: 'notifyCancellations',
+      label: 'Cancelaciones',
+      hint: 'Cuando se cancela un pedido, con el detalle y quién lo autorizó.',
+    },
+  ];
 
   // ------------------------------ Empresa activa -----------------------------
   /** Datos de la empresa activa (se sincronizan con la sesión). */
@@ -2439,9 +2736,216 @@ export class SettingsPage implements OnInit {
     this.loadCompany();
   }
 
+  ngOnDestroy(): void {
+    this.stopLinkPolling();
+  }
+
+  // ------------------------------ Notificaciones -----------------------------
+
+  /** Trae la configuración de Telegram de la empresa y la deja lista para editar. */
+  loadNotificationSettings(showLoader = true): void {
+    if (showLoader) this.notificationsLoading.set(true);
+    this.notificationsService.getSettings().subscribe({
+      next: (settings) => {
+        this.notificationSettings.set(settings);
+        this.notificationDraft.set({ ...settings });
+        this.notificationsDirty.set(false);
+        this.notificationsLoading.set(false);
+        if (settings.telegramLinked) {
+          this.stopLinkPolling();
+          this.telegramLink.set(null);
+        }
+      },
+      error: (error) => {
+        this.notificationsLoading.set(false);
+        this.toast.error(apiErrorMessage(error));
+      },
+    });
+  }
+
+  /** Enciende/apaga un aviso del borrador; se guarda con el botón de la tarjeta. */
+  setNotificationFlag(
+    key: keyof NotificationSettingsPayload,
+    value: boolean,
+  ): void {
+    const draft = this.notificationDraft();
+    if (!draft) return;
+    this.notificationDraft.set({ ...draft, [key]: value });
+    this.notificationsDirty.set(true);
+  }
+
+  /** Guarda el interruptor general y los cuatro avisos de una vez. */
+  saveNotificationSettings(): void {
+    const draft = this.notificationDraft();
+    if (!draft || this.notificationsSaving()) return;
+
+    this.notificationsSaving.set(true);
+    this.notificationsService
+      .update({
+        telegramEnabled: draft.telegramEnabled,
+        notifyLowStock: draft.notifyLowStock,
+        notifySales: draft.notifySales,
+        notifyCashClose: draft.notifyCashClose,
+        notifyCancellations: draft.notifyCancellations,
+      })
+      .subscribe({
+        next: (settings) => {
+          this.notificationSettings.set(settings);
+          this.notificationDraft.set({ ...settings });
+          this.notificationsDirty.set(false);
+          this.notificationsSaving.set(false);
+          this.toast.success(
+            'Los avisos se guardan para toda la empresa.',
+            'Notificaciones guardadas',
+          );
+        },
+        error: (error) => {
+          this.notificationsSaving.set(false);
+          this.toast.error(apiErrorMessage(error));
+        },
+      });
+  }
+
   refresh(): void {
     this.dirty = false;
     this.ratesService.load(true);
+  }
+
+  /**
+   * Genera el código temporal y empieza a comprobar si el administrador ya lo
+   * envió al bot. El QR solo abre el bot: el vínculo se confirma con el código.
+   */
+  generateTelegramLinkCode(): void {
+    if (this.linkingTelegram()) return;
+    this.linkingTelegram.set(true);
+    this.notificationsService.generateLinkCode().subscribe({
+      next: (link) => {
+        this.linkingTelegram.set(false);
+        this.telegramLink.set(link);
+        this.startLinkPolling();
+        this.toast.success(
+          `Escanea el QR y envía /vincular ${link.code} al bot.`,
+          'Código de vinculación generado',
+        );
+      },
+      error: (error) => {
+        this.linkingTelegram.set(false);
+        this.toast.error(apiErrorMessage(error));
+      },
+    });
+  }
+
+  /** Comprueba manualmente si el chat ya quedó vinculado. */
+  refreshTelegramStatus(): void {
+    this.notificationsService.getSettings().subscribe({
+      next: (settings) => {
+        this.notificationSettings.set(settings);
+        this.notificationDraft.update((current) =>
+          current
+            ? {
+                ...current,
+                telegramLinked: settings.telegramLinked,
+                telegramChatTitle: settings.telegramChatTitle,
+                telegramLinkedAt: settings.telegramLinkedAt,
+                telegramConfigured: settings.telegramConfigured,
+                botUsername: settings.botUsername,
+                linkCode: settings.linkCode,
+                linkCodeExpiresAt: settings.linkCodeExpiresAt,
+              }
+            : { ...settings },
+        );
+        if (settings.telegramLinked) {
+          this.stopLinkPolling();
+          this.telegramLink.set(null);
+          this.toast.success(
+            settings.telegramChatTitle
+              ? `El chat ${settings.telegramChatTitle} recibirá los avisos.`
+              : 'El Telegram del administrador quedó vinculado.',
+            'Telegram conectado',
+          );
+        } else {
+          this.toast.warning(
+            'Todavía no recibimos el código. Revisa que lo enviaste al bot correcto.',
+            'Sin vincular',
+          );
+        }
+      },
+      error: (error) => this.toast.error(apiErrorMessage(error)),
+    });
+  }
+
+  sendTelegramTest(): void {
+    if (this.testingTelegram()) return;
+    this.testingTelegram.set(true);
+    this.notificationsService.sendTest().subscribe({
+      next: () => {
+        this.testingTelegram.set(false);
+        this.toast.success('Revisa Telegram: el mensaje de prueba ya salió.');
+      },
+      error: (error) => {
+        this.testingTelegram.set(false);
+        this.toast.error(apiErrorMessage(error));
+      },
+    });
+  }
+
+  async unlinkTelegram(): Promise<void> {
+    const confirmed = await this.confirm.ask({
+      title: 'Desvincular Telegram',
+      message:
+        'El administrador dejará de recibir los avisos y los cajeros no podrán pedir códigos de cancelación hasta vincularlo de nuevo.',
+      confirmLabel: 'Desvincular',
+      tone: 'danger',
+    });
+    if (!confirmed) return;
+
+    this.notificationsService.unlink().subscribe({
+      next: (settings) => {
+        this.notificationSettings.set(settings);
+        this.notificationDraft.set({ ...settings });
+        this.telegramLink.set(null);
+        this.stopLinkPolling();
+        this.toast.success('El Telegram de la empresa quedó desvinculado.');
+      },
+      error: (error) => this.toast.error(apiErrorMessage(error)),
+    });
+  }
+
+  private startLinkPolling(): void {
+    this.stopLinkPolling();
+    this.linkPoll = setInterval(() => {
+      this.notificationsService.getSettings().subscribe({
+        next: (settings) => {
+          if (!settings.telegramLinked) return;
+          this.notificationSettings.set(settings);
+          this.notificationDraft.update((current) =>
+            current
+              ? {
+                  ...current,
+                  telegramLinked: true,
+                  telegramChatTitle: settings.telegramChatTitle,
+                  telegramLinkedAt: settings.telegramLinkedAt,
+                }
+              : { ...settings },
+          );
+          this.telegramLink.set(null);
+          this.stopLinkPolling();
+          this.toast.success(
+            settings.telegramChatTitle
+              ? `El chat ${settings.telegramChatTitle} recibirá los avisos.`
+              : 'El Telegram del administrador quedó vinculado.',
+            'Telegram conectado',
+          );
+        },
+      });
+    }, 5000);
+  }
+
+  private stopLinkPolling(): void {
+    if (this.linkPoll !== null) {
+      clearInterval(this.linkPoll);
+      this.linkPoll = null;
+    }
   }
 
   /**
@@ -2450,10 +2954,17 @@ export class SettingsPage implements OnInit {
    */
   setSection(section: SettingsSection): void {
     this.section.set(section);
+    if (
+      section === 'notifications' &&
+      !this.notificationSettings() &&
+      !this.notificationsLoading()
+    ) {
+      this.loadNotificationSettings();
+    }
   }
 
   /**
-   * Navegación por teclado del tablist (←/→, Inicio y Fin), como pide ARIA:
+   * Navegación por teclado del tablist (�?/→, Inicio y Fin), como pide ARIA:
    * mueve la selección y el foco a la pestaña vecina.
    */
   onTabKeydown(event: KeyboardEvent, current: SettingsSection): void {

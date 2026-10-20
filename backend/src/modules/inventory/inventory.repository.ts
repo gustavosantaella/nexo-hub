@@ -9,8 +9,11 @@ import { MovementQueryDto } from './dto/movement-query.dto';
 /** Producto con lo necesario para convertir la cantidad y mover el stock. */
 const MOVEMENT_PRODUCT_SELECT = {
   id: true,
+  sku: true,
   name: true,
   stock: true,
+  minStock: true,
+  trackStock: true,
   unit: true,
   unitsPerBox: true,
 } satisfies Prisma.ProductSelect;

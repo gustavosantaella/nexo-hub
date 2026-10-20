@@ -67,6 +67,8 @@ model Company {
   receivablePayments ReceivablePayment[]
   cashSessions       CashSession[]
   cashMovements      CashMovement[]
+  notificationSettings NotificationSetting?
+  cancellationOtps   CancellationOtp[]
 
   @@index([name])
   @@map("companies")
@@ -451,6 +453,16 @@ model OrderPayment {
   // ni una tasa suelta (por eso no aparece en `money-columns.ts`).
   ratesHistory   String?
   baseAmount     Int      @default(0) // Equivalente en USD (moneda base del sistema)
+  // DESGLOSE DEL COBRO (pagos mixtos): JSON en texto con cada parte que entrego
+  // el cliente. Cada parte guarda metodo, moneda, monto, tasa aplicada y su
+  // equivalente en USD. Vacio = cobro de una sola parte (columnas de arriba).
+  parts            String?
+  // VUELTO ENTREGADO: JSON en texto con cada forma en que se devolvio el cambio
+  // (efectivo/transferencia/tarjeta y moneda). Se guarda aparte del pago porque
+  // el vuelto puede darse en una moneda o metodo distinto al del cobro.
+  change           String?
+  // Total del vuelto en USD (moneda base), para consultas y reportes rapidos.
+  changeBaseAmount Int      @default(0)
   cashMovementId String?  @unique
   note           String?
   createdById    String?
@@ -794,4 +806,59 @@ model Setting {
 
   @@id([companyId, key])
   @@map("settings")
+}
+
+// ========================== Notificaciones =================================
+// Configuracion de avisos POR EMPRESA. El bot de Telegram es uno solo para todo
+// el sistema (su token vive en `.env`); cada empresa vincula el chat privado de
+// su administrador con un codigo temporal que el bot recibe por mensaje.
+model NotificationSetting {
+  companyId String @id
+
+  // Interruptor general: sin el encendido no se envia ningun aviso.
+  telegramEnabled Boolean @default(false)
+
+  // Avisos disponibles (se pueden configurar antes de vincular Telegram).
+  notifyLowStock      Boolean @default(true)
+  notifySales         Boolean @default(true)
+  notifyCashClose     Boolean @default(true)
+  notifyCancellations Boolean @default(true)
+
+  // Chat privado del administrador vinculado y su nombre en Telegram.
+  telegramChatId    String?
+  telegramChatTitle String?
+  telegramLinkedAt  DateTime?
+
+  // Codigo temporal que el administrador envia al bot (`/vincular CODIGO`).
+  telegramLinkCode          String?
+  telegramLinkCodeExpiresAt DateTime?
+
+  updatedAt DateTime @updatedAt
+
+  company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+
+  @@index([telegramChatId])
+  @@index([telegramLinkCode])
+  @@map("notification_settings")
+}
+
+// Codigo de un solo uso para que un CAJERO pueda cancelar un pedido. Solo se
+// guarda el hash: el codigo en claro viaja una vez por Telegram al administrador.
+// `orderId`/`requestedById` quedan como texto para no duplicar relaciones; la
+// empresa si es una relacion para limpiar los codigos si se elimina el tenant.
+model CancellationOtp {
+  id            String    @id @default(cuid())
+  companyId     String
+  orderId       String
+  requestedById String?
+  codeHash      String
+  expiresAt     DateTime
+  usedAt        DateTime?
+  createdAt     DateTime  @default(now())
+
+  company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+
+  @@index([companyId, orderId, usedAt])
+  @@index([expiresAt])
+  @@map("cancellation_otps")
 }

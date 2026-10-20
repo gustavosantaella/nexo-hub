@@ -1,5 +1,6 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
-import { IsIn, IsOptional, IsString } from 'class-validator';
+import { Transform } from 'class-transformer';
+import { IsIn, IsOptional, IsString, Matches } from 'class-validator';
 import {
   ORDER_STATUSES,
   ORDER_TYPES,
@@ -13,6 +14,18 @@ export class UpdateOrderStatusDto {
   @ApiProperty({ enum: ORDER_STATUSES })
   @IsIn(ORDER_STATUSES, { message: 'Estado invalido' })
   status!: OrderStatus;
+
+  @ApiPropertyOptional({
+    description:
+      'Código de 8 letras mayúsculas que el administrador recibió por Telegram. Obligatorio para que un CAJERO cancele un pedido',
+    example: 'ABCDEFGH',
+  })
+  @IsOptional()
+  @Transform(({ value }) => String(value ?? '').trim().toUpperCase())
+  @Matches(/^[A-Z]{8}$/, {
+    message: 'El código debe tener 8 letras mayúsculas',
+  })
+  code?: string;
 }
 
 export class OrderQueryDto extends PaginationQueryDto {

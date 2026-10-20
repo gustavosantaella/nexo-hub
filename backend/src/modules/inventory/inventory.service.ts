@@ -2,6 +2,7 @@ import {
   BadRequestException,
   Injectable,
   NotFoundException,
+  Optional,
 } from '@nestjs/common';
 import {
   StockMovementType,
@@ -12,6 +13,7 @@ import { money } from '../../common/utils/money.util';
 import { boxUnitsOf, inputUnits, stockQuantity } from '../../common/utils/packaging.util';
 import { compareQty, toQty } from '../../common/utils/quantity.util';
 import type { PrismaClientLike } from '../../prisma/prisma.service';
+import { NotificationsService } from '../notifications/notifications.service';
 import { RatesService } from '../rates/rates.service';
 import { AdjustStockDto } from './dto/adjust-stock.dto';
 import { CreateMovementDto } from './dto/create-movement.dto';
@@ -67,6 +69,7 @@ export class InventoryService {
   constructor(
     private readonly inventory: InventoryRepository,
     private readonly rates: RatesService,
+    @Optional() private readonly notifications?: NotificationsService,
   ) {}
 
   /**
@@ -192,6 +195,23 @@ export class InventoryService {
       { stock: stockAfter, ...costUpdate, ...priceUpdate },
       tx,
     );
+
+    // Aviso al CRUZAR el minimo (no en cada venta posterior). `notifyLowStock`
+    // atrapa sus errores y no bloquea la operacion que movio el stock.
+    if (
+      product.trackStock &&
+      product.minStock != null &&
+      compareQty(stockBefore, product.minStock) > 0 &&
+      compareQty(stockAfter, product.minStock) <= 0
+    ) {
+      void this.notifications?.notifyLowStock(companyId, {
+        name: product.name,
+        sku: product.sku ?? null,
+        stock: stockAfter,
+        minStock: product.minStock,
+        unit: product.unit,
+      });
+    }
 
     return { movement, stockBefore, stockAfter };
   }

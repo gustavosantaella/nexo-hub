@@ -1019,6 +1019,27 @@ const NEXT_STATUS: Partial<Record<OrderStatus, OrderStatus>> = {
                           }
                         </span>
                       }
+                      @if (payment.parts?.length) {
+                        <span class="mt-1 block text-[10px] text-slate-500">
+                          @for (part of payment.parts; track $index) {
+                            <span class="mr-2 inline-block">
+                              {{ methodLabels[part.method] || part.method }}:
+                              {{ amountIn(part.amount, part.currency) }}
+                            </span>
+                          }
+                        </span>
+                      }
+                      @if (payment.change?.length) {
+                        <span class="block text-[10px] font-medium text-rose-600">
+                          Vuelto:
+                          @for (line of payment.change; track $index) {
+                            <span class="mr-2 inline-block">
+                              {{ methodLabels[line.method] || line.method }}
+                              {{ amountIn(line.amount, line.currency) }}
+                            </span>
+                          }
+                        </span>
+                      }
                       @if (ratesHistoryHint(payment); as hint) {
                         <span class="block text-[10px] text-slate-400">
                           Tasas del día: {{ hint }}
@@ -1482,6 +1503,73 @@ const NEXT_STATUS: Partial<Record<OrderStatus, OrderStatus>> = {
         </button>
       </div>
     </ng-template>
+
+    <!-- Autorización del administrador para que un cajero cancele -->
+    <app-dialog
+      [open]="cancelOpen()"
+      [variant]="dialogView()"
+      title="Autorización para cancelar"
+      subtitle="El administrador recibió un código por Telegram."
+      size="sm"
+      [body]="cancelBody"
+      [footer]="cancelFooter"
+      (closed)="closeCancellation()"
+    />
+
+    <ng-template #cancelBody>
+      <div class="space-y-4">
+        <div class="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
+          <p class="font-semibold">Pedido {{ cancelOrder()?.code }}</p>
+          <p class="mt-1 text-xs">
+            Pide al administrador el código de 8 letras que le llegó por Telegram.
+            Vence a los 10 minutos y solo sirve una vez.
+          </p>
+          @if (cancelExpiresAt()) {
+            <p class="mt-1 text-xs">Vence: {{ dateTime(cancelExpiresAt()) }}</p>
+          }
+        </div>
+
+        <div>
+          <label class="label" for="cancel-otp">Código de autorización</label>
+          <input
+            id="cancel-otp"
+            class="input text-center font-mono text-xl font-bold uppercase tracking-[0.35em]"
+            maxlength="8"
+            autocomplete="one-time-code"
+            placeholder="ABCDEFGH"
+            [ngModel]="cancelCode()"
+            (ngModelChange)="setCancelCode($event)"
+          />
+          <p class="mt-1 text-xs text-slate-500">
+            8 letras mayúsculas. Sin el código, el pedido no se puede cancelar.
+          </p>
+        </div>
+      </div>
+    </ng-template>
+
+    <ng-template #cancelFooter>
+      <div class="flex w-full flex-wrap justify-end gap-2">
+        <button type="button" class="btn-secondary" (click)="closeCancellation()">
+          Volver
+        </button>
+        <button
+          type="button"
+          class="btn-secondary"
+          [disabled]="cancelSending()"
+          (click)="resendCancellationCode()"
+        >
+          Reenviar código
+        </button>
+        <button
+          type="button"
+          class="btn-danger"
+          [disabled]="cancelCode().length !== 8 || cancelSending()"
+          (click)="submitCancellation()"
+        >
+          {{ cancelSending() ? 'Cancelando…' : 'Cancelar pedido' }}
+        </button>
+      </div>
+    </ng-template>
   `,
 })
 export class OrdersPage implements OnInit {
@@ -1532,7 +1620,14 @@ export class OrdersPage implements OnInit {
   readonly paymentStatusOptions = Object.entries(PAYMENT_STATUS_LABELS).map(
     ([value, label]) => ({ value: value as PaymentStatus, label }),
   );
-  readonly paymentMethodOptions = PAYMENT_METHOD_OPTIONS;
+  /**
+   * Metodos del cobro simple de esta pantalla. El pago **mixto** se captura en la
+   * vista de cajero (POS), donde se desglosa por metodo/moneda y se registra el
+   * vuelto; aqui se evita ofrecerlo sin ese desglose.
+   */
+  readonly paymentMethodOptions = PAYMENT_METHOD_OPTIONS.filter(
+    (option) => option.value !== 'MIXED',
+  );
   readonly methodLabels = PAYMENT_METHOD_LABELS;
 
   readonly tab = signal<'board' | 'history'>('board');
@@ -1619,6 +1714,14 @@ export class OrdersPage implements OnInit {
     note: '',
     received: 0,
   };
+
+  /** Cancelación de un cajero: espera el OTP que recibió el administrador. */
+  readonly cancelOpen = signal(false);
+  readonly cancelOrder = signal<Order | null>(null);
+  readonly cancelCode = signal('');
+  readonly cancelSending = signal(false);
+  readonly cancelExpiresAt = signal<string | null>(null);
+  readonly cancelRequesting = signal(false);
 
   ngOnInit(): void {
     this.loadCash();
@@ -1721,19 +1824,88 @@ export class OrdersPage implements OnInit {
   }
 
   async cancel(order: Order): Promise<void> {
+    const cashier = this.auth.role() === 'CASHIER';
     const confirmed = await this.confirm.ask({
       title: 'Cancelar pedido',
-      message: `¿Cancelar el pedido ${order.code}? Esta acción no se puede revertir.`,
-      confirmLabel: 'Cancelar pedido',
+      message: cashier
+        ? `¿Cancelar el pedido ${order.code}? Se enviará un código al administrador por Telegram y deberás escribirlo para confirmar.`
+        : `¿Cancelar el pedido ${order.code}? Esta acción no se puede revertir.`,
+      confirmLabel: cashier ? 'Solicitar código' : 'Cancelar pedido',
       tone: 'danger',
     });
     if (!confirmed) return;
+
+    if (cashier) {
+      this.requestCancellationCode(order);
+      return;
+    }
+
     this.orders.updateStatus(order.id, 'CANCELLED').subscribe({
       next: () => {
         this.toast.success(`Pedido ${order.code} cancelado`);
         this.reload();
       },
     });
+  }
+
+  /** Envía al administrador el OTP y abre el formulario para escribirlo. */
+  private requestCancellationCode(order: Order): void {
+    if (this.cancelRequesting()) return;
+    this.cancelRequesting.set(true);
+    this.orders.requestCancellationOtp(order.id).subscribe({
+      next: (response) => {
+        this.cancelRequesting.set(false);
+        this.cancelOrder.set(order);
+        this.cancelCode.set('');
+        this.cancelExpiresAt.set(response.expiresAt);
+        this.cancelOpen.set(true);
+        this.toast.success(
+          'El administrador recibió el código por Telegram.',
+          'Código enviado',
+        );
+      },
+      error: () => this.cancelRequesting.set(false),
+    });
+  }
+
+  /** Fuerza mayúsculas y descarta lo que no sea letra (el OTP es de 8 letras). */
+  setCancelCode(value: string): void {
+    this.cancelCode.set(
+      String(value ?? '')
+        .toUpperCase()
+        .replace(/[^A-Z]/g, '')
+        .slice(0, 8),
+    );
+  }
+
+  submitCancellation(): void {
+    const order = this.cancelOrder();
+    const code = this.cancelCode();
+    if (!order || code.length !== 8 || this.cancelSending()) return;
+
+    this.cancelSending.set(true);
+    this.orders.updateStatus(order.id, 'CANCELLED', code).subscribe({
+      next: () => {
+        this.cancelSending.set(false);
+        this.closeCancellation();
+        this.toast.success(`Pedido ${order.code} cancelado y stock devuelto`);
+        this.reload();
+      },
+      error: () => this.cancelSending.set(false),
+    });
+  }
+
+  resendCancellationCode(): void {
+    const order = this.cancelOrder();
+    if (order) this.requestCancellationCode(order);
+  }
+
+  closeCancellation(): void {
+    if (this.cancelSending()) return;
+    this.cancelOpen.set(false);
+    this.cancelOrder.set(null);
+    this.cancelCode.set('');
+    this.cancelExpiresAt.set(null);
   }
 
   async remove(order: Order): Promise<void> {
@@ -2040,6 +2212,13 @@ export class OrdersPage implements OnInit {
 
     this.saving.set(true);
     const rateKey = this.chargeRateKey();
+    // Una sola forma de pago: se envia el efectivo RECIBIDO y el vuelto como
+    // lineas separadas para que la caja muestre ambos movimientos.
+    const received = Number(this.payForm.received) || 0;
+    const tendered =
+      this.payForm.method === 'CASH' && received > amount ? received : amount;
+    const change =
+      this.payForm.method === 'CASH' ? Math.max(0, sumMoney([tendered, -amount])) : 0;
     this.orders
       .pay(order.id, {
         amount,
@@ -2047,6 +2226,10 @@ export class OrdersPage implements OnInit {
         currency,
         // La tasa de cobro solo viaja cuando la empresa tiene una fijada.
         ...(rateKey ? { rateKey } : {}),
+        parts: [{ amount: tendered, method: this.payForm.method, currency }],
+        change: change > 0
+          ? [{ amount: change, method: this.payForm.method, currency }]
+          : [],
         note: this.payForm.note || undefined,
       })
       .subscribe({
@@ -2524,6 +2707,12 @@ export class OrdersPage implements OnInit {
     // equivalente en la moneda base del sistema y compara el cobro con el saldo
     // del pedido usando esta misma tasa de cobro.
     const amount = this.rates.chargeAmount(order.total, currency, rateKey);
+    // Igual que en el cobro de un pedido abierto: se envia lo recibido y el
+    // vuelto para que la caja registre ambos movimientos.
+    const received = Number(this.receivedAmount) || 0;
+    const tendered = this.chargeMethod === 'CASH' && received > amount ? received : amount;
+    const change =
+      this.chargeMethod === 'CASH' ? Math.max(0, sumMoney([tendered, -amount])) : 0;
 
     this.orders
       .pay(order.id, {
@@ -2532,6 +2721,8 @@ export class OrdersPage implements OnInit {
         currency,
         // La tasa de cobro solo viaja cuando la empresa tiene una fijada.
         ...(rateKey ? { rateKey } : {}),
+        parts: [{ amount: tendered, method: this.chargeMethod, currency }],
+        change: change > 0 ? [{ amount: change, method: this.chargeMethod, currency }] : [],
       })
       .subscribe({
         next: () => {

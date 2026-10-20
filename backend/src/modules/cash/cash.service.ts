@@ -3,6 +3,7 @@ import {
   ConflictException,
   Injectable,
   NotFoundException,
+  Optional,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import {
@@ -28,6 +29,7 @@ import {
 } from '../../common/utils/money.util';
 import { OPENING_LINE_MONEY_FIELDS } from '../../common/constants/money-columns';
 import type { PrismaClientLike } from '../../prisma/prisma.service';
+import { NotificationsService } from '../notifications/notifications.service';
 import { RatesService } from '../rates/rates.service';
 import { CashRepository, type CashSessionWithRelations } from './cash.repository';
 import { CashMovementQueryDto, CashSessionQueryDto } from './dto/cash-query.dto';
@@ -160,6 +162,7 @@ export class CashService {
     private readonly cash: CashRepository,
     private readonly config: ConfigService,
     private readonly rates: RatesService,
+    @Optional() private readonly notifications?: NotificationsService,
   ) {}
 
   // =========================================================================
@@ -357,6 +360,9 @@ export class CashService {
     // completo, asi que las ventas quedan netas de propina.
     let salesTotal = 0;
     let tipsTotal = 0;
+    // Vueltos del turno: salen de la caja y no son ventas. Se descuentan del
+    // total de ventas para que `salesTotal` siga siendo lo NETO cobrado.
+    let changeTotal = 0;
 
     const methods = new Map<string, { in: number; out: number }>();
     const categories = new Map<string, { in: number; out: number }>();
@@ -383,6 +389,9 @@ export class CashService {
         salesTotal = money.add(salesTotal, base);
         // La propina entra dentro del cobro: se separa de la venta.
         tipsTotal = money.add(tipsTotal, this.tipOf(m));
+      }
+      if (!isIn && m.category === CashMovementCategory.CHANGE) {
+        changeTotal = money.add(changeTotal, base);
       }
 
       const methodEntry = methods.get(m.paymentMethod) ?? { in: 0, out: 0 };
@@ -422,8 +431,10 @@ export class CashService {
       totalIn,
       totalOut,
       net,
-      // Ventas netas: `salesTotal` acumulo el cobro completo (consumo + propina).
-      salesTotal: money.sub(salesTotal, tipsTotal),
+      // Ventas netas: se descuentan la propina (que viene dentro del cobro) y los
+      // vueltos entregados. `cashIn`/`totalIn` conservan el bruto para que el
+      // arqueo cuadre con el dinero que fisicamente paso por el cajon.
+      salesTotal: money.sub(money.sub(salesTotal, tipsTotal), changeTotal),
       tipsTotal,
       movementCount: movements.length,
       byMethod: [...methods.entries()].map(([method, v]) => ({
@@ -771,7 +782,22 @@ export class CashService {
     });
 
     // Fuera de la transaccion: el reparto de propinas solo lee del pedido.
-    return this.serializeSession(closed);
+    const result = await this.serializeSession(closed);
+    const summary = result.summary;
+    const reconciliation = result.reconciliation;
+    void this.notifications?.notifyCashClose(companyId, {
+      code: closed.code,
+      openedAt: closed.openedAt?.toISOString() ?? null,
+      closedAt: closed.closedAt?.toISOString() ?? null,
+      salesTotal: summary.salesTotal,
+      totalIn: summary.totalIn,
+      expectedCash: reconciliation?.expectedAmount ?? summary.expectedCash,
+      countedAmount: reconciliation?.countedAmount ?? 0,
+      difference: reconciliation?.difference ?? 0,
+      result: reconciliation?.result ?? 'BALANCED',
+      movementCount: summary.movementCount,
+    });
+    return result;
   }
 
 
@@ -876,6 +902,14 @@ export class CashService {
     dto: CreateCashMovementDto,
     userId: string,
   ) {
+    // El vuelto (`CHANGE`) nace del cobro de un pedido, con su metodo y su
+    // moneda: no se captura como movimiento manual para que no se descuadre el
+    // arqueo con un egreso que no corresponde a ninguna venta.
+    if (dto.category === CashMovementCategory.CHANGE) {
+      throw new BadRequestException(
+        'El vuelto se registra automaticamente al cobrar un pedido.',
+      );
+    }
     return this.registerMovement(companyId, { ...dto, createdById: userId });
   }
 

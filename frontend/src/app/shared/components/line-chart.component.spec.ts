@@ -1,5 +1,6 @@
 import { TestBed, type ComponentFixture } from '@angular/core/testing';
 import { CHART_COLORS } from '../../core/constants/chart';
+import { setDisplayCurrency } from '../../core/utils/format';
 import { LineChartComponent } from './line-chart.component';
 import type { LineSeries } from './line-chart.component';
 
@@ -9,6 +10,9 @@ describe('LineChartComponent (tendencia)', () => {
   let component: LineChartComponent;
 
   beforeEach(async () => {
+    // La moneda visible es estado global de `format.ts`: otra prueba pudo dejarla
+    // en bolívares y estas marcas se esperan en dólares.
+    setDisplayCurrency(null);
     await TestBed.configureTestingModule({ imports: [LineChartComponent] }).compileComponents();
     fixture = TestBed.createComponent(LineChartComponent);
     component = fixture.componentInstance;

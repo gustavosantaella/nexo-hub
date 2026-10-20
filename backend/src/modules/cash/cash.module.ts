@@ -1,11 +1,12 @@
 import { Module } from '@nestjs/common';
+import { NotificationsModule } from '../notifications/notifications.module';
 import { RatesModule } from '../rates/rates.module';
 import { CashController } from './cash.controller';
 import { CashRepository } from './cash.repository';
 import { CashService } from './cash.service';
 
 @Module({
-  imports: [RatesModule],
+  imports: [RatesModule, NotificationsModule],
   controllers: [CashController],
   providers: [CashService, CashRepository],
   // Se re-exporta RatesModule para que los modulos que ya dependen de la caja

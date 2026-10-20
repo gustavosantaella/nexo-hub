@@ -123,7 +123,26 @@ export class OrdersController {
     @Body() dto: UpdateOrderStatusDto,
     @CurrentUser() user: AuthenticatedUser,
   ) {
-    return this.ordersService.updateStatus(companyId, id, dto, user.id);
+    return this.ordersService.updateStatus(
+      companyId,
+      id,
+      dto,
+      user.id,
+      user.role,
+    );
+  }
+
+  @Post(':id/cancellation-otp')
+  @Roles(...ORDER_ROLES)
+  @ApiOperation({
+    summary: 'Enviar al administrador el código OTP para cancelar el pedido',
+  })
+  requestCancellationOtp(
+    @CurrentUser('companyId') companyId: string,
+    @Param('id') id: string,
+    @CurrentUser() user: AuthenticatedUser,
+  ) {
+    return this.ordersService.requestCancellationOtp(companyId, id, user.id);
   }
 
   @Post(':id/payments')

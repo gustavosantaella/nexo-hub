@@ -140,10 +140,25 @@ export interface OrderItem {
   total: number;
 }
 
+/**
+ * Parte de un cobro o de un vuelto: metodo, moneda y monto. Los pagos mixtos y
+ * los vueltos entregados en varias formas se guardan como lista de estas lineas.
+ */
+export interface PaymentBreakdownLine {
+  method: PaymentMethod;
+  currency: string;
+  /** Monto en `currency` (lo que entrego o recibio el cliente). */
+  amount: number;
+  exchangeRate?: number | null;
+  rateKey?: RateKey | null;
+  /** Equivalente en USD (moneda base del sistema). */
+  baseAmount: number;
+}
+
 export interface OrderPayment {
   id: string;
   orderId: string;
-  /** Monto en la moneda en la que pago el cliente. */
+  /** Monto aplicado al pedido (pagos menos vuelto) en `currency`. */
   amount: number;
   method: PaymentMethod;
   /** Moneda en la que pago el cliente (USD, VES, ...). */
@@ -156,6 +171,12 @@ export interface OrderPayment {
   ratesHistory?: RateHistory | null;
   /** Equivalente en USD (moneda base del sistema). */
   baseAmount: number;
+  /** Desglose del pago (vacio en cobros de una sola parte anteriores). */
+  parts?: PaymentBreakdownLine[];
+  /** Vuelto entregado, por metodo y moneda (vacio si no hubo vuelto). */
+  change?: PaymentBreakdownLine[];
+  /** Total del vuelto en USD (moneda base). */
+  changeBaseAmount?: number;
   note?: string | null;
   createdAt: string;
   createdBy?: { id: string; name: string } | null;

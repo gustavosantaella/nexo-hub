@@ -212,6 +212,41 @@ describe('RatesService (conversión de monedas)', () => {
     expect(rates.toBase(10, 'XXX')).toBeNull();
   });
 
+  it('redondea el monto base antes de pasarlo a la moneda de visualización', () => {
+    // Caso del cajero: el total guardado es USD 9,3494 (se lee $ 9,35) y la tasa
+    // BCV es 881,87. La conversion tiene que dar Bs 8.245,48, no Bs 8.245,00.
+    const bcvSnapshot: RatesSnapshot = {
+      ...POS_SNAPSHOT,
+      custom: null,
+      activeKey: 'BCV_USD',
+      rates: [
+        {
+          key: 'BCV_USD',
+          currency: 'USD',
+          source: 'BCV',
+          rate: 881.87,
+          date: '2026-10-20',
+          previousRate: null,
+          changePercentage: null,
+        },
+      ],
+      currencies: POS_SNAPSHOT.currencies.map((item) => ({
+        ...item,
+        bsPerUsd: 881.87,
+        bsPerUnit: item.code === 'USD' ? 881.87 : item.bsPerUnit,
+        source: item.code === 'USD' ? ('BCV' as const) : item.source,
+      })),
+      baseCurrency: {
+        ...POS_SNAPSHOT.baseCurrency,
+        bsPerUsd: 881.87,
+      },
+    };
+    rates.load(true);
+    http.expectOne(`${API}/rates?refresh=true`).flush(bcvSnapshot);
+
+    expect(rates.displayAmount(9.3494)).toBe(8245.48);
+  });
+
   it('expresa un monto del sistema en la moneda de cobro', () => {
     expect(rates.fromBase(30, 'VES')).toBe(26303.93);
     expect(rates.fromBase(220, 'COP')).toBe(876797.6);

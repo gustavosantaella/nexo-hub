@@ -1154,4 +1154,98 @@ describe('SettingsPage (pestañas de configuración)', () => {
     expect(panel().textContent).toContain('2 guardados');
     expect(panel().textContent).toContain('No se encontró el ingrediente CAF-2.');
   });
+
+  /** Configuración de Telegram que devuelve el API en estas pruebas. */
+  function notificationSettings(overrides: Record<string, unknown> = {}) {
+    return {
+      telegramConfigured: true,
+      telegramEnabled: true,
+      notifyLowStock: true,
+      notifySales: true,
+      notifyCashClose: true,
+      notifyCancellations: true,
+      telegramLinked: false,
+      telegramChatTitle: null,
+      telegramLinkedAt: null,
+      linkCode: null,
+      linkCodeExpiresAt: null,
+      botUsername: 'nexo_hub_bot',
+      updatedAt: '2026-10-20T12:00:00.000Z',
+      ...overrides,
+    };
+  }
+
+  it('muestra Notificaciones solo al admin con el QR y los avisos', () => {
+    authStub.canManage.set(true);
+    fixture.detectChanges();
+    expect(tabLabels()).toContain('Notificaciones');
+
+    tab('Notificaciones').click();
+    fixture.detectChanges();
+    const request = TestBed.inject(HttpTestingController).expectOne(
+      `${environment.apiUrl}/notifications/settings`,
+    );
+    request.flush(notificationSettings());
+    fixture.detectChanges();
+
+    expect(panel().textContent).toContain('Telegram del administrador');
+    expect(panel().textContent).toContain('Stock en el mínimo');
+    expect(panel().textContent).toContain('Ventas y cobros');
+    expect(panel().textContent).toContain('Cierre de caja');
+    const qr = panel().querySelector('img[alt="QR del bot de Telegram"]') as HTMLImageElement;
+    expect(qr.src).toContain('/notifications/telegram/qr');
+  });
+
+  it('genera el código de vinculación y guarda los avisos elegidos', () => {
+    const http = TestBed.inject(HttpTestingController);
+    authStub.canManage.set(true);
+    fixture.detectChanges();
+    tab('Notificaciones').click();
+    fixture.detectChanges();
+    http
+      .expectOne(`${environment.apiUrl}/notifications/settings`)
+      .flush(notificationSettings());
+    fixture.detectChanges();
+
+    // El botón de vinculación devuelve el código temporal que se muestra.
+    panelButton('Generar código de vinculación').click();
+    const link = http.expectOne({
+      method: 'POST',
+      url: `${environment.apiUrl}/notifications/telegram/link-code`,
+    });
+    expect(link.request.body).toEqual({});
+    link.flush({
+      code: 'ABCDEFGH',
+      expiresAt: '2026-10-20T12:15:00.000Z',
+      botUsername: 'nexo_hub_bot',
+      deepLink: 'https://t.me/nexo_hub_bot?start=ABCDEFGH',
+    });
+    fixture.detectChanges();
+    expect(panel().textContent).toContain('/vincular ABCDEFGH');
+
+    // Apagar un aviso y guardar manda el estado completo a la empresa.
+    const salesSwitch = Array.from(
+      panel().querySelectorAll('app-switch') as NodeListOf<HTMLElement>,
+    )
+      .find((item) => item.textContent?.includes('Ventas y cobros'))!
+      .querySelector('button[role="switch"]') as HTMLButtonElement;
+    salesSwitch.click();
+    fixture.detectChanges();
+    panelButton('Guardar cambios').click();
+
+    const saved = http.expectOne({
+      method: 'PATCH',
+      url: `${environment.apiUrl}/notifications/settings`,
+    });
+    expect(saved.request.body).toEqual({
+      telegramEnabled: true,
+      notifyLowStock: true,
+      notifySales: false,
+      notifyCashClose: true,
+      notifyCancellations: true,
+    });
+    saved.flush(notificationSettings({ notifySales: false }));
+    fixture.detectChanges();
+    expect(panel().textContent).toContain('Sin vincular');
+  });
 });

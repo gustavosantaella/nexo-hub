@@ -143,6 +143,34 @@ describe('CashService (arqueo multimoneda)', () => {
       expect(breakdown.tipsTotal).toBe(10);
     });
 
+    it('descuenta el vuelto del total de ventas y del efectivo esperado', () => {
+      const service = new CashService(new CashRepository({} as PrismaService), config, rates);
+
+      const breakdown = service.buildBreakdown(0, [
+        // El cliente entrego 10.000 Bs por una venta de 8.245,48 y recibio
+        // 1.754,52 Bs de vuelto. Ambos son movimientos reales de la caja.
+        movement({
+          type: 'IN',
+          category: 'SALE',
+          amount: 10000,
+          currency: 'VES',
+          baseAmount: 11.34,
+        }),
+        movement({
+          type: 'OUT',
+          category: 'CHANGE',
+          amount: 1754.52,
+          currency: 'VES',
+          baseAmount: 1.99,
+        }),
+      ]);
+
+      expect(breakdown.cashIn).toBe(11.34);
+      expect(breakdown.cashOut).toBe(1.99);
+      expect(breakdown.expectedCash).toBe(9.35);
+      expect(breakdown.salesTotal).toBe(9.35);
+    });
+
     it('no deja que la propina supere el monto cobrado', () => {
       const service = new CashService(new CashRepository({} as PrismaService), config, rates);
 

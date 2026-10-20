@@ -1148,7 +1148,13 @@ describe('PosComponent (vista de cajero)', () => {
 
     // El cobro va por el total del pedido (venta + propina).
     const payRequest = http.expectOne(`${API}/orders/o1/payments`);
-    expect(payRequest.request.body).toEqual({ amount: 33, method: 'CASH', currency: 'USD' });
+    expect(payRequest.request.body).toEqual({
+      amount: 33,
+      method: 'CASH',
+      currency: 'USD',
+      parts: [{ amount: 33, method: 'CASH', currency: 'USD' }],
+      change: [],
+    });
     payRequest.flush(order({ tip: 3, total: 33, paymentStatus: 'PAID', status: 'COMPLETED' }));
 
     expect(pos.saving()).toBeFalse();
@@ -1206,6 +1212,8 @@ describe('PosComponent (vista de cajero)', () => {
       method: 'CASH',
       currency: 'USD',
       rateKey: 'BCV_USD',
+      parts: [{ amount: 32.5, method: 'CASH', currency: 'USD' }],
+      change: [],
     });
     payRequest.flush(
       order({ total: 30, paidAmount: 32.5, paymentStatus: 'PAID', status: 'COMPLETED' }),
@@ -1249,6 +1257,129 @@ describe('PosComponent (vista de cajero)', () => {
     // El vuelto también va en la moneda del cobro.
     pos.charge.received = 40;
     expect(pos.change).toBe(10);
+  });
+
+  it('envia el vuelto del efectivo como parte del cobro', () => {
+    const { fixture, pos } = mount();
+    pos.setTip(false);
+    pos.addProduct(PRODUCTS[0]);
+
+    pos.charge.received = 50;
+    expect(pos.change).toBe(20);
+
+    pos.submitSale(true);
+    fixture.detectChanges();
+
+    const createRequest = http.expectOne(
+      (request) => request.method === 'POST' && request.url === `${API}/orders`,
+    );
+    createRequest.flush(order({ total: 30 }));
+
+    const payRequest = http.expectOne(`${API}/orders/o1/payments`);
+    expect(payRequest.request.body).toEqual({
+      amount: 30,
+      method: 'CASH',
+      currency: 'USD',
+      parts: [{ amount: 50, method: 'CASH', currency: 'USD' }],
+      change: [{ amount: 20, method: 'CASH', currency: 'USD' }],
+    });
+    payRequest.flush(order({ total: 30, paymentStatus: 'PAID' }));
+    flushReload();
+  });
+
+  it('cobra un pago mixto con varias formas y su vuelto', () => {
+    const { fixture, pos } = mount();
+    pos.setTip(false);
+    pos.addProduct(PRODUCTS[0]);
+
+    pos.onChargeMethodChange('MIXED');
+    pos.charge.parts = [
+      { method: 'CASH', currency: 'USD', amount: 20 },
+      { method: 'TRANSFER', currency: 'USD', amount: 20 },
+    ];
+    pos.charge.changes = [{ method: 'CASH', currency: 'USD', amount: 10 }];
+
+    expect(pos.mixedPaidBase).toBe(40);
+    expect(pos.mixedChangeBase).toBe(10);
+    expect(pos.mixedAppliedBase).toBe(30);
+    expect(pos.mixedSettled).toBeTrue();
+
+    pos.submitSale(true);
+    fixture.detectChanges();
+
+    const createRequest = http.expectOne(
+      (request) => request.method === 'POST' && request.url === `${API}/orders`,
+    );
+    createRequest.flush(order({ total: 30 }));
+
+    const payRequest = http.expectOne(`${API}/orders/o1/payments`);
+    expect(payRequest.request.body).toEqual({
+      amount: 30,
+      method: 'MIXED',
+      currency: 'USD',
+      parts: [
+        { amount: 20, method: 'CASH', currency: 'USD' },
+        { amount: 20, method: 'TRANSFER', currency: 'USD' },
+      ],
+      change: [{ amount: 10, method: 'CASH', currency: 'USD' }],
+    });
+    payRequest.flush(order({ total: 30, paymentStatus: 'PAID' }));
+    flushReload();
+  });
+
+  it('calcula automáticamente el vuelto del mixto y permite editarlo o recalcularlo', () => {
+    const { fixture, pos } = mount();
+    // Las conversiones de cobro necesitan las tasas cargadas (VES a 950).
+    TestBed.inject(RatesService).load();
+    http.expectOne(`${API}/rates`).flush(RATES);
+    setDisplayCurrency({
+      code: 'VES',
+      label: 'Bolívares',
+      symbol: 'Bs',
+      decimals: 2,
+      bsPerUnit: 1,
+      bsPerUsd: 950,
+    });
+    pos.setTip(false);
+    pos.addProduct(PRODUCTS[0]);
+
+    pos.onChargeMethodChange('MIXED');
+    // El primer pago se propone por el total; el cajero lo cambia a bolívares.
+    pos.charge.parts[0] = { method: 'CASH', currency: 'VES', amount: 9_700 };
+    pos.onChargePartChange();
+
+    // Todavía no cubre el total: no hay vuelto y el resumen dice cuánto falta.
+    expect(pos.charge.changes).toEqual([]);
+    expect(pos.mixedTargetDisplay).toBe(28_500);
+    expect(pos.mixedPaidDisplay).toBe(9_700);
+    expect(pos.mixedMissingDisplay).toBe(18_800);
+    expect(pos.mixedSettled).toBeFalse();
+    fixture.detectChanges();
+    expect(fixture.nativeElement.textContent).toContain('Falta por cobrar');
+
+    // Al escribir un monto mayor, el vuelto aparece calculado en la misma moneda.
+    pos.charge.parts[0].amount = 30_000;
+    pos.onChargePartChange();
+    expect(pos.charge.changes).toEqual([{ method: 'CASH', currency: 'VES', amount: 1_500 }]);
+    expect(pos.mixedChangeDisplay).toBe(1_500);
+    expect(pos.mixedMissingDisplay).toBe(0);
+    expect(pos.mixedSettled).toBeTrue();
+
+    // El cajero puede editar el vuelto; el cálculo automático no lo pisa.
+    pos.charge.changes[0].amount = 1_000;
+    pos.onChangeLineChange();
+    expect(pos.charge.changeAuto).toBeFalse();
+    pos.charge.parts[0].amount = 31_000;
+    pos.onChargePartChange();
+    expect(pos.charge.changes[0].amount).toBe(1_000);
+    expect(pos.mixedExcessDisplay).toBe(1_500);
+    expect(pos.mixedSettled).toBeFalse();
+
+    // «Recalcular» vuelve a proponer el vuelto correcto con los pagos actuales.
+    pos.recalculateChange();
+    expect(pos.charge.changeAuto).toBeTrue();
+    expect(pos.charge.changes).toEqual([{ method: 'CASH', currency: 'VES', amount: 2_500 }]);
+    expect(pos.mixedSettled).toBeTrue();
   });
 
   it('no aplica propina nueva al agregar productos a un pedido abierto', () => {

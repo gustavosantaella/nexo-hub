@@ -59,7 +59,11 @@ function toDisplay(value: number | null | undefined): {
   value: number;
   decimals: number;
 } {
-  const amount = Number(value ?? 0);
+  // El monto se redondea a centavos ANTES de convertir: es el numero que el
+  // operador lee en pantalla y el que debe usar cualquier conversion posterior
+  // (ej. USD 9,3494 se lee $ 9,35 y a 881,87 Bs/USD son Bs 8.245,48, no 8.245,00).
+  const raw = Number(value ?? 0);
+  const amount = Math.round((raw + Number.EPSILON) * 100) / 100;
   const state = display();
   if (state.code === BASE_CURRENCY.code) {
     return { symbol: state.symbol, value: amount, decimals: state.decimals };

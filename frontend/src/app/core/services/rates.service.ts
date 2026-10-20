@@ -417,10 +417,15 @@ export class RatesService {
    * Ese número —el que el operador lee en el pedido— es el precio que se cobra.
    */
   displayAmount(amount: number | null | undefined): number {
-    const value = Number(amount ?? 0);
+    // Se redondea PRIMERO el monto en moneda base: el cajero lee 2 decimales en
+    // pantalla y la conversion tiene que partir de ese mismo numero. Sin esto un
+    // total guardado de USD 9,3494 se veia como USD 9,35 pero al pasarlo a Bs con
+    // la tasa BCV daba Bs 8.245,00 en vez de los Bs 8.245,48 que resultan de los
+    // 9,35 que el cajero esta leyendo (la diferencia era solo el redondeo oculto).
+    const value = round2(Number(amount ?? 0));
     const code = displayBaseCode();
-    if (code === BASE_CURRENCY_CODE) return round2(value);
-    return this.fromBase(value, code) ?? round2(value);
+    if (code === BASE_CURRENCY_CODE) return value;
+    return this.fromBase(value, code) ?? value;
   }
 
   /**

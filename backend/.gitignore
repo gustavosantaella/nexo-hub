@@ -43,3 +43,7 @@ yarn-error.log*
 # Temp
 .tmp
 .temp
+
+
+# public directories
+public

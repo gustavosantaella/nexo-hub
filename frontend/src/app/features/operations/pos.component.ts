@@ -37,6 +37,7 @@ import type {
   OrderType,
   PaymentMethod,
 } from '../../core/models/operations.model';
+import { AuthService } from '../../core/services/auth.service';
 import { CashService } from '../../core/services/cash.service';
 import {
   CategoriesService,
@@ -205,6 +206,17 @@ interface BillTotals {
   paid: number;
   /** Total − pagado: lo que falta cobrar. */
   balance: number;
+}
+
+/**
+ * Linea editable de un cobro mixto o de un vuelto: metodo, moneda y monto.
+ * El cajero puede agregar tantas como necesite (efectivo USD, transferencia VES,
+ * tarjeta, y el vuelto en la forma que entregue).
+ */
+interface ChargeLineDraft {
+  method: PaymentMethod;
+  currency: string;
+  amount: number;
 }
 
 /**
@@ -1157,24 +1169,247 @@ interface BillTotals {
                   <div class="grid grid-cols-2 gap-2">
                     <div>
                       <label class="label">Método</label>
-                      <select class="input" [(ngModel)]="charge.method">
+                      <select
+                        class="input"
+                        [(ngModel)]="charge.method"
+                        (ngModelChange)="onChargeMethodChange($event)"
+                      >
                         @for (option of methodOptions; track option.value) {
                           <option [value]="option.value">{{ option.label }}</option>
                         }
                       </select>
                     </div>
-                    <app-currency-select
-                      id="pos-currency"
-                      label="Moneda"
-                      [value]="charge.currency"
-                      [amount]="chargeAmount"
-                      [showHint]="false"
-                      [rateKey]="chargeRateKey()"
-                      (valueChange)="onChargeCurrencyChange($event)"
-                    />
+                    @if (charge.method !== 'MIXED') {
+                      <app-currency-select
+                        id="pos-currency"
+                        label="Moneda"
+                        [value]="charge.currency"
+                        [amount]="chargeAmount"
+                        [showHint]="false"
+                        [rateKey]="chargeRateKey()"
+                        (valueChange)="onChargeCurrencyChange($event)"
+                      />
+                    }
                   </div>
 
-                  @if (charge.method === 'CASH') {
+                  @if (charge.method === 'MIXED') {
+                    <!-- Pago mixto: cada forma/moneda con la que paga el cliente. -->
+                    <div class="space-y-2 rounded-lg border border-slate-200 bg-white p-2">
+                      <div class="flex items-center justify-between gap-2">
+                        <span class="text-xs font-semibold uppercase tracking-wide text-slate-500">
+                          Pagos del cliente
+                        </span>
+                        <button type="button" class="btn-secondary btn-sm" (click)="addChargePart()">
+                          <app-icon name="plus" size="h-3.5 w-3.5" />
+                          Agregar
+                        </button>
+                      </div>
+                      @if (charge.parts.length === 0) {
+                        <p class="text-xs text-slate-400">
+                          Agrega cómo está pagando el cliente (efectivo, transferencia, tarjeta…).
+                        </p>
+                      }
+                      @for (part of charge.parts; track part; let i = $index) {
+                        <div class="grid grid-cols-[1.1fr_1fr_0.9fr_auto] items-end gap-1.5">
+                          <div>
+                            @if (i === 0) {
+                              <label class="label">Método</label>
+                            }
+                            <select
+                              class="input px-2 py-1"
+                              [(ngModel)]="part.method"
+                              (ngModelChange)="onChargePartChange()"
+                            >
+                              @for (option of methodOptions; track option.value) {
+                                @if (option.value !== 'MIXED') {
+                                  <option [value]="option.value">{{ option.label }}</option>
+                                }
+                              }
+                            </select>
+                          </div>
+                          <div>
+                            @if (i === 0) {
+                              <label class="label">Moneda</label>
+                            }
+                            <select
+                              class="input px-2 py-1"
+                              [(ngModel)]="part.currency"
+                              (ngModelChange)="onChargePartChange()"
+                            >
+                              @for (currency of currencies(); track currency.code) {
+                                <option [value]="currency.code">{{ currency.code }}</option>
+                              }
+                            </select>
+                          </div>
+                          <div>
+                            @if (i === 0) {
+                              <label class="label">Monto</label>
+                            }
+                            <input
+                              class="input px-2 py-1 text-right"
+                              type="number"
+                              min="0"
+                              placeholder="0.00"
+                              [(ngModel)]="part.amount"
+                              (ngModelChange)="onChargePartChange()"
+                            />
+                          </div>
+                          <button
+                            type="button"
+                            class="btn-ghost btn-sm px-2 text-rose-600"
+                            title="Quitar pago"
+                            (click)="removeChargePart(i)"
+                          >
+                            <app-icon name="trash" size="h-4 w-4" />
+                          </button>
+                        </div>
+                      }
+                    </div>
+
+                    <!-- Vuelto: se calcula solo si el cliente entrega de más, pero
+                         el cajero puede ajustarlo o repartirlo en varias formas. -->
+                    <div class="space-y-2 rounded-lg border border-slate-200 bg-white p-2">
+                      <div class="flex items-center justify-between gap-2">
+                        <span class="text-xs font-semibold uppercase tracking-wide text-slate-500">
+                          Vuelto a entregar
+                        </span>
+                        <div class="flex items-center gap-1">
+                          <button
+                            type="button"
+                            class="btn-ghost btn-sm px-2 text-xs"
+                            title="Volver a calcular el vuelto con los pagos actuales"
+                            (click)="recalculateChange()"
+                          >
+                            Recalcular
+                          </button>
+                          <button
+                            type="button"
+                            class="btn-secondary btn-sm"
+                            (click)="addChangePart()"
+                          >
+                            <app-icon name="plus" size="h-3.5 w-3.5" />
+                            Agregar
+                          </button>
+                        </div>
+                      </div>
+                      @if (charge.changes.length === 0) {
+                        <p class="text-xs text-slate-400">
+                          Sin vuelto: el cliente todavía no entrega de más. Al escribir un monto
+                          mayor al total, el vuelto aparece aquí automáticamente.
+                        </p>
+                      }
+                      @for (changeLine of charge.changes; track changeLine; let i = $index) {
+                        <div class="grid grid-cols-[1.1fr_1fr_0.9fr_auto] items-end gap-1.5">
+                          <div>
+                            @if (i === 0) {
+                              <label class="label">Método</label>
+                            }
+                            <select
+                              class="input px-2 py-1"
+                              [(ngModel)]="changeLine.method"
+                              (ngModelChange)="onChangeLineChange()"
+                            >
+                              @for (option of methodOptions; track option.value) {
+                                @if (option.value !== 'MIXED') {
+                                  <option [value]="option.value">{{ option.label }}</option>
+                                }
+                              }
+                            </select>
+                          </div>
+                          <div>
+                            @if (i === 0) {
+                              <label class="label">Moneda</label>
+                            }
+                            <select
+                              class="input px-2 py-1"
+                              [(ngModel)]="changeLine.currency"
+                              (ngModelChange)="onChangeLineChange()"
+                            >
+                              @for (currency of currencies(); track currency.code) {
+                                <option [value]="currency.code">{{ currency.code }}</option>
+                              }
+                            </select>
+                          </div>
+                          <div>
+                            @if (i === 0) {
+                              <label class="label">Monto</label>
+                            }
+                            <input
+                              class="input px-2 py-1 text-right"
+                              type="number"
+                              min="0"
+                              placeholder="0.00"
+                              [(ngModel)]="changeLine.amount"
+                              (ngModelChange)="onChangeLineChange()"
+                            />
+                          </div>
+                          <button
+                            type="button"
+                            class="btn-ghost btn-sm px-2 text-rose-600"
+                            title="Quitar vuelto"
+                            (click)="removeChangePart(i)"
+                          >
+                            <app-icon name="trash" size="h-4 w-4" />
+                          </button>
+                        </div>
+                      }
+                      @if (charge.changeAuto && charge.changes.length > 0) {
+                        <p class="text-xs text-emerald-700">
+                          Calculado automáticamente con los pagos de arriba. Puedes editar el monto
+                          o la forma de entrega; si lo cambias, usa «Recalcular» para volver al
+                          cálculo automático.
+                        </p>
+                      }
+                    </div>
+
+                    <!-- Resumen explícito: lo que cuesta, lo que entregó el cliente,
+                         lo que se le devuelve y lo que falta por cubrir. -->
+                    <div class="grid grid-cols-2 gap-x-3 gap-y-2 rounded-lg bg-white p-2 text-xs">
+                      <div>
+                        <span class="block text-slate-400">Total del pedido</span>
+                        <span class="font-semibold text-slate-700">
+                          {{ amountIn(mixedTargetDisplay, moneyBaseCode()) }}
+                        </span>
+                      </div>
+                      <div>
+                        <span class="block text-slate-400">Recibido del cliente</span>
+                        <span class="font-semibold text-slate-700">
+                          {{ amountIn(mixedPaidDisplay, moneyBaseCode()) }}
+                        </span>
+                      </div>
+                      <div>
+                        <span class="block text-slate-400">Vuelto</span>
+                        <span class="font-semibold text-slate-700">
+                          {{ amountIn(mixedChangeDisplay, moneyBaseCode()) }}
+                        </span>
+                      </div>
+                      <div>
+                        @if (mixedMissingDisplay > 0) {
+                          <span class="block text-slate-400">Falta por cobrar</span>
+                          <span class="font-semibold text-rose-600">
+                            {{ amountIn(mixedMissingDisplay, moneyBaseCode()) }}
+                          </span>
+                        } @else if (mixedExcessDisplay > 0) {
+                          <span class="block text-slate-400">Falta registrar vuelto</span>
+                          <span class="font-semibold text-rose-600">
+                            {{ amountIn(mixedExcessDisplay, moneyBaseCode()) }}
+                          </span>
+                        } @else {
+                          <span class="block text-slate-400">Estado</span>
+                          <span class="font-semibold text-emerald-600">Pago completo</span>
+                        }
+                      </div>
+                    </div>
+                    @if (!mixedSettled) {
+                      <p class="text-xs text-rose-600">
+                        @if (mixedMissingDisplay > 0) {
+                          El cliente todavía no cubre el total. Agrega el pago que falta.
+                        } @else {
+                          El cliente entregó de más: registra el vuelto que se le devuelve.
+                        }
+                      </p>
+                    }
+                  } @else if (charge.method === 'CASH') {
                     <div class="grid grid-cols-2 gap-2">
                       <div>
                         <label class="label">Efectivo recibido</label>
@@ -1210,9 +1445,31 @@ interface BillTotals {
                   }
 
                   <p class="text-xs text-slate-500">
-                    Se cobrará
-                    <span class="font-semibold">{{ amountIn(chargeAmount, charge.currency) }}</span>
-                    en {{ charge.currency }}@if (chargeRateLabel(); as label) { · tasa {{ label }} }.
+                    @if (charge.method === 'MIXED') {
+                      @if (mixedMissingDisplay > 0) {
+                        Faltan
+                        <span class="font-semibold">
+                          {{ amountIn(mixedMissingDisplay, moneyBaseCode()) }}
+                        </span>
+                        para cubrir el total@if (chargeRateLabel(); as label) { · tasa {{ label }} }.
+                      } @else if (mixedExcessDisplay > 0) {
+                        Hay que devolver
+                        <span class="font-semibold">
+                          {{ amountIn(mixedExcessDisplay, moneyBaseCode()) }}
+                        </span>
+                        de vuelto@if (chargeRateLabel(); as label) { · tasa {{ label }} }.
+                      } @else {
+                        Pago completo por
+                        <span class="font-semibold">
+                          {{ amountIn(mixedTargetDisplay, moneyBaseCode()) }}
+                        </span>
+                        @if (chargeRateLabel(); as label) { · tasa {{ label }} }.
+                      }
+                    } @else {
+                      Se cobrará
+                      <span class="font-semibold">{{ amountIn(chargeAmount, charge.currency) }}</span>
+                      en {{ charge.currency }}@if (chargeRateLabel(); as label) { · tasa {{ label }} }.
+                    }
                   </p>
                  
                 }
@@ -1680,9 +1937,74 @@ interface BillTotals {
         </button>
       </div>
     </ng-template>
+
+    <!-- El cajero cancela con el OTP que recibe el administrador -->
+    <app-dialog
+      [open]="cancellationOpen()"
+      [variant]="dialogView()"
+      title="Autorización para cancelar"
+      subtitle="El administrador recibió un código por Telegram."
+      size="sm"
+      [body]="cancellationBody"
+      [footer]="cancellationFooter"
+      (closed)="closeCancellation()"
+    />
+
+    <ng-template #cancellationBody>
+      <div class="space-y-4">
+        <div class="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
+          <p class="font-semibold">Pedido {{ cancellationOrder()?.code }}</p>
+          <p class="mt-1 text-xs">
+            Pide al administrador el código de 8 letras que le llegó por Telegram.
+            Vence a los 10 minutos y solo sirve una vez.
+          </p>
+          @if (cancellationExpiresAt()) {
+            <p class="mt-1 text-xs">Vence: {{ dateTime(cancellationExpiresAt()) }}</p>
+          }
+        </div>
+
+        <div>
+          <label class="label" for="pos-cancel-otp">Código de autorización</label>
+          <input
+            id="pos-cancel-otp"
+            class="input text-center font-mono text-xl font-bold uppercase tracking-[0.35em]"
+            maxlength="8"
+            autocomplete="one-time-code"
+            placeholder="ABCDEFGH"
+            [ngModel]="cancellationCode()"
+            (ngModelChange)="setCancellationCode($event)"
+          />
+        </div>
+      </div>
+    </ng-template>
+
+    <ng-template #cancellationFooter>
+      <div class="flex w-full flex-wrap justify-end gap-2">
+        <button type="button" class="btn-secondary" (click)="closeCancellation()">
+          Volver
+        </button>
+        <button
+          type="button"
+          class="btn-secondary"
+          [disabled]="cancellationSending()"
+          (click)="resendCancellationCode()"
+        >
+          Reenviar código
+        </button>
+        <button
+          type="button"
+          class="btn-danger"
+          [disabled]="cancellationCode().length !== 8 || cancellationSending()"
+          (click)="submitCancellation()"
+        >
+          {{ cancellationSending() ? 'Cancelando…' : 'Cancelar pedido' }}
+        </button>
+      </div>
+    </ng-template>
   `,
 })
 export class PosComponent implements OnInit, OnDestroy {
+  private readonly auth = inject(AuthService);
   private readonly orders = inject(OrdersService);
   private readonly cash = inject(CashService);
   private readonly rates = inject(RatesService);
@@ -1722,6 +2044,8 @@ export class PosComponent implements OnInit, OnDestroy {
   readonly menuStockHint = menuStockHint;
   readonly typeLabels = ORDER_TYPE_LABELS;
   readonly methodOptions = PAYMENT_METHOD_OPTIONS;
+  /** Monedas habilitadas para cobrar (las de Configuración → Monedas). */
+  readonly currencies = this.rates.enabledCurrencies;
   readonly methodLabels = PAYMENT_METHOD_LABELS;
   readonly paymentStatusLabels = PAYMENT_STATUS_LABELS;
   readonly paymentStatusClasses = PAYMENT_STATUS_CLASSES;
@@ -1787,6 +2111,14 @@ export class PosComponent implements OnInit, OnDestroy {
   readonly expandedSavedOrderId = signal<string | null>(null);
   /** Línea o pedido que se está quitando/cancelando (bloquea sus acciones). */
   readonly savedItemBusyId = signal<string | null>(null);
+
+  /** Cancelación de un cajero: OTP que el administrador recibe por Telegram. */
+  readonly cancellationOpen = signal(false);
+  readonly cancellationOrder = signal<Order | null>(null);
+  readonly cancellationCode = signal('');
+  readonly cancellationSending = signal(false);
+  readonly cancellationExpiresAt = signal<string | null>(null);
+  readonly cancellationRequesting = signal(false);
   readonly lines = signal<PosLine[]>([]);
   /**
    * Producto por presentacion (caja/paquete) esperando que el cajero elija la
@@ -1840,10 +2172,27 @@ export class PosComponent implements OnInit, OnDestroy {
     };
 
   /** Cobro de la venta en curso. */
-  charge: { method: PaymentMethod; currency: string; received: number } = {
+  charge: {
+    method: PaymentMethod;
+    currency: string;
+    received: number;
+    /** Partes del pago cuando el metodo es MIXED. */
+    parts: ChargeLineDraft[];
+    /** Vueltos entregados (pueden ser varias monedas/metodos). */
+    changes: ChargeLineDraft[];
+    /**
+     * `true` mientras el vuelto se calcula solo con los pagos del cliente. Al
+     * editarlo manualmente se apaga para no pisar lo que escribió el cajero;
+     * «Recalcular» lo vuelve a encender.
+     */
+    changeAuto: boolean;
+  } = {
     method: 'CASH',
     currency: BASE_CURRENCY.code,
     received: 0,
+    parts: [],
+    changes: [],
+    changeAuto: true,
   };
 
   /** Registro rápido de cliente desde el POS. */
@@ -2799,7 +3148,7 @@ export class PosComponent implements OnInit, OnDestroy {
     if (!confirmed) return;
 
     if (lastItem) {
-      this.cancelOrderRequest(order, item.id);
+      this.startCancellation(order, item.id);
       return;
     }
 
@@ -2838,15 +3187,89 @@ export class PosComponent implements OnInit, OnDestroy {
     });
     if (!confirmed) return;
 
-    this.cancelOrderRequest(order, order.id);
+    this.startCancellation(order, order.id);
+  }
+
+  /**
+   * Un cajero no puede cancelar por su cuenta: el backend exige el OTP que
+   * recibe el administrador. ADMIN/MANAGER cancelan directo.
+   */
+  private startCancellation(order: Order, busyId: string): void {
+    if (this.auth.role() !== 'CASHIER') {
+      this.cancelOrderRequest(order, busyId);
+      return;
+    }
+    this.requestCancellationCode(order, busyId);
+  }
+
+  private requestCancellationCode(order: Order, busyId: string): void {
+    if (this.cancellationRequesting()) return;
+    this.cancellationRequesting.set(true);
+    this.savedItemBusyId.set(busyId);
+    this.orders.requestCancellationOtp(order.id).subscribe({
+      next: (response) => {
+        this.cancellationRequesting.set(false);
+        this.savedItemBusyId.set(null);
+        this.cancellationOrder.set(order);
+        this.cancellationCode.set('');
+        this.cancellationExpiresAt.set(response.expiresAt);
+        this.cancellationOpen.set(true);
+        this.toast.success(
+          'El administrador recibió el código por Telegram.',
+          'Código enviado',
+        );
+      },
+      error: (error) => {
+        this.cancellationRequesting.set(false);
+        this.savedItemBusyId.set(null);
+        this.toast.error(apiErrorMessage(error));
+      },
+    });
+  }
+
+  /** Fuerza mayúsculas y descarta lo que no sea letra (el OTP es de 8 letras). */
+  setCancellationCode(value: string): void {
+    this.cancellationCode.set(
+      String(value ?? '')
+        .toUpperCase()
+        .replace(/[^A-Z]/g, '')
+        .slice(0, 8),
+    );
+  }
+
+  submitCancellation(): void {
+    const order = this.cancellationOrder();
+    const code = this.cancellationCode();
+    if (!order || code.length !== 8 || this.cancellationSending()) return;
+    this.cancellationSending.set(true);
+    this.cancelOrderRequest(order, order.id, code);
+  }
+
+  resendCancellationCode(): void {
+    const order = this.cancellationOrder();
+    if (order) this.requestCancellationCode(order, order.id);
+  }
+
+  closeCancellation(): void {
+    if (this.cancellationSending()) return;
+    this.cancellationOpen.set(false);
+    this.cancellationOrder.set(null);
+    this.cancellationCode.set('');
+    this.cancellationExpiresAt.set(null);
+    this.savedItemBusyId.set(null);
   }
 
   /** Envía la cancelación y limpia la venta en curso si era el pedido abierto. */
-  private cancelOrderRequest(order: Order, busyId: string): void {
+  private cancelOrderRequest(order: Order, busyId: string, code?: string): void {
     this.savedItemBusyId.set(busyId);
-    this.orders.updateStatus(order.id, 'CANCELLED').subscribe({
+    this.orders.updateStatus(order.id, 'CANCELLED', code).subscribe({
       next: () => {
         this.savedItemBusyId.set(null);
+        this.cancellationSending.set(false);
+        this.cancellationOpen.set(false);
+        this.cancellationOrder.set(null);
+        this.cancellationCode.set('');
+        this.cancellationExpiresAt.set(null);
         this.activeOrders.update((orders) =>
           orders.filter((current) => current.id !== order.id),
         );
@@ -2860,6 +3283,7 @@ export class PosComponent implements OnInit, OnDestroy {
       },
       error: (error) => {
         this.savedItemBusyId.set(null);
+        this.cancellationSending.set(false);
         this.toast.error(apiErrorMessage(error));
       },
     });
@@ -3032,9 +3456,203 @@ export class PosComponent implements OnInit, OnDestroy {
     return Math.max(0, sumMoney([received, -this.chargeAmount]));
   }
 
+  /** Total que entrego el cliente en un pago mixto (equivalente en USD). */
+  get mixedPaidBase(): number {
+    return sumMoney(
+      this.charge.parts.map(
+        (part) =>
+          this.rates.toBase(part.amount, part.currency, this.chargeRateKey()) ?? 0,
+      ),
+    );
+  }
+
+  /** Total del vuelto de un pago mixto (equivalente en USD). */
+  get mixedChangeBase(): number {
+    return sumMoney(
+      this.charge.changes.map(
+        (line) =>
+          this.rates.toBase(line.amount, line.currency, this.chargeRateKey()) ?? 0,
+      ),
+    );
+  }
+
+  /** Lo que realmente se aplica al pedido: recibido menos vuelto. */
+  get mixedAppliedBase(): number {
+    return Math.max(0, sumMoney([this.mixedPaidBase, -this.mixedChangeBase]));
+  }
+
+  /** Total del pedido expresado en USD con la tasa de cobro. */
+  get mixedTargetBase(): number {
+    return this.rates.chargeAmount(this.bill.balance, BASE_CURRENCY.code, this.chargeRateKey());
+  }
+
+  /**
+   * Convierte un monto de pago/vuelto a otra moneda con la tasa de cobro.
+   *
+   * Si las monedas coinciden NO se da la vuelta por USD: los bolívares que
+   * escribe el cajero se suman tal cual (30.000 − 25.608 = 4.392 de vuelto), sin
+   * perder bolívares por redondear dos veces.
+   */
+  private chargeIn(amount: number, from: string, to: string): number {
+    const source = String(from ?? '').trim().toUpperCase();
+    const target = String(to ?? '').trim().toUpperCase();
+    const value = Number(amount ?? 0);
+    if (source === target) return value;
+    const base = this.rates.toBase(value, source, this.chargeRateKey());
+    if (base === null) return 0;
+    return this.rates.fromBase(base, target, this.chargeRateKey()) ?? 0;
+  }
+
+  /** Lo recibido por el cliente, en la moneda que se lee en pantalla. */
+  get mixedPaidDisplay(): number {
+    const code = displayBaseCode();
+    return sumMoney(
+      this.charge.parts.map((part) => this.chargeIn(part.amount, part.currency, code)),
+    );
+  }
+
+  /** El vuelto, en la moneda que se lee en pantalla. */
+  get mixedChangeDisplay(): number {
+    const code = displayBaseCode();
+    return sumMoney(
+      this.charge.changes.map((line) => this.chargeIn(line.amount, line.currency, code)),
+    );
+  }
+
+  /** Total del pedido en la moneda que se lee en pantalla. */
+  get mixedTargetDisplay(): number {
+    return this.rates.chargeAmount(
+      this.bill.balance,
+      displayBaseCode(),
+      this.chargeRateKey(),
+    );
+  }
+
+  /** Lo que queda cubierto después de descontar el vuelto. */
+  get mixedAppliedDisplay(): number {
+    return sumMoney([this.mixedPaidDisplay, -this.mixedChangeDisplay]);
+  }
+
+  /** Cuánto falta para cubrir el total (0 cuando ya está cubierto). */
+  get mixedMissingDisplay(): number {
+    if (this.mixedSettled) return 0;
+    return Math.max(0, sumMoney([this.mixedTargetDisplay, -this.mixedAppliedDisplay]));
+  }
+
+  /** Cuánto se entregó de más y todavía no está registrado como vuelto. */
+  get mixedExcessDisplay(): number {
+    if (this.mixedSettled) return 0;
+    return Math.max(0, sumMoney([this.mixedAppliedDisplay, -this.mixedTargetDisplay]));
+  }
+
+  /** `true` cuando el mixto cubre el total (se toleran 2 centavos de redondeo). */
+  get mixedSettled(): boolean {
+    return Math.abs(sumMoney([this.mixedAppliedBase, -this.mixedTargetBase])) <= 0.02;
+  }
+
   /** Atajo de mostrador: efectivo recibido = monto a cobrar + incremento. */
   setReceived(extra: number): void {
     this.charge.received = sumMoney([this.chargeAmount, extra]);
+  }
+
+  /**
+   * Vuelto que sale de los pagos actuales, en la moneda y forma de la última
+   * parte (preferimos una parte en efectivo, que es como normalmente se devuelve).
+   * No mira los vueltos ya escritos: es el cálculo limpio para no acumular ajustes.
+   */
+  private suggestedChange(): ChargeLineDraft | null {
+    const parts = this.charge.parts.filter((part) => Number(part.amount) > 0);
+    if (parts.length === 0) return null;
+
+    const source =
+      [...parts].reverse().find((part) => part.method === 'CASH') ?? parts[parts.length - 1];
+    const currency = source.currency || BASE_CURRENCY.code;
+    const paid = sumMoney(
+      parts.map((part) => this.chargeIn(part.amount, part.currency, currency)),
+    );
+    const target = this.rates.chargeAmount(this.bill.balance, currency, this.chargeRateKey());
+    const amount = sumMoney([paid, -target]);
+    if (amount <= 0.005) return null;
+    return { method: source.method, currency, amount };
+  }
+
+  /** Mantiene el vuelto automático al día (solo si el cajero no lo editó). */
+  private syncAutoChange(): void {
+    if (!this.charge.changeAuto) return;
+    const suggested = this.suggestedChange();
+    this.charge.changes = suggested ? [suggested] : [];
+  }
+
+  /** Recalcula el vuelto con los pagos actuales (botón «Recalcular»). */
+  recalculateChange(): void {
+    this.charge.changeAuto = true;
+    this.syncAutoChange();
+  }
+
+  /** El cajero tocó un pago: se recalcula el vuelto si sigue en automático. */
+  onChargePartChange(): void {
+    this.syncAutoChange();
+  }
+
+  /** El cajero editó el vuelto: se respeta y deja de calcularse solo. */
+  onChangeLineChange(): void {
+    this.charge.changeAuto = false;
+  }
+
+  /** Al elegir MIXTO se arranca con una parte por el total a cobrar. */
+  onChargeMethodChange(method: PaymentMethod): void {
+    this.charge.method = method;
+    if (method !== 'MIXED') return;
+    this.charge.changeAuto = true;
+    if (this.charge.parts.length === 0) {
+      this.charge.parts = [
+        {
+          method: 'CASH',
+          currency: this.charge.currency || BASE_CURRENCY.code,
+          amount: this.chargeAmount,
+        },
+      ];
+    }
+    this.charge.changes = [];
+    this.syncAutoChange();
+  }
+
+  addChargePart(): void {
+    const previous = this.charge.parts[this.charge.parts.length - 1];
+    this.charge.parts = [
+      ...this.charge.parts,
+      {
+        method: 'CASH',
+        currency: previous?.currency || this.charge.currency || BASE_CURRENCY.code,
+        amount: 0,
+      },
+    ];
+    this.syncAutoChange();
+  }
+
+  removeChargePart(index: number): void {
+    this.charge.parts = this.charge.parts.filter((_, i) => i !== index);
+    this.syncAutoChange();
+  }
+
+  addChangePart(): void {
+    // Agregar una línea a mano es una decisión del cajero: se deja de recalcular.
+    this.charge.changeAuto = false;
+    const last = this.charge.changes[this.charge.changes.length - 1];
+    const lastPart = this.charge.parts[this.charge.parts.length - 1];
+    this.charge.changes = [
+      ...this.charge.changes,
+      {
+        method: 'CASH',
+        currency: last?.currency || lastPart?.currency || BASE_CURRENCY.code,
+        amount: 0,
+      },
+    ];
+  }
+
+  removeChangePart(index: number): void {
+    this.charge.changeAuto = false;
+    this.charge.changes = this.charge.changes.filter((_, i) => i !== index);
   }
 
   /**
@@ -3154,12 +3772,41 @@ export class PosComponent implements OnInit, OnDestroy {
       });
   }
 
-  /** Valida el cobro antes de tocar el backend (falta de tasa de la moneda). */
+  /** Valida el cobro antes de tocar el backend (tasas y pago mixto completo). */
   private validateCharge(): boolean {
-    const currency = this.charge.currency || BASE_CURRENCY.code;
-    if (currency !== BASE_CURRENCY.code && this.rates.bsPerUnit(currency) === null) {
-      this.formError.set(`Falta la tasa de ${currency}. Configúrala en Configuración → Monedas.`);
-      return false;
+    const currencies = new Set<string>();
+    if (this.charge.method === 'MIXED') {
+      const parts = this.charge.parts.filter((part) => Number(part.amount) > 0);
+      if (parts.length === 0) {
+        this.formError.set('Agrega al menos una forma de pago del cliente.');
+        return false;
+      }
+      parts.forEach((part) => currencies.add(part.currency));
+      this.charge.changes.forEach((line) => {
+        if (Number(line.amount) > 0) currencies.add(line.currency);
+      });
+      if (!this.mixedSettled) {
+        this.formError.set(
+          this.mixedMissingDisplay > 0
+            ? `Faltan ${this.amountIn(this.mixedMissingDisplay, displayBaseCode())} por cobrar.`
+            : `El cliente entregó de más: registra ${this.amountIn(
+                this.mixedExcessDisplay,
+                displayBaseCode(),
+              )} de vuelto.`,
+        );
+        return false;
+      }
+    } else {
+      currencies.add(this.charge.currency || BASE_CURRENCY.code);
+    }
+
+    for (const currency of currencies) {
+      if (currency !== BASE_CURRENCY.code && this.rates.bsPerUnit(currency) === null) {
+        this.formError.set(
+          `Falta la tasa de ${currency}. Configúrala en Configuración → Monedas.`,
+        );
+        return false;
+      }
     }
     return true;
   }
@@ -3193,12 +3840,15 @@ export class PosComponent implements OnInit, OnDestroy {
 
   /** Cobra el saldo pendiente del pedido en la moneda elegida. */
   private payOrder(order: Order): void {
-    const currency = this.charge.currency || BASE_CURRENCY.code;
     const rateKey = this.chargeRateKey();
+    const mixed = this.charge.method === 'MIXED';
+    const currency = mixed ? BASE_CURRENCY.code : this.charge.currency || BASE_CURRENCY.code;
     // El cobro es el precio que el cajero lee en pantalla pasado a la moneda del
     // cobro con la tasa de cobro: el backend hace la misma conversión con
     // `rateKey` antes de compararlo con el saldo del pedido.
-    const amount = this.rates.chargeAmount(this.balance(order), currency, rateKey);
+    const amount = mixed
+      ? this.mixedAppliedBase
+      : this.rates.chargeAmount(this.balance(order), currency, rateKey);
 
     if (!(amount > 0)) {
       this.toast.info(`El pedido ${order.code} ya está pagado en su totalidad`);
@@ -3206,14 +3856,31 @@ export class PosComponent implements OnInit, OnDestroy {
       return;
     }
 
+    const payload = mixed
+      ? {
+          amount,
+          method: 'MIXED' as PaymentMethod,
+          currency,
+          ...(rateKey ? { rateKey } : {}),
+          parts: this.charge.parts
+            .filter((part) => Number(part.amount) > 0)
+            .map((part) => ({
+              amount: Number(part.amount),
+              method: part.method,
+              currency: part.currency,
+            })),
+          change: this.charge.changes
+            .filter((line) => Number(line.amount) > 0)
+            .map((line) => ({
+              amount: Number(line.amount),
+              method: line.method,
+              currency: line.currency,
+            })),
+        }
+      : this.singlePaymentPayload(amount, currency, rateKey);
+
     this.orders
-      .pay(order.id, {
-        amount,
-        method: this.charge.method,
-        currency,
-        // La tasa de cobro solo viaja cuando la empresa tiene una fijada.
-        ...(rateKey ? { rateKey } : {}),
-      })
+      .pay(order.id, payload)
       .subscribe({
         next: () => {
           this.toast.success(
@@ -3232,6 +3899,26 @@ export class PosComponent implements OnInit, OnDestroy {
           this.reload();
         },
       });
+  }
+
+  /**
+   * Cobro de una sola forma de pago. El backend registra el efectivo RECIBIDO y
+   * el vuelto como movimientos separados; por eso se envian `parts`/`change`
+   * aunque el metodo no sea MIXTO.
+   */
+  private singlePaymentPayload(amount: number, currency: string, rateKey: string | null) {
+    const method = this.charge.method;
+    const received = Number(this.charge.received) || 0;
+    const tendered = method === 'CASH' && received > amount ? received : amount;
+    const change = method === 'CASH' ? Math.max(0, sumMoney([tendered, -amount])) : 0;
+    return {
+      amount,
+      method,
+      currency,
+      ...(rateKey ? { rateKey } : {}),
+      parts: [{ amount: tendered, method, currency }],
+      change: change > 0 ? [{ amount: change, method, currency }] : [],
+    };
   }
 
   /** Cierra la venta en curso (sin cobro) y vuelve al inicio. */
@@ -3278,7 +3965,14 @@ export class PosComponent implements OnInit, OnDestroy {
       deliveryFee: 0,
       deliveryFeeCurrency: BASE_CURRENCY.code,
     };
-    this.charge = { method: 'CASH', currency: BASE_CURRENCY.code, received: 0 };
+    this.charge = {
+      method: 'CASH',
+      currency: BASE_CURRENCY.code,
+      received: 0,
+      parts: [],
+      changes: [],
+      changeAuto: true,
+    };
     this.formError.set(null);
   }
 

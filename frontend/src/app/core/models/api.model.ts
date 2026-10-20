@@ -198,6 +198,44 @@ export interface UpdatePreferencesPayload {
   posView?: PosView | null;
 }
 
+/**
+ * Configuración de notificaciones de la empresa (`GET /notifications/settings`).
+ * El chat vinculado no se expone: solo su nombre y la fecha de vinculación.
+ */
+export interface NotificationSettings {
+  telegramConfigured: boolean;
+  telegramEnabled: boolean;
+  notifyLowStock: boolean;
+  notifySales: boolean;
+  notifyCashClose: boolean;
+  notifyCancellations: boolean;
+  telegramLinked: boolean;
+  telegramChatTitle: string | null;
+  telegramLinkedAt: string | null;
+  /** Código vigente que el admin envía al bot como `/vincular CODIGO`. */
+  linkCode: string | null;
+  linkCodeExpiresAt: string | null;
+  botUsername: string | null;
+  updatedAt: string | null;
+}
+
+/** Campos que se pueden cambiar desde Configuración → Notificaciones. */
+export interface NotificationSettingsPayload {
+  telegramEnabled?: boolean;
+  notifyLowStock?: boolean;
+  notifySales?: boolean;
+  notifyCashClose?: boolean;
+  notifyCancellations?: boolean;
+}
+
+/** Respuesta de `POST /notifications/telegram/link-code`. */
+export interface TelegramLinkCode {
+  code: string;
+  expiresAt: string;
+  botUsername: string | null;
+  deepLink: string | null;
+}
+
 /** Cuerpo de `POST /companies` y `PATCH /companies/current`. */
 export interface CompanyPayload {
   name: string;

@@ -496,6 +496,10 @@ export const moneyCodec = Prisma.defineExtension({
         needs: { baseAmount: true },
         compute: (row) => fromCents(row.baseAmount),
       },
+      changeBaseAmount: {
+        needs: { changeBaseAmount: true },
+        compute: (row) => fromCents(row.changeBaseAmount),
+      },
     },
     expense: {
       amount: {

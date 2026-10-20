@@ -3,6 +3,7 @@ import {
   ConflictException,
   Injectable,
   NotFoundException,
+  Optional,
 } from '@nestjs/common';
 import {
   BASE_CURRENCY_CODE,
@@ -13,7 +14,9 @@ import {
   CashMovementType,
   OrderStatus,
   OrderType,
+  PaymentMethod,
   PaymentStatus,
+  Role,
   StockMovementType,
   StockReferenceType,
   type OrderStatus as OrderStatusT,
@@ -28,6 +31,7 @@ import {
 import {
   compareMoney,
   fitToBalance,
+  fromCents,
   money,
   toCents,
   toMoney,
@@ -39,6 +43,7 @@ import type { PrismaClientLike } from '../../prisma/prisma.service';
 import { CashService } from '../cash/cash.service';
 import { InventoryService } from '../inventory/inventory.service';
 import { MenusService, type MenuRecipe } from '../menus/menus.service';
+import { NotificationsService } from '../notifications/notifications.service';
 import {
   RatesService,
   normalizeRateKey,
@@ -90,6 +95,60 @@ export interface OrderDeliveryFee {
   /** Bolivares por 1 unidad de `currency` al momento de guardar. */
   rate: number | null;
   rateKey: string | null;
+}
+
+/**
+ * Parte de un cobro o de un vuelto, ya resuelta con su tasa.
+ *
+ * `amount` esta en `currency` (lo que entrego/recibio el cliente) y
+ * `baseAmount` es su equivalente en USD. Se guardan juntas en el JSON del pago
+ * para poder auditar un cobro mixto aunque las tasas cambien despues.
+ */
+export interface PaymentBreakdownLine {
+  method: PaymentMethod;
+  currency: string;
+  amount: number;
+  exchangeRate: number | null;
+  rateKey: string | null;
+  baseAmount: number;
+}
+
+/** JSON de las partes del cobro/vuelto con el dinero en centavos. */
+export function encodePaymentLines(
+  lines: readonly PaymentBreakdownLine[],
+): string | null {
+  if (lines.length === 0) return null;
+  return JSON.stringify(
+    lines.map((line) => ({
+      ...line,
+      amount: toCents(line.amount),
+      baseAmount: toCents(line.baseAmount),
+    })),
+  );
+}
+
+/** Lee el JSON de partes/vuelto y devuelve los montos en decimales. */
+export function parsePaymentLines(raw: unknown): PaymentBreakdownLine[] {
+  if (typeof raw !== 'string' || !raw.trim()) return [];
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    if (!Array.isArray(parsed)) return [];
+    return parsed
+      .filter((item): item is Record<string, unknown> => !!item && typeof item === 'object')
+      .map((item) => ({
+        method: String(item.method ?? PaymentMethod.CASH) as PaymentMethod,
+        currency: String(item.currency ?? BASE_CURRENCY_CODE),
+        amount: fromCents(Number(item.amount) || 0),
+        exchangeRate:
+          item.exchangeRate === null || item.exchangeRate === undefined
+            ? null
+            : Number(item.exchangeRate),
+        rateKey: item.rateKey ? String(item.rateKey) : null,
+        baseAmount: fromCents(Number(item.baseAmount) || 0),
+      }));
+  } catch {
+    return [];
+  }
 }
 
 /** Item resuelto: nombre y precio congelados (snapshot) + consumo de inventario. */
@@ -236,6 +295,7 @@ export class OrdersService {
     private readonly cash: CashService,
     private readonly rates: RatesService,
     private readonly menus: MenusService,
+    @Optional() private readonly notifications?: NotificationsService,
   ) {}
 
   /** Crea el pedido, descuenta stock y guarda el snapshot de precios. */
@@ -803,7 +863,15 @@ export class OrdersService {
     const decoded = payments.map((payment: unknown) => {
       if (!payment || typeof payment !== 'object') return payment;
       const row = payment as Record<string, unknown>;
-      return { ...row, ratesHistory: parseRatesHistory(row.ratesHistory) };
+      return {
+        ...row,
+        ratesHistory: parseRatesHistory(row.ratesHistory),
+        // El desglose del cobro y del vuelto se guarda como JSON de texto (SQLite
+        // no tiene columnas JSON): la API lo entrega ya leido, con los montos en
+        // decimales, igual que el codec de dinero.
+        parts: parsePaymentLines(row.parts),
+        change: parsePaymentLines(row.change),
+      };
     });
 
     return { ...(order as object), payments: decoded } as T;
@@ -906,7 +974,7 @@ export class OrdersService {
     dto: AddOrderPaymentDto,
     userId: string,
   ) {
-    return this.orders.transaction(async (tx) => {
+    const paid = await this.orders.transaction(async (tx) => {
       const order = await this.orders.findDetail(companyId, orderId, tx);
       if (!order) throw new NotFoundException('Pedido no encontrado');
       if (order.status === OrderStatus.CANCELLED) {
@@ -918,30 +986,117 @@ export class OrdersService {
         throw new BadRequestException('El pedido ya esta pagado en su totalidad');
       }
 
-      // `amount` viene en la moneda del pago; el saldo del pedido esta en la
-      // moneda base (USD), por eso se compara con el equivalente convertido.
       // `rateKey` es la tasa de cobro elegida por el operador (el cajero envia la
       // configurada por la empresa); sin ella se usa la activa del sistema.
-      const amount = toMoney(dto.amount);
       const rateKey = normalizeRateKey(dto.rateKey);
-      const conversion = await this.rates.resolvePayment(
-        companyId,
-        amount,
-        dto.currency,
-        rateKey,
-      );
-      const { currency, exchangeRate } = conversion;
+      if (dto.method === PaymentMethod.MIXED && !dto.parts?.length) {
+        throw new BadRequestException(
+          'El pago mixto requiere el desglose de las partes (parts)',
+        );
+      }
+      const inputParts =
+        dto.parts && dto.parts.length > 0
+          ? dto.parts
+          : [
+              {
+                amount: dto.amount,
+                method: dto.method,
+                currency: dto.currency,
+                rateKey: dto.rateKey,
+              },
+            ];
+      const inputChange = dto.change ?? [];
+
+      // Cada parte se convierte con SU moneda y SU tasa: en un pago mixto el
+      // cliente puede entregar dolares en efectivo y bolivares por transferencia.
+      const parts: PaymentBreakdownLine[] = [];
+      for (const part of inputParts) {
+        const partAmount = toMoney(part.amount);
+        if (partAmount <= 0) {
+          throw new BadRequestException('Cada parte del pago debe ser mayor a 0');
+        }
+        if (part.method === PaymentMethod.MIXED) {
+          throw new BadRequestException(
+            'Cada parte del pago debe tener un metodo concreto (no MIXTO)',
+          );
+        }
+        const partRateKey = normalizeRateKey(part.rateKey) ?? rateKey;
+        const conversion = await this.rates.resolvePayment(
+          companyId,
+          partAmount,
+          part.currency,
+          partRateKey,
+        );
+        parts.push({
+          method: part.method,
+          currency: conversion.currency,
+          amount: partAmount,
+          exchangeRate: conversion.exchangeRate,
+          rateKey: partRateKey,
+          baseAmount: conversion.baseAmount,
+        });
+      }
+
+      // El vuelto tambien se convierte parte por parte: puede entregarse en otra
+      // moneda y por otro metodo distinto al del pago.
+      const changes: PaymentBreakdownLine[] = [];
+      for (const change of inputChange) {
+        const changeAmount = toMoney(change.amount);
+        if (changeAmount <= 0) continue;
+        if (change.method === PaymentMethod.MIXED) {
+          throw new BadRequestException(
+            'Cada parte del vuelto debe tener un metodo concreto (no MIXTO)',
+          );
+        }
+        const changeRateKey = normalizeRateKey(change.rateKey) ?? rateKey;
+        const conversion = await this.rates.resolvePayment(
+          companyId,
+          changeAmount,
+          change.currency,
+          changeRateKey,
+        );
+        changes.push({
+          method: change.method,
+          currency: conversion.currency,
+          amount: changeAmount,
+          exchangeRate: conversion.exchangeRate,
+          rateKey: changeRateKey,
+          baseAmount: conversion.baseAmount,
+        });
+      }
+
+      const grossBase = money.sum(parts.map((part) => part.baseAmount));
+      let changeBase = money.sum(changes.map((change) => change.baseAmount));
+      if (compareMoney(changeBase, grossBase) > 0) {
+        throw new BadRequestException('El vuelto no puede superar lo entregado por el cliente');
+      }
+      const computedApplied = money.sub(grossBase, changeBase);
 
       // El cajero cobra el precio que ve en pantalla: con la tasa de cobro el cobro
       // en divisas (o en bolivares, el precio de la pantalla) puede valer mas que el
       // total del pedido —que esta en dolares— sin que sea un exceso real. Se ajusta
       // al saldo cuando el exceso es solo el redondeo de convertir a otra moneda.
       const limit = await this.rates.chargeBalance(companyId, balance, rateKey);
-      const baseAmount = fitToBalance(conversion.baseAmount, limit);
+      const baseAmount = fitToBalance(computedApplied, limit);
       if (baseAmount === null) {
         throw new BadRequestException(
-          `El monto (${conversion.baseAmount} USD) excede el saldo pendiente (${limit} USD)`,
+          `El monto aplicado (${computedApplied} USD) excede el saldo pendiente (${limit} USD)`,
         );
+      }
+
+      // Si la conversion deja una diferencia de redondeo, se absorbe en el ultimo
+      // vuelto (o en la ultima parte del pago si no hubo vuelto). Asi el neto de
+      // los movimientos de caja coincide EXACTAMENTE con lo aplicado al pedido.
+      const rounding = money.sub(computedApplied, baseAmount);
+      if (compareMoney(rounding, 0) !== 0) {
+        if (changes.length > 0) {
+          const last = changes[changes.length - 1];
+          last.baseAmount = money.add(last.baseAmount, rounding);
+          changeBase = money.add(changeBase, rounding);
+        } else {
+          const last = parts[parts.length - 1];
+          last.baseAmount = money.sub(last.baseAmount, rounding);
+        }
       }
 
       // Toda venta debe poder asociarse a una sesion de caja abierta.
@@ -952,38 +1107,101 @@ export class OrdersService {
       // auditable con las tasas que existian ese dia.
       const ratesHistory = await this.rates.ratesHistory(companyId);
 
-      const movement = await this.cash.registerMovement(
-        companyId,
-        {
-          sessionId: session.id,
-          type: CashMovementType.IN,
-          category: CashMovementCategory.SALE,
-          paymentMethod: dto.method,
-          amount,
-          currency,
-          baseAmount,
-          description: `Cobro pedido ${order.code}`,
-          referenceType: 'ORDER',
-          referenceId: order.id,
-          createdById: userId,
-        },
-        tx,
+      // Ingresos: una entrada por cada parte del pago (metodo + moneda).
+      const partMovements = [];
+      for (const [index, part] of parts.entries()) {
+        const movement = await this.cash.registerMovement(
+          companyId,
+          {
+            sessionId: session.id,
+            type: CashMovementType.IN,
+            category: CashMovementCategory.SALE,
+            paymentMethod: part.method,
+            amount: part.amount,
+            currency: part.currency,
+            baseAmount: part.baseAmount,
+            description:
+              parts.length > 1
+                ? `Cobro pedido ${order.code} (parte ${index + 1}/${parts.length})`
+                : `Cobro pedido ${order.code}`,
+            referenceType: 'ORDER',
+            referenceId: order.id,
+            createdById: userId,
+          },
+          tx,
+        );
+        partMovements.push(movement);
+      }
+
+      // Egresos: el vuelto se registra como movimientos propios para que se vea
+      // en la caja con su metodo y su moneda, y para que el arqueo descuente lo
+      // que realmente salio del cajon.
+      for (const [index, change] of changes.entries()) {
+        await this.cash.registerMovement(
+          companyId,
+          {
+            sessionId: session.id,
+            type: CashMovementType.OUT,
+            category: CashMovementCategory.CHANGE,
+            paymentMethod: change.method,
+            amount: change.amount,
+            currency: change.currency,
+            baseAmount: change.baseAmount,
+            description:
+              changes.length > 1
+                ? `Vuelto pedido ${order.code} (parte ${index + 1}/${changes.length})`
+                : `Vuelto pedido ${order.code}`,
+            referenceType: 'ORDER',
+            referenceId: order.id,
+            createdById: userId,
+          },
+          tx,
+        );
+      }
+
+      // Monto visible del pago: si todo se movio en una sola moneda se conserva
+      // esa moneda; en un mixto multimoneda el resumen va en USD (moneda base) y
+      // el detalle exacto queda en `parts`/`change`.
+      const currencies = new Set(
+        [...parts, ...changes].map((line) => line.currency),
       );
+      const singleCurrency = currencies.size === 1 ? [...currencies][0] : null;
+      const paymentCurrency = singleCurrency ?? BASE_CURRENCY_CODE;
+      const paymentAmount = singleCurrency
+        ? money.sub(
+            money.sum(parts.map((part) => part.amount)),
+            money.sum(changes.map((change) => change.amount)),
+          )
+        : baseAmount;
+      if (compareMoney(paymentAmount, 0) <= 0) {
+        throw new BadRequestException('El monto aplicado al pedido debe ser mayor a 0');
+      }
+
+      const method =
+        (dto.parts?.length ?? 0) > 1 || dto.method === PaymentMethod.MIXED
+          ? PaymentMethod.MIXED
+          : parts[0].method;
 
       await this.orders.createPayment(
         {
           companyId,
           orderId: order.id,
-          amount,
-          method: dto.method,
-          currency,
-          exchangeRate,
+          amount: paymentAmount,
+          method,
+          currency: paymentCurrency,
+          exchangeRate:
+            parts.length === 1 && changes.length === 0
+              ? parts[0].exchangeRate
+              : null,
           // Tasa elegida por el cajero (`null` = la activa del sistema) y la
           // foto de todas las tasas del dia, en JSON de texto.
           rateKey,
           ratesHistory: encodeRatesHistory(ratesHistory),
           baseAmount,
-          cashMovementId: movement.id,
+          parts: encodePaymentLines(parts),
+          change: encodePaymentLines(changes),
+          changeBaseAmount: changeBase,
+          cashMovementId: partMovements[0]?.id,
           note: dto.note,
           createdById: userId,
         },
@@ -1013,11 +1231,78 @@ export class OrdersService {
 
       return this.withRatesHistory(updated);
     });
+
+    const payments = paid.payments ?? [];
+    const payment = payments[payments.length - 1];
+    if (payment) {
+      void this.notifications?.notifySale(
+        companyId,
+        {
+          orderCode: paid.code,
+          total: paid.total,
+          paidNow: payment.amount,
+          paidTotal: paid.paidAmount,
+          balance: money.sub(paid.total, paid.paidAmount),
+          paymentCurrency: payment.currency,
+          method: payment.method,
+          items: (paid.items ?? []).map((item) => ({
+            name: item.name,
+            quantity: item.quantity,
+          })),
+        },
+        userId,
+      );
+    }
+
+    return paid;
   }
 
   // =========================================================================
   //  ESTADOS / CANCELACION
   // =========================================================================
+
+  /**
+   * Emite el OTP que autoriza al cajero a cancelar. Lo recibe el administrador
+   * por Telegram; sin chat vinculado el backend rechaza la solicitud.
+   */
+  async requestCancellationOtp(
+    companyId: string,
+    id: string,
+    userId: string,
+  ) {
+    const order = await this.orders.findStatusContext(companyId, id);
+    if (!order) throw new NotFoundException('Pedido no encontrado');
+    if (order.status === OrderStatus.CANCELLED) {
+      throw new BadRequestException('El pedido ya está cancelado');
+    }
+    if (order._count.payments > 0) {
+      throw new BadRequestException(
+        'El pedido tiene pagos registrados. Registra la devolución (REFUND) en caja antes de cancelarlo.',
+      );
+    }
+    const allowed = ORDER_TRANSITIONS[order.status] ?? [];
+    if (!allowed.includes(OrderStatus.CANCELLED)) {
+      throw new BadRequestException(
+        `No se puede cancelar un pedido en estado ${order.status}`,
+      );
+    }
+    if (!this.notifications) {
+      throw new BadRequestException(
+        'Las notificaciones no están disponibles en este servidor.',
+      );
+    }
+
+    return this.notifications.requestCancellationOtp(companyId, {
+      orderId: order.id,
+      orderCode: order.code,
+      total: order.total,
+      requestedById: userId,
+      items: order.items.map((item) => ({
+        name: item.name,
+        quantity: item.quantity,
+      })),
+    });
+  }
 
   /** Cambia el estado respetando la maquina de estados. */
   async updateStatus(
@@ -1025,6 +1310,7 @@ export class OrdersService {
     id: string,
     dto: UpdateOrderStatusDto,
     userId: string,
+    role?: Role,
   ) {
     const order = await this.orders.findStatusContext(companyId, id);
     if (!order) throw new NotFoundException('Pedido no encontrado');
@@ -1044,7 +1330,55 @@ export class OrdersService {
           'El pedido tiene pagos registrados. Registra la devolucion (REFUND) en caja antes de cancelarlo.',
         );
       }
-      return this.restockAndSetCancelled(companyId, order, userId);
+
+      // El cajero no cancela por su cuenta: necesita el codigo que el
+      // administrador recibio por Telegram (vigente 10 minutos, de un solo uso).
+      let otpId: string | null = null;
+      if (role === Role.CASHIER) {
+        if (!this.notifications) {
+          throw new BadRequestException(
+            'Las notificaciones no están disponibles: no se puede validar el código.',
+          );
+        }
+        if (!dto.code) {
+          throw new BadRequestException(
+            'Para cancelar un pedido necesitas el código de autorización del administrador.',
+          );
+        }
+        otpId = await this.notifications.validateCancellationCode(
+          companyId,
+          order.id,
+          dto.code,
+        );
+        if (!otpId) {
+          throw new BadRequestException(
+            'El código de cancelación es incorrecto o venció. Solicita uno nuevo.',
+          );
+        }
+      }
+
+      const cancelled = await this.restockAndSetCancelled(companyId, order, userId);
+
+      if (otpId && this.notifications) {
+        await this.notifications
+          .consumeCancellationCode(otpId)
+          .catch(() => undefined);
+      }
+      void this.notifications?.notifyCancellation(
+        companyId,
+        {
+          orderCode: cancelled.code,
+          total: cancelled.total,
+          usedOtp: otpId !== null,
+          items: cancelled.items.map((item) => ({
+            name: item.name,
+            quantity: item.quantity,
+          })),
+        },
+        userId,
+      );
+
+      return cancelled;
     }
 
     const updated = await this.orders.updateStatus(companyId, id, dto.status);

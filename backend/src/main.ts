@@ -5,6 +5,8 @@ import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
 import type { NestExpressApplication } from '@nestjs/platform-express';
 import helmet from 'helmet';
 import { AppModule } from './app.module';
+import path from 'path';
+import * as express from 'express';
 
 /** Tamano maximo del cuerpo de una peticion (catalogos con fotos incluidas). */
 const BODY_LIMIT = '25mb';
@@ -55,7 +57,7 @@ async function bootstrap(): Promise<void> {
     .setTitle('Nexo Hub API')
     .setDescription(
       'API de gestion para restaurante / bodega / local: caja, inventario, ' +
-        'pedidos, cuentas por cobrar y pagar, gastos y estadisticas.',
+      'pedidos, cuentas por cobrar y pagar, gastos y estadisticas.',
     )
     .setVersion('1.0.0')
     .addBearerAuth(
@@ -67,7 +69,7 @@ async function bootstrap(): Promise<void> {
   SwaggerModule.setup(`${apiPrefix}/docs`, app, document, {
     swaggerOptions: { persistAuthorization: true },
   });
-
+  app.use('/public', express.static(path.join(process.cwd(), 'public')));
   await app.listen(port);
   logger.log(`API escuchando en http://localhost:${port}/${apiPrefix}`);
   logger.log(`Documentacion en http://localhost:${port}/${apiPrefix}/docs`);

@@ -136,6 +136,7 @@ export const CASH_CATEGORY_LABELS: Record<string, string> = {
   DEPOSIT: 'Depósito',
   REFUND: 'Devolución',
   PAYMENT: 'Pago de cuenta',
+  CHANGE: 'Vuelto',
   ADJUSTMENT: 'Ajuste',
   OTHER: 'Otro',
 };
@@ -147,6 +148,7 @@ export const CASH_OUT_CATEGORIES: string[] = [
   'WITHDRAWAL',
   'REFUND',
   'PAYMENT',
+  'CHANGE',
 ];
 
 /** Devuelve la fecha de hoy en formato `YYYY-MM-DD` (input type=date). */

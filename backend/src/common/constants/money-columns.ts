@@ -43,7 +43,7 @@ export const MONEY_COLUMNS = {
     'paidAmount',
   ],
   OrderItem: ['unitPrice', 'total'],
-  OrderPayment: ['amount', 'baseAmount'],
+  OrderPayment: ['amount', 'baseAmount', 'changeBaseAmount'],
   Expense: ['amount', 'baseAmount'],
   AccountPayable: ['amount', 'baseAmount', 'paidAmount'],
   PayablePayment: ['amount', 'baseAmount'],

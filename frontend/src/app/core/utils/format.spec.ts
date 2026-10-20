@@ -111,6 +111,21 @@ describe('format (valores abreviados)', () => {
       expect(moneyCompact(1_250_000)).toBe('Bs 1.1b');
     });
 
+    it('redondea el monto base antes de convertirlo a la moneda visible', () => {
+      setDisplayCurrency({
+        code: 'VES',
+        label: 'Bolívares',
+        symbol: 'Bs',
+        decimals: 2,
+        bsPerUnit: 1,
+        bsPerUsd: 881.87,
+      });
+
+      // El total guardado trae decimales ocultos (9,3494 USD): el cajero lee
+      // USD 9,35 y el total en Bs tiene que corresponder a esos 9,35.
+      expect(money(9.3494)).toBe('Bs 8,245.48');
+    });
+
     it('convierte con la tasa de la moneda elegida (no solo cambia el simbolo)', () => {
       setDisplayCurrency({
         code: 'EUR',
