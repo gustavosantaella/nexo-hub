@@ -70,7 +70,7 @@ describe('PreferencesService (preferencias de la empresa)', () => {
       priceCurrency: 'VES',
       conversionCurrencies: ['USD', 'COP'],
       showBcvPrice: true,
-      chargeRateKey: 'CUSTOM_USD',
+      chargeRateKey: null,
       posView: 'table',
     });
   });
@@ -342,25 +342,32 @@ describe('PreferencesService (preferencias de la empresa)', () => {
     expect(found.showBcvPrice).toBeNull();
   });
 
-  it('guarda la tasa de cobro del cajero y `null` vuelve a la tasa activa', async () => {
+  it('solo acepta la tasa oficial del BCV y descarta la personalizada', async () => {
     upsert.mockResolvedValue({
       tipPercent: null,
       dialogView: null,
       priceCurrency: null,
       conversionCurrencies: null,
       showBcvPrice: null,
-      chargeRateKey: 'CUSTOM_USD',
+      chargeRateKey: 'BCV_USD',
     });
 
-    const result = await service.update('c1', { chargeRateKey: 'CUSTOM_USD' });
+    const result = await service.update('c1', { chargeRateKey: 'BCV_USD' });
 
-    expect(result.chargeRateKey).toBe('CUSTOM_USD');
+    expect(result.chargeRateKey).toBe('BCV_USD');
     expect(upsert).toHaveBeenCalledWith(
-      expect.objectContaining({ update: { chargeRateKey: 'CUSTOM_USD' } }),
+      expect.objectContaining({ update: { chargeRateKey: 'BCV_USD' } }),
+    );
+
+    // La personalizada ya no es una tasa de cobro: se normaliza a `null`, que
+    // significa lo mismo (BCV).
+    await service.update('c1', { chargeRateKey: 'CUSTOM_USD' });
+    expect(upsert).toHaveBeenLastCalledWith(
+      expect.objectContaining({ update: { chargeRateKey: null } }),
     );
 
     await service.update('c1', { chargeRateKey: null });
-    expect(upsert).toHaveBeenCalledWith(
+    expect(upsert).toHaveBeenLastCalledWith(
       expect.objectContaining({ update: { chargeRateKey: null } }),
     );
   });

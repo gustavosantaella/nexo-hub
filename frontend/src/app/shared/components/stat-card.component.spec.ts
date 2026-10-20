@@ -1,6 +1,7 @@
 import { provideHttpClient } from '@angular/common/http';
 import { provideHttpClientTesting } from '@angular/common/http/testing';
 import { TestBed, type ComponentFixture } from '@angular/core/testing';
+import { setDisplayCurrency } from '../../core/utils/format';
 import { StatCardComponent } from './stat-card.component';
 
 /** Tarjeta de indicador: valores abreviados para que no se salgan de la card. */
@@ -8,6 +9,7 @@ describe('StatCardComponent (tarjeta de indicador)', () => {
   let fixture: ComponentFixture<StatCardComponent>;
 
   beforeEach(async () => {
+    setDisplayCurrency(null);
     await TestBed.configureTestingModule({
       imports: [StatCardComponent],
       providers: [provideHttpClient(), provideHttpClientTesting()],

@@ -826,21 +826,6 @@ describe('SettingsPage (pestañas de configuración)', () => {
     );
   });
 
-  /** Selector de la tasa del dólar con la que cobra el cajero. */
-  function chargeRateSelect(): HTMLSelectElement {
-    const found = panel().querySelector('#charge-rate') as HTMLSelectElement | null;
-    if (!found) throw new Error('No se encontró el selector de la tasa de cobro');
-    return found;
-  }
-
-  /** Elige la tasa de cobro ('' = la tasa activa del sistema) como el usuario. */
-  function pickChargeRate(key: string): void {
-    const select = chargeRateSelect();
-    select.value = key;
-    select.dispatchEvent(new Event('change'));
-    fixture.detectChanges();
-  }
-
   /** Tasas del dólar del sistema, tal como las carga `RatesService`. */
   const DOLLAR_RATES: RateOption[] = [
     {
@@ -854,92 +839,38 @@ describe('SettingsPage (pestañas de configuración)', () => {
     },
   ];
 
-  it('por defecto el cajero cobra con la tasa activa del sistema', () => {
+  it('muestra el cobro a la tasa BCV sin selector de tasa personalizada', () => {
     ratesStub.rates.set(DOLLAR_RATES);
     tab('Cajero').click();
     fixture.detectChanges();
 
     expect(panel().textContent).toContain('Cobro');
-    expect(panel().textContent).toContain('Tasa activa');
-    expect(chargeRateSelect().value).toBe('');
-    expect(panel().textContent).toContain(
-      'El cajero cobra con la tasa activa del sistema',
-    );
+    expect(panel().textContent).toContain('BCV Dólar');
+    expect(panel().textContent).toContain('Tasa de cobro');
+    expect(panel().querySelector('#charge-rate')).toBeNull();
     expect(panelButton('Guardar cambios').disabled).toBe(true);
   });
 
-  it('fija la tasa de cobro del cajero y la guarda para toda la empresa', () => {
+  it('no manda una tasa de cobro en las preferencias de la empresa', () => {
     const http = TestBed.inject(HttpTestingController);
     ratesStub.rates.set(DOLLAR_RATES);
     tab('Cajero').click();
     fixture.detectChanges();
 
-    // Solo se ofrecen las tasas del dólar: la del BCV y la personalizada.
-    const options = Array.from(chargeRateSelect().options).map((option) => option.value);
-    expect(options).toEqual(['', 'BCV_USD', 'CUSTOM_USD']);
-
-    pickChargeRate('BCV_USD');
-
-    // Elegir no guarda nada todavía: la preferencia de la empresa sigue vacía.
-    expect(localStorage.getItem(CHARGE_RATE_KEY)).toBeNull();
-    expect(panel().textContent).toContain('BCV Dólar');
-    expect(panel().textContent).toContain('por $ 1');
-    expect(panelButton('Guardar cambios').disabled).toBe(false);
-
-    panelButton('Guardar cambios').click();
+    const fifteen = Array.from(panel().querySelectorAll('button')).find(
+      (button) => button.textContent?.trim() === '15 %',
+    );
+    expect(fifteen).toBeDefined();
+    fifteen!.click();
     fixture.detectChanges();
-
-    expect(localStorage.getItem(CHARGE_RATE_KEY)).toBe('BCV_USD');
+    panelButton('Guardar cambios').click();
 
     const guardado = http.expectOne({
       method: 'PATCH',
       url: `${environment.apiUrl}/preferences`,
     });
-    expect(guardado.request.body).toEqual({
-      tipPercent: 10,
-      dialogView: 'modal',
-      priceCurrency: null,
-      conversionCurrencies: null,
-      showBcvPrice: false,
-      chargeRateKey: 'BCV_USD',
-    });
-    guardado.flush({
-      tipPercent: 10,
-      dialogView: 'modal',
-      priceCurrency: null,
-      conversionCurrencies: null,
-      showBcvPrice: null,
-      chargeRateKey: 'BCV_USD',
-    });
-
-    // Volver a la tasa activa la quita para toda la empresa (y de este equipo).
-    pickChargeRate('');
-    panelButton('Guardar cambios').click();
-    fixture.detectChanges();
-
-    expect(localStorage.getItem(CHARGE_RATE_KEY)).toBeNull();
-    http
-      .expectOne({ method: 'PATCH', url: `${environment.apiUrl}/preferences` })
-      .flush({
-        tipPercent: 10,
-        dialogView: 'modal',
-        priceCurrency: null,
-        conversionCurrencies: null,
-        showBcvPrice: null,
-        chargeRateKey: null,
-      });
-  });
-
-  it('no deja elegir una tasa de cobro que todavía no tiene valor', () => {
-    ratesStub.rates.set(DOLLAR_RATES);
-    tab('Cajero').click();
-    fixture.detectChanges();
-
-    const custom = Array.from(chargeRateSelect().options).find(
-      (option) => option.value === 'CUSTOM_USD',
-    );
-    expect(custom?.disabled).toBe(true);
-    expect(panel().textContent).toContain('Personalizada · sin tasa');
+    expect((guardado.request.body as { chargeRateKey?: string | null }).chargeRateKey).toBeNull();
+    guardado.flush({});
   });
 
   it('enciende los montos al cambio con el interruptor reutilizable (pestaña Tasas)', () => {

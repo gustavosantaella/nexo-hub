@@ -128,7 +128,7 @@ function buildService(options: {
 
   const preferences = {
     find: jest.fn().mockResolvedValue({
-      priceCurrency: options.preferencePriceCurrency ?? null,
+      priceCurrency: options.preferencePriceCurrency ?? 'VES',
     }),
   };
 
@@ -396,6 +396,24 @@ describe('RatesService', () => {
       expect(snapshot.currencies[0].source).toBe('CUSTOM');
     });
 
+    it('calcula el factor de venta vitrina/BCV', async () => {
+      const { service } = buildService({
+        fetchImpl: fetchMock,
+        setting: {
+          key: CUSTOM_RATE_KEY,
+          value: '950',
+          updatedAt: new Date('2026-10-13T12:00:00.000Z'),
+        },
+      });
+
+      // 950 / 876,7976: un precio de catalogo de 10 USD se vende como 10,83 USD
+      // (los Bs 9.500 de vitrina valorados a la tasa oficial).
+      await expect(service.saleFactor(COMPANY_ID)).resolves.toBeCloseTo(
+        950 / 876.7976,
+        8,
+      );
+    });
+
     it('toma del BCV la tasa del euro cuando no hay tasa manual', async () => {
       const { service } = buildService({
         fetchImpl: fetchMock,
@@ -606,89 +624,6 @@ describe('RatesService', () => {
       await expect(
         service.toCurrencyAmount(COMPANY_ID, 10, 'VES', 'BCV_EUR'),
       ).resolves.toBe(9820.05);
-    });
-  });
-
-  /**
-   * Tasa de cobro del cajero (Configuracion > Cajero): el punto de venta cobra el
-   * precio que el operador lee en pantalla, y lo lee en la **moneda base de la
-   * empresa** (los bolivares, por ejemplo), no en dolares. Por eso el cobro puede
-   * valer mas que el total del pedido —que esta en dolares— sin ser un exceso.
-   */
-  describe('saldo que cubre un cobro (tasa de cobro del cajero)', () => {
-    /** Empresa con la tasa personalizada activa y los precios mostrados en Bs. */
-    const customCompany = () =>
-      buildService({
-        fetchImpl: fetchMock,
-        baseCurrency: 'VES',
-        setting: {
-          key: CUSTOM_RATE_KEY,
-          value: '905.5',
-          updatedAt: new Date('2026-10-13T12:00:00.000Z'),
-          updatedBy: null,
-        },
-      });
-
-    it('sin tasa de cobro deja el saldo tal cual', async () => {
-      const { service } = customCompany();
-
-      await expect(service.chargeBalance(COMPANY_ID, 100)).resolves.toBe(100);
-    });
-
-    it('convierte el saldo con la tasa de cobro (el precio que se ve en Bs)', async () => {
-      const { service } = customCompany();
-
-      // 100 USD se ven como Bs 90.550 (personalizada 905,5) y esos bolivares, al
-      // cambio del BCV (876,7976), valen 103,27 USD: eso es lo que cobra el cajero
-      // cuando el cliente paga en divisas.
-      await expect(
-        service.chargeBalance(COMPANY_ID, 100, 'BCV_USD'),
-      ).resolves.toBe(103.27);
-    });
-
-    it('deja el saldo igual cuando la tasa de cobro es la activa', async () => {
-      const { service } = customCompany();
-
-      await expect(
-        service.chargeBalance(COMPANY_ID, 100, 'CUSTOM_USD'),
-      ).resolves.toBe(100);
-    });
-
-    it('no cambia nada cuando la empresa muestra los precios en dolares', async () => {
-      const { service } = buildService({ fetchImpl: fetchMock });
-
-      await expect(
-        service.chargeBalance(COMPANY_ID, 100, 'BCV_USD'),
-      ).resolves.toBe(100);
-    });
-
-    it('usa la moneda de precios del cajero aunque la base contable sea el dolar', async () => {
-      // Regresion: la empresa guarda los montos en USD (`currencies.base`) pero
-      // el cajero ve los precios en Bs (`priceCurrency` del POS). El saldo maximo
-      // debe salir de los Bs que lee en pantalla, no del total en dolares.
-      const { service } = buildService({
-        fetchImpl: fetchMock,
-        baseCurrency: 'USD',
-        preferencePriceCurrency: 'VES',
-        setting: {
-          key: CUSTOM_RATE_KEY,
-          value: '905.5',
-          updatedAt: new Date('2026-10-13T12:00:00.000Z'),
-          updatedBy: null,
-        },
-      });
-
-      await expect(
-        service.chargeBalance(COMPANY_ID, 100, 'BCV_USD'),
-      ).resolves.toBe(103.27);
-    });
-
-    it('descarta una tasa inventada', async () => {
-      const { service } = customCompany();
-
-      await expect(
-        service.chargeBalance(COMPANY_ID, 100, 'MALA'),
-      ).resolves.toBe(100);
     });
   });
 

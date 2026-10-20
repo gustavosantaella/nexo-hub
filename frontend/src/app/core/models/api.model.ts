@@ -138,11 +138,11 @@ export type DialogView = 'modal' | 'sidebar';
 export type PosView = 'cards' | 'table' | 'columns';
 
 /**
- * Tasas del dólar (bolívares por 1 USD) que el admin puede fijar como **tasa de
- * cobro** del cajero. Son las dos que expresan bolívares por dólar: la del BCV y
- * la personalizada del local.
+ * Tasa del dólar (bolívares por 1 USD) con la que se cobra. Solo existe la tasa
+ * oficial del BCV: la personalizada del local es de vitrina y nunca se usa para
+ * valorar un cobro.
  */
-export type ChargeRateKey = 'BCV_USD' | 'CUSTOM_USD';
+export type ChargeRateKey = 'BCV_USD';
 
 /**
  * Respuesta de `GET /preferences`: preferencias de interfaz de la **empresa
@@ -174,9 +174,9 @@ export interface CompanyPreferences {
    */
   showBcvPrice: boolean | null;
   /**
-   * Tasa del dólar con la que el punto de venta cobra: el cajero convierte el
-   * saldo del pedido, el efectivo recibido y el vuelto con ella, sin preguntar
-   * nada. `null` = sin configurar: se cobra con la tasa activa del sistema.
+   * Tasa del dólar con la que el punto de venta cobra. Siempre es la oficial del
+   * BCV (o `null`, que significa lo mismo); la personalizada solo se usa para
+   * mostrar los precios de vitrina en bolívares.
    */
   chargeRateKey: ChargeRateKey | null;
   /**

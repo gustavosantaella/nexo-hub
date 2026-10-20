@@ -1,4 +1,5 @@
 import { TestBed, type ComponentFixture } from '@angular/core/testing';
+import { setDisplayCurrency } from '../../core/utils/format';
 import { BarListComponent } from './bar-list.component';
 import type { BarRow } from './bar-list.component';
 
@@ -8,6 +9,7 @@ describe('BarListComponent (ranking de barras)', () => {
   let component: BarListComponent;
 
   beforeEach(async () => {
+    setDisplayCurrency(null);
     await TestBed.configureTestingModule({ imports: [BarListComponent] }).compileComponents();
     fixture = TestBed.createComponent(BarListComponent);
     component = fixture.componentInstance;

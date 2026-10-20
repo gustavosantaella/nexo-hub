@@ -23,6 +23,12 @@ export const QUOTE_CURRENCY = {
 
 export const DEFAULT_RATE_KEY: RateKey = 'BCV_USD';
 
+/**
+ * Tasa con la que se cobra: siempre la oficial del BCV. La tasa personalizada
+ * solo se usa para mostrar los precios del catalogo en bolivares.
+ */
+export const CHARGE_RATE_KEY: RateKey = 'BCV_USD';
+
 /** Codigo de la moneda base contable del sistema. */
 export const BASE_CURRENCY_CODE = BASE_CURRENCY.code;
 

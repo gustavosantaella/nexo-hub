@@ -174,7 +174,7 @@ const EMPTY_META: PaginationMeta = {
                     </span>
                   }
                 </span>
-                <app-money [amount]="openingTotal" alignEnd="true" />
+                <app-money displayRateKey="BCV_USD" [amount]="openingTotal" alignEnd="true" />
               </div>
             </div>
 
@@ -221,17 +221,17 @@ const EMPTY_META: PaginationMeta = {
       }
 
       <div class="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-7">
-        <app-stat-card
+        <app-stat-card displayRateKey="BCV_USD"
           label="Fondo inicial"
           [value]="session()?.openingAmount ?? 0"
           icon="wallet"
           [isCurrency]="true"
           [hint]="openingStatHint"
         />
-        <app-stat-card label="Ingresos" [value]="summary()?.cashIn ?? 0" icon="trend-up" tone="emerald" [isCurrency]="true" />
-        <app-stat-card label="Egresos" [value]="summary()?.cashOut ?? 0" icon="trend-down" tone="rose" [isCurrency]="true" />
-        <app-stat-card label="Efectivo esperado" [value]="expectedCash" icon="money" tone="brand" [isCurrency]="true" />
-        <app-stat-card
+        <app-stat-card displayRateKey="BCV_USD" label="Ingresos" [value]="summary()?.cashIn ?? 0" icon="trend-up" tone="emerald" [isCurrency]="true" />
+        <app-stat-card displayRateKey="BCV_USD" label="Egresos" [value]="summary()?.cashOut ?? 0" icon="trend-down" tone="rose" [isCurrency]="true" />
+        <app-stat-card displayRateKey="BCV_USD" label="Efectivo esperado" [value]="expectedCash" icon="money" tone="brand" [isCurrency]="true" />
+        <app-stat-card displayRateKey="BCV_USD"
           label="Ventas"
           [value]="salesTotal"
           icon="receipt"
@@ -239,7 +239,7 @@ const EMPTY_META: PaginationMeta = {
           [isCurrency]="true"
           hint="sin propinas"
         />
-        <app-stat-card
+        <app-stat-card displayRateKey="BCV_USD"
           label="Propinas"
           [value]="tipsTotal"
           icon="money"
@@ -247,7 +247,7 @@ const EMPTY_META: PaginationMeta = {
           [isCurrency]="true"
           hint="no son ventas"
         />
-        <app-stat-card label="Movimientos" [value]="summary()?.movementCount ?? 0" icon="chart" tone="slate" />
+        <app-stat-card displayRateKey="BCV_USD" label="Movimientos" [value]="summary()?.movementCount ?? 0" icon="chart" tone="slate" />
       </div>
 
       @if (byMethod.length > 0) {
@@ -269,9 +269,9 @@ const EMPTY_META: PaginationMeta = {
                 @for (row of byMethod; track row.method) {
                   <tr>
                     <td class="font-medium text-slate-900">{{ methodLabels[row.method] || row.method }}</td>
-                    <td class="text-right text-emerald-600"><app-money [amount]="row.in" alignEnd="true" /></td>
-                    <td class="text-right text-rose-600"><app-money [amount]="row.out" alignEnd="true" /></td>
-                    <td class="text-right font-medium"><app-money [amount]="row.net" alignEnd="true" /></td>
+                    <td class="text-right text-emerald-600"><app-money displayRateKey="BCV_USD" [amount]="row.in" alignEnd="true" /></td>
+                    <td class="text-right text-rose-600"><app-money displayRateKey="BCV_USD" [amount]="row.out" alignEnd="true" /></td>
+                    <td class="text-right font-medium"><app-money displayRateKey="BCV_USD" [amount]="row.net" alignEnd="true" /></td>
                   </tr>
                 }
               </tbody>
@@ -322,7 +322,7 @@ const EMPTY_META: PaginationMeta = {
                       {{ amountIn(row.net, row.currency) }}
                     </td>
                     <td class="text-right font-medium">
-                      <app-money [amount]="row.baseNet" alignEnd="true" />
+                      <app-money displayRateKey="BCV_USD" [amount]="row.baseNet" alignEnd="true" />
                     </td>
                   </tr>
                 }
@@ -413,7 +413,7 @@ const EMPTY_META: PaginationMeta = {
                     {{ amountIn(movement.type === 'IN' ? movement.amount : -movement.amount, movement.currency) }}
                   </td>
                   <td class="text-right" [class.text-emerald-600]="movement.type === 'IN'" [class.text-rose-600]="movement.type === 'OUT'">
-                    <app-money
+                    <app-money displayRateKey="BCV_USD"
                       [amount]="movement.type === 'IN' ? movement.baseAmount : -movement.baseAmount"
                       alignEnd="true"
                     />
@@ -478,21 +478,21 @@ const EMPTY_META: PaginationMeta = {
                   <td>{{ dateTime(row.openedAt) }}</td>
                   <td>{{ row.closedAt ? dateTime(row.closedAt) : '—' }}</td>
                   <td class="text-right">
-                    <app-money [amount]="row.openingAmount" alignEnd="true" />
+                    <app-money displayRateKey="BCV_USD" [amount]="row.openingAmount" alignEnd="true" />
                     @if (openingFundHint(row); as hint) {
                       <span class="block text-[10px] text-slate-400">{{ hint }}</span>
                     }
                   </td>
                   <td class="text-right">
                     @if (row.expectedAmount != null) {
-                      <app-money [amount]="row.expectedAmount" alignEnd="true" />
+                      <app-money displayRateKey="BCV_USD" [amount]="row.expectedAmount" alignEnd="true" />
                     } @else {
                       —
                     }
                   </td>
                   <td class="text-right">
                     @if (row.countedAmount != null) {
-                      <app-money [amount]="row.countedAmount" alignEnd="true" />
+                      <app-money displayRateKey="BCV_USD" [amount]="row.countedAmount" alignEnd="true" />
                       @if (row.countedCurrency && row.countedCurrency !== baseCurrency.code) {
                         <span class="block text-[10px] text-slate-400">
                           contado en {{ row.countedCurrency }}
@@ -504,7 +504,7 @@ const EMPTY_META: PaginationMeta = {
                   </td>
                   <td class="text-right font-medium" [class.text-emerald-600]="(row.difference ?? 0) >= 0" [class.text-rose-600]="(row.difference ?? 0) < 0">
                     @if (row.difference != null) {
-                      <app-money [amount]="row.difference" alignEnd="true" />
+                      <app-money displayRateKey="BCV_USD" [amount]="row.difference" alignEnd="true" />
                     } @else {
                       —
                     }
@@ -637,15 +637,15 @@ const EMPTY_META: PaginationMeta = {
           <p class="label">Ventas del turno</p>
           <div class="flex items-center justify-between gap-3 text-sm">
             <span class="text-slate-500">Ventas (sin propinas)</span>
-            <app-money [amount]="salesTotal" alignEnd="true" />
+            <app-money displayRateKey="BCV_USD" [amount]="salesTotal" alignEnd="true" />
           </div>
           <div class="flex items-center justify-between gap-3 text-sm">
             <span class="text-slate-500">Propinas</span>
-            <app-money [amount]="tipsTotal" alignEnd="true" />
+            <app-money displayRateKey="BCV_USD" [amount]="tipsTotal" alignEnd="true" />
           </div>
           <div class="flex items-center justify-between gap-3 border-t border-slate-100 pt-2 text-sm">
             <span class="font-medium text-slate-600">Total cobrado por ventas</span>
-            <app-money [amount]="salesGrossTotal" [strong]="true" alignEnd="true" />
+            <app-money displayRateKey="BCV_USD" [amount]="salesGrossTotal" [strong]="true" alignEnd="true" />
           </div>
           <p class="text-xs text-slate-400">
             Las propinas no son ventas: se cobran dentro del pedido y quedan
@@ -656,7 +656,7 @@ const EMPTY_META: PaginationMeta = {
         <div class="space-y-2 rounded-xl border border-slate-200 bg-slate-50/60 p-4">
           <div class="flex items-center justify-between gap-3 text-sm">
             <span class="text-slate-500">Efectivo esperado en el cajón</span>
-            <app-money [amount]="expectedCash" alignEnd="true" />
+            <app-money displayRateKey="BCV_USD" [amount]="expectedCash" alignEnd="true" />
           </div>
           <p class="text-xs text-slate-500">
             Fondo inicial + entradas − salidas, en {{ moneyBaseLabel() }}.
@@ -732,7 +732,7 @@ const EMPTY_META: PaginationMeta = {
           class="flex items-center justify-between gap-3 rounded-xl border border-slate-200 px-4 py-3 text-sm"
         >
           <span class="text-slate-500">Diferencia</span>
-          <app-money
+          <app-money displayRateKey="BCV_USD"
             [amount]="closeDifference"
             [strong]="true"
             alignEnd="true"
@@ -787,7 +787,7 @@ const EMPTY_META: PaginationMeta = {
             </div>
             <div class="rounded-lg bg-slate-50 px-3 py-2">
               <p class="text-slate-500">Fondo inicial</p>
-              <app-money [amount]="detail.openingAmount" />
+              <app-money displayRateKey="BCV_USD" [amount]="detail.openingAmount" />
               @if ((detail.openingLines?.length ?? 0) > 0) {
                 <ul class="mt-1 space-y-0.5 text-[11px] text-slate-500">
                   @for (line of detail.openingLines ?? []; track line.currency) {
@@ -803,14 +803,14 @@ const EMPTY_META: PaginationMeta = {
             </div>
             <div class="rounded-lg bg-slate-50 px-3 py-2">
               <p class="text-slate-500">Efectivo esperado</p>
-              <app-money
+              <app-money displayRateKey="BCV_USD"
                 [amount]="detail.expectedAmount ?? detail.summary?.expectedCash ?? 0"
               />
             </div>
             <div class="rounded-lg bg-slate-50 px-3 py-2">
               <p class="text-slate-500">Contado</p>
               @if (detail.countedAmount != null) {
-                <app-money [amount]="detail.countedAmount" />
+                <app-money displayRateKey="BCV_USD" [amount]="detail.countedAmount" />
               } @else {
                 <p class="font-medium">—</p>
               }
@@ -818,7 +818,7 @@ const EMPTY_META: PaginationMeta = {
             <div class="rounded-lg bg-slate-50 px-3 py-2">
               <p class="text-slate-500">Diferencia</p>
               @if (detail.difference != null) {
-                <app-money
+                <app-money displayRateKey="BCV_USD"
                   [amount]="detail.difference"
                   [class.text-emerald-600]="detail.difference >= 0"
                   [class.text-rose-600]="detail.difference < 0"
@@ -829,12 +829,12 @@ const EMPTY_META: PaginationMeta = {
             </div>
             <div class="rounded-lg bg-slate-50 px-3 py-2">
               <p class="text-slate-500">Ventas</p>
-              <app-money [amount]="detail.summary?.salesTotal ?? 0" />
+              <app-money displayRateKey="BCV_USD" [amount]="detail.summary?.salesTotal ?? 0" />
               <p class="text-[11px] text-slate-400">sin propinas</p>
             </div>
             <div class="rounded-lg bg-slate-50 px-3 py-2">
               <p class="text-slate-500">Propinas</p>
-              <app-money [amount]="detail.summary?.tipsTotal ?? 0" />
+              <app-money displayRateKey="BCV_USD" [amount]="detail.summary?.tipsTotal ?? 0" />
             </div>
             <div class="rounded-lg bg-slate-50 px-3 py-2">
               <p class="text-slate-500">Movimientos</p>
@@ -884,7 +884,7 @@ const EMPTY_META: PaginationMeta = {
                         {{ amountIn(movement.amount, movement.currency) }}
                       </td>
                       <td class="text-right font-medium">
-                        <app-money [amount]="movement.baseAmount" alignEnd="true" />
+                        <app-money displayRateKey="BCV_USD" [amount]="movement.baseAmount" alignEnd="true" />
                       </td>
                     </tr>
                   }
@@ -946,7 +946,7 @@ const EMPTY_META: PaginationMeta = {
             </div>
             <div class="rounded-lg bg-slate-50 px-3 py-2">
               <p class="text-slate-500">Equivalente ({{ moneyBaseCode() }})</p>
-              <app-money
+              <app-money displayRateKey="BCV_USD"
                 [amount]="movement.type === 'IN' ? movement.baseAmount : -movement.baseAmount"
               />
             </div>

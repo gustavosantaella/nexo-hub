@@ -337,9 +337,9 @@ describe('RatesService (conversión de monedas)', () => {
     expect(rates.displayAmount(10)).toBe(9500);
     // …y esos bolívares, al cambio del BCV (876,7976), son 10,83 USD: eso cobra el
     // cajero cuando el cliente paga en divisas, no los 10 USD guardados.
-    expect(rates.chargeAmount(10, 'USD', 'BCV_USD')).toBe(10.83);
-    // Pagando en bolívares el cliente entrega el precio de la pantalla, tal cual.
-    expect(rates.chargeAmount(10, 'VES', 'BCV_USD')).toBe(9500);
+    expect(rates.chargeAmount(10, 'USD')).toBe(10);
+    // Pagando en bolívares el cobro sale de los USD a la tasa BCV.
+    expect(rates.chargeAmount(10, 'VES')).toBe(8767.98);
   });
 
   /**
@@ -356,8 +356,8 @@ describe('RatesService (conversión de monedas)', () => {
       .expectOne({ method: 'PATCH', url: `${API}/preferences` })
       .flush({ chargeRateKey: 'BCV_USD' });
 
-    expect(rates.chargeKeyFor('VES')).toBeNull();
-    // En otra moneda la tasa si reexpresa el precio de pantalla.
+    expect(rates.chargeKeyFor('VES')).toBe('BCV_USD');
+    // El cobro siempre viaja con la tasa oficial, en cualquier moneda.
     expect(rates.chargeKeyFor('USD')).toBe('BCV_USD');
     expect(rates.chargeKeyFor('COP')).toBe('BCV_USD');
   });
@@ -369,15 +369,15 @@ describe('RatesService (conversión de monedas)', () => {
     // Con la tasa activa (la personalizada del local) el precio en pantalla y los
     // dólares guardados coinciden: no hay nada que reexpresar.
     expect(rates.chargeAmount(10, 'USD')).toBe(10);
-    expect(rates.chargeAmount(10, 'USD', 'CUSTOM_USD')).toBe(10);
+    expect(rates.chargeAmount(10, 'USD')).toBe(10);
   });
 
   it('cobra en otra moneda el precio que se ve en pantalla', () => {
     rates.load(true);
     http.expectOne(`${API}/rates?refresh=true`).flush(POS_SNAPSHOT);
 
-    // Bs 9.500 son 10,83 USD al BCV y, en pesos (0,22 Bs por COP), 43.162,35 COP.
-    expect(rates.chargeAmount(10, 'COP', 'BCV_USD')).toBe(43162.35);
+    // USD 10 * 876,7976 Bs = 8.767,98 Bs / 0,22 Bs por COP = 39.854,44 COP.
+    expect(rates.chargeAmount(10, 'COP')).toBe(39854.44);
   });
 
   it('no cambia el cobro cuando los precios se ven en dólares', () => {
@@ -386,7 +386,7 @@ describe('RatesService (conversión de monedas)', () => {
 
     // La pantalla muestra dólares: el precio que se lee ya es el monto guardado.
     expect(rates.displayAmount(10)).toBe(10);
-    expect(rates.chargeAmount(10, 'USD', 'BCV_USD')).toBe(10);
+    expect(rates.chargeAmount(10, 'USD')).toBe(10);
   });
 
   it('muestra los montos en la moneda base elegida por el local', () => {
@@ -459,7 +459,7 @@ describe('RatesService (conversión de monedas)', () => {
 
     const usd = rates.currencyConversions(10)[0];
 
-    expect(usd.label).toBe('USD · personalizada');
+    expect(usd.label).toBe('USD');
     // La moneda local (Bs) no lleva origen: siempre vale 1 Bs por 1 Bs.
     expect(rates.currencyConversions(10).map((item) => item.label)).not.toContain(
       'VES',
@@ -487,7 +487,6 @@ describe('RatesService (conversión de monedas)', () => {
     expect(lines.map((item) => item.label)).toEqual([
       'USD · BCV',
       'EUR · BCV',
-      'USD · personalizada',
       // El peso no sale de ninguna de esas tasas: se lista en su propia moneda.
       'COP · manual',
     ]);
@@ -497,12 +496,11 @@ describe('RatesService (conversión de monedas)', () => {
     expect(lines.map((item) => item.text)).toEqual([
       '$ 10.00',
       '€ 8.93',
-      '$ 9.23',
       'COL$ 39,854.44',
     ]);
     // Cada linea lleva la moneda de su tasa: ninguna repite los bolivares del
     // monto base (por eso `<app-money>` no las abrevia con `bsCompact`).
-    expect(lines.map((item) => item.code)).toEqual(['USD', 'EUR', 'USD', 'COP']);
+    expect(lines.map((item) => item.code)).toEqual(['USD', 'EUR', 'COP']);
     expect(lines.some((item) => item.inBs)).toBe(false);
   });
 
@@ -953,6 +951,18 @@ describe('RatesService (precio en dólares del BCV)', () => {
 
     expect(displayBaseCode()).toBe('VES');
     expect(rates.bcvUsdConversion(10)?.text).toBe('$ 10.00');
+  });
+
+  it('con los precios en bolívares usa la tasa oficial aunque el local tenga personalizada', () => {
+    // POS_SNAPSHOT: precios en Bs con personalizada 950 y BCV 876,7976. El monto
+    // guardado ya está valorado a la tasa oficial, así que la línea debe devolver
+    // los mismos dólares y no revalorizarlos con la personalizada.
+    rates.load();
+    http.expectOne(`${API}/rates`).flush(POS_SNAPSHOT);
+
+    expect(displayBaseCode()).toBe('VES');
+    expect(rates.bcvUsdConversion(17.57, null, 'VES')?.text).toBe('$ 17.57');
+    expect(rates.bcvUsdConversion(17.57, null, 'VES')?.rate).toBe(876.7976);
   });
 
   it('respeta los bolívares que escribió el operador', () => {

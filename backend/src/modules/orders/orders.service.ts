@@ -46,6 +46,7 @@ import { InventoryService } from '../inventory/inventory.service';
 import { MenusService, type MenuRecipe } from '../menus/menus.service';
 import { NotificationsService } from '../notifications/notifications.service';
 import {
+  CHARGE_RATE_KEY,
   RatesService,
   normalizeRateKey,
   type RateHistory,
@@ -705,6 +706,10 @@ export class OrdersService {
       ? await this.orders.findSaleProducts(companyId, productIds)
       : [];
     const recipes = await this.menus.loadRecipes(companyId, menuIds);
+    // Precio de venta: el catalogo esta en USD, pero la vitrina lo muestra en
+    // bolivares con la tasa personalizada. El pedido se guarda en USD al valor
+    // que resulta de esos bolivares a la tasa oficial del BCV.
+    const saleFactor = await this.rates.saleFactor(companyId);
 
     if (products.length !== productIds.length) {
       const found = new Set(products.map((product) => product.id));
@@ -744,7 +749,9 @@ export class OrdersService {
             `El menu "${recipe.name}" usa ${names}, un producto inactivo. Actualiza la receta para poder venderlo.`,
           );
         }
-        const unitPrice = toMoney(line.unitPrice ?? recipe.price);
+        const unitPrice = toMoney(
+          money.mul(toMoney(line.unitPrice ?? recipe.price), saleFactor),
+        );
         return {
           productId: null,
           menuId: recipe.id,
@@ -765,7 +772,9 @@ export class OrdersService {
           `El producto "${product.name}" esta inactivo y no puede venderse`,
         );
       }
-      const unitPrice = toMoney(line.unitPrice ?? product.price);
+      const unitPrice = toMoney(
+        money.mul(toMoney(line.unitPrice ?? product.price), saleFactor),
+      );
       return {
         productId: product.id,
         menuId: null,
@@ -813,10 +822,12 @@ export class OrdersService {
     const currency = normalizeCurrencyCode(input.currency) || BASE_CURRENCY_CODE;
     const rateKey = normalizeRateKey(input.rateKey);
 
-    // En la moneda base (USD) el monto ya esta en dolares: no hay nada que
-    // convertir ni tasa que resolver.
+    // En la moneda base (USD) el monto ya esta en dolares: se lleva al valor de
+    // venta de la vitrina (misma regla que los productos), sin tasa manual.
     if (currency === BASE_CURRENCY_CODE) {
-      return { base: amount, entered: amount, currency, rate: null, rateKey };
+      const saleFactor = await this.rates.saleFactor(companyId);
+      const base = money.mul(amount, saleFactor);
+      return { base, entered: amount, currency, rate: null, rateKey };
     }
 
     const conversion = await this.rates.resolveAmount(
@@ -987,9 +998,9 @@ export class OrdersService {
         throw new BadRequestException('El pedido ya esta pagado en su totalidad');
       }
 
-      // `rateKey` es la tasa de cobro elegida por el operador (el cajero envia la
-      // configurada por la empresa); sin ella se usa la activa del sistema.
-      const rateKey = normalizeRateKey(dto.rateKey);
+      // El cobro se valora SIEMPRE a la tasa oficial del dolar del BCV. La tasa
+      // personalizada del local es solo de vitrina y no puede alterar el pago.
+      const rateKey = CHARGE_RATE_KEY;
       if (dto.method === PaymentMethod.MIXED && !dto.parts?.length) {
         throw new BadRequestException(
           'El pago mixto requiere el desglose de las partes (parts)',
@@ -1003,7 +1014,6 @@ export class OrdersService {
                 amount: dto.amount,
                 method: dto.method,
                 currency: dto.currency,
-                rateKey: dto.rateKey,
               },
             ];
       const inputChange = dto.change ?? [];
@@ -1024,8 +1034,9 @@ export class OrdersService {
       }
       const paymentPhotoUrl = needsProof ? (dto.paymentPhotoUrl ?? null) : null;
 
-      // Cada parte se convierte con SU moneda y SU tasa: en un pago mixto el
-      // cliente puede entregar dolares en efectivo y bolivares por transferencia.
+      // Cada parte se convierte desde SU moneda a la tasa oficial del BCV: en un
+      // pago mixto el cliente puede entregar dolares en efectivo y bolivares por
+      // transferencia.
       const parts: PaymentBreakdownLine[] = [];
       for (const part of inputParts) {
         const partAmount = toMoney(part.amount);
@@ -1037,12 +1048,11 @@ export class OrdersService {
             'Cada parte del pago debe tener un metodo concreto (no MIXTO)',
           );
         }
-        const partRateKey = normalizeRateKey(part.rateKey) ?? rateKey;
+        const partRateKey = CHARGE_RATE_KEY;
         const conversion = await this.rates.resolvePayment(
           companyId,
           partAmount,
           part.currency,
-          partRateKey,
         );
         parts.push({
           method: part.method,
@@ -1065,12 +1075,11 @@ export class OrdersService {
             'Cada parte del vuelto debe tener un metodo concreto (no MIXTO)',
           );
         }
-        const changeRateKey = normalizeRateKey(change.rateKey) ?? rateKey;
+        const changeRateKey = CHARGE_RATE_KEY;
         const conversion = await this.rates.resolvePayment(
           companyId,
           changeAmount,
           change.currency,
-          changeRateKey,
         );
         changes.push({
           method: change.method,
@@ -1089,11 +1098,10 @@ export class OrdersService {
       }
       const computedApplied = money.sub(grossBase, changeBase);
 
-      // El cajero cobra el precio que ve en pantalla: con la tasa de cobro el cobro
-      // en divisas (o en bolivares, el precio de la pantalla) puede valer mas que el
-      // total del pedido —que esta en dolares— sin que sea un exceso real. Se ajusta
-      // al saldo cuando el exceso es solo el redondeo de convertir a otra moneda.
-      const limit = await this.rates.chargeBalance(companyId, balance, rateKey);
+      // El pedido esta en USD y el cobro se valora a la tasa oficial del BCV:
+      // el monto aplicado nunca puede superar el saldo pendiente. Solo se
+      // tolera la diferencia de redondeo de convertir a otra moneda.
+      const limit = balance;
       const baseAmount = fitToBalance(computedApplied, limit);
       if (baseAmount === null) {
         throw new BadRequestException(

@@ -29,10 +29,9 @@ export interface CompanyPreferences {
    */
   showBcvPrice: boolean | null;
   /**
-   * Tasa del dolar (bolivares por 1 USD) con la que el punto de venta cobra: el
-   * cajero convierte con ella el saldo del pedido, el efectivo recibido y el
-   * vuelto, sin preguntar nada. `null` = sin configurar: se cobra con la tasa
-   * activa del sistema (la personalizada del dolar o, si no existe, la del BCV).
+   * Tasa del dolar con la que el punto de venta cobra. El valor util es
+   * `BCV_USD` (o `null`, que significa lo mismo): la tasa personalizada es solo
+   * de vitrina y no participa en ningun cobro.
    */
   chargeRateKey: ChargeRateKey | null;
   /**
@@ -132,9 +131,8 @@ function normalizeShowBcvPrice(value: boolean | null | undefined): boolean | nul
 }
 
 /**
- * Deja la tasa de cobro del cajero en una de las tasas del dolar permitidas o en
- * `null` para cobrar con la tasa activa del sistema. Cualquier otro valor se
- * descarta, igual que en la interfaz.
+ * Deja la tasa de cobro en la unica tasa valida (`BCV_USD`) o en `null`, que
+ * significa lo mismo. La tasa personalizada se descarta: es solo de vitrina.
  */
 function normalizeChargeRateKey(value: string | null | undefined): ChargeRateKey | null {
   if (value === null || value === undefined) return null;

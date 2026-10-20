@@ -309,8 +309,13 @@ function createService(
     inventory as unknown as InventoryService,
     cash as unknown as CashService,
     // Cada test declara solo las tasas que usa: todo cobro guarda ademas el
-    // historial de tasas del dia, asi que viene simulado por defecto.
-    { ratesHistory: jest.fn(async () => RATES_HISTORY), ...rates } as unknown as RatesService,
+    // historial de tasas del dia, asi que viene simulado por defecto. Sin tasa
+    // personalizada el factor de venta es 1 (se cobra el precio base).
+    {
+      ratesHistory: jest.fn(async () => RATES_HISTORY),
+      saleFactor: jest.fn(async () => 1),
+      ...rates,
+    } as unknown as RatesService,
     menus as unknown as MenusService,
     notifications as unknown as NotificationsService | undefined,
   );
@@ -783,6 +788,25 @@ describe('OrdersService.create (costo de delivery)', () => {
     expect(data.total).toBe(107.4);
   });
 
+  it('lleva los precios del catalogo al valor de venta de la vitrina', async () => {
+    // Precio de catalogo 50 USD, vitrina 10% mas cara en USD: la linea y el
+    // subtotal se guardan ya inflados, que es lo que luego suma la caja.
+    const rates = { saleFactor: jest.fn(async () => 1.1) };
+    const { service, tx } = createService(null, rates);
+
+    await service.create(
+      COMPANY_ID,
+      { items: [{ productId: 'p1', quantity: 2 }] },
+      'u1',
+    );
+
+    const data = tx.order.create.mock.calls[0][0].data;
+    const createdItems = data.items as { create: { unitPrice: number }[] };
+    expect(createdItems.create[0].unitPrice).toBe(55);
+    expect(data.subtotal).toBe(110);
+    expect(data.total).toBe(110);
+  });
+
   it('deja el delivery en cero y sin contexto cuando el pedido no lo trae', async () => {
     const { service, tx } = createService(null);
 
@@ -897,7 +921,7 @@ describe('OrdersService.addPayment (tasa de cobro del cajero)', () => {
     rates.resolvePayment.mockClear();
   });
 
-  it('cobra con la tasa de cobro configurada por la empresa', async () => {
+  it('cobra siempre a la tasa oficial del BCV aunque el pago traiga otra clave', async () => {
     const { service, tx } = createService(order(), rates, cash);
 
     await service.addPayment(
@@ -912,19 +936,14 @@ describe('OrdersService.addPayment (tasa de cobro del cajero)', () => {
       'u1',
     );
 
-    expect(rates.resolvePayment).toHaveBeenCalledWith(
-      COMPANY_ID,
-      3650,
-      'VES',
-      'CUSTOM_USD',
-    );
+    expect(rates.resolvePayment).toHaveBeenCalledWith(COMPANY_ID, 3650, 'VES');
 
     const payment = tx.orderPayment.create.mock.calls[0][0].data;
     expect(payment.exchangeRate).toBe(36.5);
     expect(payment.baseAmount).toBe(100);
     expect(payment.currency).toBe('VES');
-    // El cobro guarda con que tasa se cobro y la foto del dia completa.
-    expect(payment.rateKey).toBe('CUSTOM_USD');
+    // El cobro guarda la tasa aplicada (BCV) y la foto del dia completa.
+    expect(payment.rateKey).toBe('BCV_USD');
     expect(JSON.parse(String(payment.ratesHistory))).toEqual(RATES_HISTORY);
   });
 
@@ -955,7 +974,7 @@ describe('OrdersService.addPayment (tasa de cobro del cajero)', () => {
     expect(history?.stale).toBe(false);
   });
 
-  it('sin tasa elegida el cobro queda sin clave (la activa del sistema)', async () => {
+  it('un cobro sin clave tambien guarda la tasa BCV aplicada', async () => {
     const { service, tx } = createService(order(), rates, cash);
 
     await service.addPayment(
@@ -966,7 +985,7 @@ describe('OrdersService.addPayment (tasa de cobro del cajero)', () => {
     );
 
     const payment = tx.orderPayment.create.mock.calls[0][0].data;
-    expect(payment.rateKey).toBeNull();
+    expect(payment.rateKey).toBe('BCV_USD');
     expect(parseRatesHistory(payment.ratesHistory)?.rates).toHaveLength(3);
   });
 
@@ -1067,7 +1086,7 @@ describe('OrdersService.addPayment (tasa de cobro del cajero)', () => {
     expect(found.payments?.[0].baseAmount).toBe(100);
   });
 
-  it('sin tasa elegida cobra con la tasa activa del sistema', async () => {
+  it('sin tasa elegida cobra con la tasa oficial del BCV', async () => {
     const { service } = createService(order(), rates, cash);
 
     await service.addPayment(
@@ -1077,11 +1096,11 @@ describe('OrdersService.addPayment (tasa de cobro del cajero)', () => {
       'u1',
     );
 
-    // `null` deja que el modulo de tasas use la personalizada del dolar o el BCV.
-    expect(rates.resolvePayment).toHaveBeenCalledWith(COMPANY_ID, 3650, 'VES', null);
+    // El modulo de tasas valora todo cobro a la tasa oficial del BCV.
+    expect(rates.resolvePayment).toHaveBeenCalledWith(COMPANY_ID, 3650, 'VES');
   });
 
-  it('descarta una tasa inventada y cobra con la activa', async () => {
+  it('descarta una tasa inventada y cobra con la oficial del BCV', async () => {
     const { service } = createService(order(), rates, cash);
 
     await service.addPayment(
@@ -1096,23 +1115,21 @@ describe('OrdersService.addPayment (tasa de cobro del cajero)', () => {
       'u1',
     );
 
-    expect(rates.resolvePayment).toHaveBeenCalledWith(COMPANY_ID, 3650, 'VES', null);
+    expect(rates.resolvePayment).toHaveBeenCalledWith(COMPANY_ID, 3650, 'VES');
   });
 
   /**
-   * El cajero cobra el precio que LEE en pantalla (los bolivares del pedido) y lo
-   * pasa a la moneda del pago con la tasa de cobro: con el BCV por debajo de la
-   * tasa personalizada del local, el cobro en divisas vale mas que el total del
-   * pedido y no es un exceso.
+   * El pedido vive en USD y el cobro se valora a la tasa oficial del BCV: un pago
+   * en divisas por el saldo exacto se aplica completo, sin inflarlo con la tasa
+   * personalizada de vitrina.
    */
-  it('acepta el cobro en divisas que vale el precio en bolivares de la pantalla', async () => {
+  it('acepta el cobro en divisas por el saldo exacto en USD', async () => {
     const posRates = {
       resolvePayment: jest.fn(async () => ({
         currency: 'USD',
         exchangeRate: null,
-        baseAmount: 110,
+        baseAmount: 100,
       })),
-      chargeBalance: jest.fn(async () => 110),
     };
     const { service, tx } = createService(order(), posRates, cash);
 
@@ -1120,7 +1137,7 @@ describe('OrdersService.addPayment (tasa de cobro del cajero)', () => {
       COMPANY_ID,
       'o1',
       {
-        amount: 110,
+        amount: 100,
         method: PaymentMethod.CASH,
         currency: 'USD',
         rateKey: 'BCV_USD',
@@ -1128,9 +1145,9 @@ describe('OrdersService.addPayment (tasa de cobro del cajero)', () => {
       'u1',
     );
 
-    expect(posRates.chargeBalance).toHaveBeenCalledWith(COMPANY_ID, 100, 'BCV_USD');
     const payment = tx.orderPayment.create.mock.calls[0][0].data;
-    expect(payment.baseAmount).toBe(110);
+    expect(payment.rateKey).toBe('BCV_USD');
+    expect(payment.baseAmount).toBe(100);
   });
 
   /**

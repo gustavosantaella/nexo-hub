@@ -23,7 +23,7 @@ import {
   PAYMENT_STATUS_CLASSES,
   PAYMENT_STATUS_LABELS,
 } from '../../core/constants/domain';
-import { BASE_CURRENCY, RATE_META, type RateMeta } from '../../core/constants/currency';
+import { BASE_CURRENCY, CHARGE_RATE_KEY, RATE_META, type RateMeta } from '../../core/constants/currency';
 import { AuthService } from '../../core/services/auth.service';
 import { CashService } from '../../core/services/cash.service';
 import { CustomersService, ProductsService } from '../../core/services/catalog.service';
@@ -322,8 +322,8 @@ const NEXT_STATUS: Partial<Record<OrderStatus, OrderStatus>> = {
                     <td>{{ order.customer?.name || '—' }}</td>
                     <td>{{ typeLabels[order.type] }}</td>
                     <td class="text-center">{{ order._count?.items ?? order.items?.length ?? 0 }}</td>
-                    <td class="text-right"><app-money [amount]="order.total" alignEnd="true" /></td>
-                    <td class="text-right"><app-money [amount]="order.paidAmount" alignEnd="true" /></td>
+                    <td class="text-right"><app-money displayRateKey="BCV_USD" [amount]="order.total" alignEnd="true" /></td>
+                    <td class="text-right"><app-money displayRateKey="BCV_USD" [amount]="order.paidAmount" alignEnd="true" /></td>
                     <td>
                       <span class="badge" [class]="statusClasses[order.status]">
                         {{ statusLabels[order.status] }}
@@ -1013,7 +1013,7 @@ const NEXT_STATUS: Partial<Record<OrderStatus, OrderStatus>> = {
                       </span>
                       @if (payment.currency && payment.currency !== baseCurrency.code) {
                         <span class="block text-[10px] text-slate-400">
-                          = {{ money(payment.baseAmount) }}
+                          = {{ orderMoney(payment.baseAmount) }}
                           @if (payment.exchangeRate) {
                             · × {{ payment.exchangeRate }}
                           }
@@ -1052,22 +1052,22 @@ const NEXT_STATUS: Partial<Record<OrderStatus, OrderStatus>> = {
             }
           </div>
           <div class="space-y-1 text-sm">
-            <div class="flex justify-between"><span class="text-slate-500">Subtotal</span><app-money [amount]="order.subtotal" alignEnd="true" /></div>
+            <div class="flex justify-between"><span class="text-slate-500">Subtotal</span><app-money displayRateKey="BCV_USD" [amount]="order.subtotal" alignEnd="true" /></div>
             <div class="flex justify-between"><span class="text-slate-500">Descuento</span><app-money [amount]="-order.discount" alignEnd="true" /></div>
-            <div class="flex justify-between"><span class="text-slate-500">IGV</span><app-money [amount]="order.tax" alignEnd="true" /></div>
+            <div class="flex justify-between"><span class="text-slate-500">IGV</span><app-money displayRateKey="BCV_USD" [amount]="order.tax" alignEnd="true" /></div>
             @if (order.tip > 0) {
-              <div class="flex justify-between"><span class="text-slate-500">Propina</span><app-money [amount]="order.tip" alignEnd="true" /></div>
+              <div class="flex justify-between"><span class="text-slate-500">Propina</span><app-money displayRateKey="BCV_USD" [amount]="order.tip" alignEnd="true" /></div>
             }
             @if (order.deliveryFee > 0) {
-              <div class="flex justify-between"><span class="text-slate-500">Delivery</span><app-money [amount]="order.deliveryFee" alignEnd="true" /></div>
+              <div class="flex justify-between"><span class="text-slate-500">Delivery</span><app-money displayRateKey="BCV_USD" [amount]="order.deliveryFee" alignEnd="true" /></div>
             }
-            <div class="flex justify-between border-t border-slate-200 pt-1 text-base font-semibold"><span>Total</span><app-money [amount]="order.total" alignEnd="true" strong /></div>
+            <div class="flex justify-between border-t border-slate-200 pt-1 text-base font-semibold"><span>Total</span><app-money displayRateKey="BCV_USD" [amount]="order.total" alignEnd="true" strong /></div>
             <app-rate-conversions
-              [amount]="amountInDisplay(order.total)"
+              [amount]="orderDisplayAmount(order.total)"
               [currency]="moneyBaseCode()"
             />
-            <div class="flex justify-between"><span class="text-slate-500">Pagado</span><app-money [amount]="order.paidAmount" alignEnd="true" /></div>
-            <div class="flex justify-between font-semibold text-brand-700"><span>Saldo</span><app-money [amount]="balance(order)" alignEnd="true" strong /></div>
+            <div class="flex justify-between"><span class="text-slate-500">Pagado</span><app-money displayRateKey="BCV_USD" [amount]="order.paidAmount" alignEnd="true" /></div>
+            <div class="flex justify-between font-semibold text-brand-700"><span>Saldo</span><app-money displayRateKey="BCV_USD" [amount]="balance(order)" alignEnd="true" strong /></div>
           </div>
         </div>
       }
@@ -1393,14 +1393,14 @@ const NEXT_STATUS: Partial<Record<OrderStatus, OrderStatus>> = {
       @if (payOrder(); as order) {
         <div class="space-y-3">
           <div class="rounded-lg bg-slate-50 px-3 py-2 text-sm">
-            <div class="flex justify-between"><span class="text-slate-500">Total</span><app-money [amount]="order.total" alignEnd="true" /></div>
+            <div class="flex justify-between"><span class="text-slate-500">Total</span><app-money displayRateKey="BCV_USD" [amount]="order.total" alignEnd="true" /></div>
             @if (order.deliveryFee > 0) {
               <div class="flex justify-between">
                 <span class="text-slate-500">Delivery (incluido)</span>
-                <app-money [amount]="order.deliveryFee" alignEnd="true" />
+                <app-money displayRateKey="BCV_USD" [amount]="order.deliveryFee" alignEnd="true" />
               </div>
             }
-            <div class="flex justify-between"><span class="text-slate-500">Pagado</span><app-money [amount]="order.paidAmount" alignEnd="true" /></div>
+            <div class="flex justify-between"><span class="text-slate-500">Pagado</span><app-money displayRateKey="BCV_USD" [amount]="order.paidAmount" alignEnd="true" /></div>
             <div class="flex justify-between font-semibold"><span>Saldo pendiente</span><app-money [amount]="balance(order)" alignEnd="true" strong /></div>
           </div>
           <div class="grid grid-cols-2 gap-2">
@@ -1673,11 +1673,10 @@ export class OrdersPage implements OnInit {
   /** Efectivo entregado por el cliente (en `chargeCurrency`). */
   receivedAmount = 0;
   /**
-   * **Tasa de cobro** que fijó la empresa en Configuración → Cajero (`null` = la
-   * tasa activa del sistema): es la que lleva el precio que se lee en pantalla a
-   * la moneda con la que paga el cliente.
+   * **Tasa de cobro**: siempre la oficial del BCV. La tasa personalizada solo
+   * define el precio de vitrina en bolívares y nunca se usa para cobrar.
    */
-  readonly chargeRateKey = this.preferences.chargeRateKey;
+  readonly chargeRateKey = () => CHARGE_RATE_KEY;
   readonly taxRatePresets = [0, 10, 18];
   /** Propinas de atajo del formulario (0 % = sin propina). */
   readonly tipRatePresets = TIP_PERCENT_PRESETS;
@@ -2078,13 +2077,15 @@ export class OrdersPage implements OnInit {
   balanceIn(currency: string): number {
     const order = this.payOrder();
     const balance = order ? this.balance(order) : 0;
-    return this.rates.chargeAmount(balance, currency, this.chargeRateKey());
+    return this.rates.chargeAmount(balance, currency);
   }
 
-  /** Saldo pendiente tal como se lee en pantalla (la moneda de los precios). */
+  /** Saldo pendiente tal como se lee en pantalla, a la tasa oficial del BCV. */
   get payDisplayBalance(): number {
     const order = this.payOrder();
-    return order ? this.rates.displayAmount(this.balance(order)) : 0;
+    return order
+      ? this.rates.chargeAmount(this.balance(order), displayBaseCode())
+      : 0;
   }
 
   /**
@@ -2096,6 +2097,17 @@ export class OrdersPage implements OnInit {
     const code = displayBaseCode();
     if (code === BASE_CURRENCY.code) return value;
     return this.rates.fromBase(value, code) ?? value;
+  }
+
+  /** Monto de venta (USD) en la moneda de pantalla a la tasa oficial del BCV. */
+  orderDisplayAmount(value: number): number {
+    return this.rates.chargeAmount(value, displayBaseCode());
+  }
+
+  /** Formatea un monto de venta (ya en USD) en la moneda de pantalla a la tasa BCV. */
+  orderMoney(value: number | null | undefined): string {
+    const code = displayBaseCode();
+    return moneyIn(this.rates.chargeAmount(value, code), code);
   }
 
   /** Formatea un monto en la moneda indicada. */
@@ -2203,7 +2215,6 @@ export class OrdersPage implements OnInit {
     const limit = this.rates.chargeAmount(
       this.balance(order),
       currency,
-      this.chargeRateKey(),
     );
     if (amount > limit + 0.02) {
       this.toast.error('El monto excede el saldo pendiente');
@@ -2388,10 +2399,9 @@ export class OrdersPage implements OnInit {
    * precios) pasado a la moneda con la que paga el cliente.
    */
   get chargeTotal(): number {
-    return this.rates.chargeAmount(
+    return this.rates.saleChargeAmount(
       this.total,
       this.chargeCurrency,
-      this.chargeRateKey(),
     );
   }
 
@@ -2692,7 +2702,7 @@ export class OrdersPage implements OnInit {
             this.reload();
             return;
           }
-          this.payCreatedOrder(order);
+          this.payCreatedOrder(order, chargeTotal);
         },
         error: (error) => {
           this.saving.set(false);
@@ -2702,19 +2712,12 @@ export class OrdersPage implements OnInit {
   }
 
   /** Cobra de inmediato la venta recien creada (monto = total del pedido). */
-  private payCreatedOrder(order: Order): void {
+  private payCreatedOrder(order: Order, visibleCharge?: number | null): void {
     const currency = this.chargeCurrency || BASE_CURRENCY.code;
-    const configuredRateKey = this.chargeRateKey();
     // El monto se envia en la moneda del cobro; el backend guarda ademas el
-    // equivalente en la moneda base del sistema y compara el cobro con el saldo
-    // del pedido usando esta misma tasa de cobro.
-    const amount = this.rates.chargeAmount(
-      order.total,
-      currency,
-      configuredRateKey,
-    );
-    // La tasa de cobro solo viaja si el pago va en una moneda distinta a la que
-    // se ve en pantalla: en la misma moneda el monto ya es el precio final.
+    // equivalente en USD y lo valida contra el saldo. Se conserva el monto visible
+    // antes de crear el pedido para no perder los bolívares exactos de la vitrina.
+    const amount = visibleCharge ?? this.rates.chargeAmount(order.total, currency);
     const rateKey = this.rates.chargeKeyFor(currency);
     // Igual que en el cobro de un pedido abierto: se envia lo recibido y el
     // vuelto para que la caja registre ambos movimientos.

@@ -4,6 +4,7 @@ import { environment } from '../../../environments/environment';
 import {
   BASE_CURRENCY,
   BASE_CURRENCY_CODE,
+  CHARGE_RATE_KEY,
   LOCAL_CURRENCY_CODE,
   RATE_META,
   currencyMeta,
@@ -293,17 +294,24 @@ export class RatesService {
   /**
    * Convierte un monto (en moneda base, USD) a bolívares con cada tasa activa.
    * Devuelve `[]` mientras las tasas no estén cargadas.
+   *
+   * La tasa personalizada no se lista: solo define el precio de vitrina de los
+   * productos y no es una tasa de cobro ni una conversión que el operador deba
+   * comparar debajo de cada monto. Las tasas oficiales (BCV dólar/euro) siguen
+   * visibles.
    */
   conversions(amount: number | null | undefined): RateConversion[] {
     const value = Number(amount ?? 0);
-    return this.rates().map((option) => ({
-      key: option.key,
-      label: RATE_META[option.key]?.shortLabel ?? option.key,
-      rate: option.rate,
-      amount: value * option.rate,
-      text: bs(value * option.rate),
-      inBs: true,
-    }));
+    return this.rates()
+      .filter((option) => option.key !== 'CUSTOM_USD')
+      .map((option) => ({
+        key: option.key,
+        label: RATE_META[option.key]?.shortLabel ?? option.key,
+        rate: option.rate,
+        amount: value * option.rate,
+        text: bs(value * option.rate),
+        inBs: true,
+      }));
   }
 
   /**
@@ -316,18 +324,32 @@ export class RatesService {
    * código, el dólar del BCV y el del local se ven iguales, y en un listado no hay
    * forma de saber con qué tasa se convirtió el monto.
    */
-  currencyConversions(amount: number | null | undefined): RateConversion[] {
+  currencyConversions(
+    amount: number | null | undefined,
+    bridgeKey?: RateKey | null,
+  ): RateConversion[] {
     const usd = Number(amount ?? 0);
-    const bsPerUsd = this.bsPerUsd();
+    const bsPerUsd = bridgeKey ? this.bsPerUsdWith(bridgeKey) : this.bsPerUsd();
     const base = this.baseCode();
     if (!bsPerUsd) return [];
 
     return this.currencies()
       .filter((item) => item.enabled && item.code !== base && !!item.bsPerUnit)
+      // Con un puente oficial (BCV) el dolar de vitrina no se repite: la linea
+      // oficial ya viene en `conversionLines` y este equivalente saldria con la
+      // tasa personalizada.
+      .filter(
+        (item) =>
+          !(bridgeKey && item.code === BASE_CURRENCY_CODE && item.source === 'CUSTOM'),
+      )
       .map((item) => {
         const bsPerUnit = item.bsPerUnit as number;
         const value = round2((usd * bsPerUsd) / bsPerUnit);
-        const source = rateSourceLabel(item.source);
+        // La tasa personalizada no se rotula: es el precio de vitrina, no una
+        // tasa de cobro. La moneda se muestra sola (`USD`) y el monto sigue
+        // siendo el equivalente de vitrina.
+        const source =
+          item.source === 'CUSTOM' ? '' : rateSourceLabel(item.source);
         return {
           key: item.code,
           code: item.code,
@@ -355,13 +377,18 @@ export class RatesService {
    * Sin esto, con la moneda base en bolívares el listado perdía las tasas: solo
    * aparecían las monedas (`USD`, `EUR`) y no se veía el dólar del BCV.
    */
-  conversionLines(amount: number | null | undefined): RateConversion[] {
+  conversionLines(
+    amount: number | null | undefined,
+    bridgeKey?: RateKey | null,
+  ): RateConversion[] {
     const usd = Number(amount ?? 0);
-    const bsPerUsd = this.bsPerUsd();
-    const options = this.rates();
+    const bsPerUsd = bridgeKey ? this.bsPerUsdWith(bridgeKey) : this.bsPerUsd();
+    const options = this.rates().filter((option) => option.key !== 'CUSTOM_USD');
     // Sin la tasa puente ni tasas del sistema no hay nada que rotular: quedan las
     // monedas configuradas (`currencyConversions`).
-    if (!bsPerUsd || options.length === 0) return this.currencyConversions(amount);
+    if (!bsPerUsd || options.length === 0) {
+      return this.currencyConversions(amount, bridgeKey);
+    }
 
     // Bolívares que representa el monto (misma cuenta que `format.money()`): al
     // dividirlos por la tasa de cada línea queda el equivalente en su moneda.
@@ -382,7 +409,7 @@ export class RatesService {
     const covered = new Set(byRate.map((item) => item.rate));
     return [
       ...byRate,
-      ...this.currencyConversions(amount).filter((item) => !covered.has(item.rate)),
+      ...this.currencyConversions(amount, bridgeKey).filter((item) => !covered.has(item.rate)),
     ];
   }
 
@@ -429,23 +456,33 @@ export class RatesService {
   }
 
   /**
-   * Monto a cobrar en `currency` por un monto del sistema (`amount`, en dólares).
-   *
-   * El cajero **cobra el precio que ve**: `amount` se lleva primero a la moneda de
-   * visualización (los bolívares que lee el cajero) y de ahí a la moneda del cobro
-   * con la **tasa de cobro** que eligió la empresa (`key`; `null` = la activa del
-   * sistema). Por eso el cobro en divisas puede valer más que el monto guardado: la
-   * tasa de cobro (el BCV, por ejemplo) no es la misma con la que se muestran los
-   * precios (la personalizada del local), y el precio que el cliente paga es el que
-   * está en pantalla.
-   *
-   * Con la moneda de cobro igual a la de visualización se cobra el monto tal cual
-   * se lee, sin dar la vuelta por la moneda base.
+   * Monto a cobrar en `currency` por un monto de venta ya expresado en USD (por
+   * ejemplo el total de un pedido guardado): lo convierte directamente a la tasa
+   * oficial del BCV.
    */
   chargeAmount(
     amount: number | null | undefined,
     currency?: string | null,
-    key?: RateKey | null,
+  ): number {
+    const value = round2(Number(amount ?? 0));
+    const target =
+      String(currency ?? '').trim().toUpperCase() || BASE_CURRENCY_CODE;
+    if (target === BASE_CURRENCY_CODE) return value;
+    return this.fromBase(value, target, CHARGE_RATE_KEY) ?? value;
+  }
+
+  /**
+   * Monto a cobrar por un precio del catalogo (USD base): primero se lleva al
+   * precio de vitrina en bolívares con la tasa personalizada y luego se valora a
+   * la tasa oficial del BCV.
+   *
+   * Ejemplo: $ 10 con personalizada 970 y BCV 881,87 -> Bs 9.700 de vitrina ->
+   * $ 10,99 de venta. Es el mismo cálculo que aplica el backend al crear el
+   * pedido.
+   */
+  saleChargeAmount(
+    amount: number | null | undefined,
+    currency?: string | null,
   ): number {
     const shown = this.displayAmount(amount);
     const display = displayBaseCode();
@@ -453,27 +490,18 @@ export class RatesService {
       String(currency ?? '').trim().toUpperCase() || BASE_CURRENCY_CODE;
     if (target === display) return shown;
 
-    const base = this.toBase(shown, display, key);
+    const base = this.toBase(shown, display, CHARGE_RATE_KEY);
     if (base === null) return shown;
     if (target === BASE_CURRENCY_CODE) return base;
-    return this.fromBase(base, target, key) ?? shown;
+    return this.fromBase(base, target, CHARGE_RATE_KEY) ?? shown;
   }
 
   /**
-   * Clave de tasa que debe viajar con un cobro en `currency`.
-   *
-   * La tasa de cobro solo reexpresa el precio que se ve en pantalla cuando el
-   * cliente paga en otra moneda. Si paga en la misma moneda que tiene delante
-   * (por ejemplo, los precios se ven en bolívares y paga con tarjeta en
-   * bolívares), el monto ya es el precio final y NO se le aplica tasa: mandarla
-   * haría que el backend valorara esos bolívares con otra tasa (el BCV sobre un
-   * precio mostrado con la personalizada) y el pedido quedaría con saldo
-   * negativo aunque el cliente pagó exactamente lo que decía la pantalla.
+   * Clave de tasa que debe viajar con un cobro. Es siempre `BCV_USD`: el
+   * backend ignora cualquier otra y valora el pago a la tasa oficial.
    */
-  chargeKeyFor(currency?: string | null): RateKey | null {
-    const target =
-      String(currency ?? '').trim().toUpperCase() || BASE_CURRENCY_CODE;
-    return target === displayBaseCode() ? null : this.preferences.chargeRateKey();
+  chargeKeyFor(_currency?: string | null): RateKey {
+    return CHARGE_RATE_KEY;
   }
 
   // ===========================================================================
@@ -589,10 +617,14 @@ export class RatesService {
     }
 
     const entered = Number(bsAmount ?? NaN);
-    const bs = Number.isFinite(entered) ? entered : usd * (this.bsPerUsd() ?? 0);
-    if (!bs) return null;
+    // Con los precios en bolívares el monto guardado ya está valorado a la tasa
+    // del BCV: se usan esos mismos bolívares. `bsPerUsd()` incluye la tasa
+    // personalizada del local y aquí daría un dólar oficial más alto que el
+    // cobrado (p. ej. $ 17,57 -> $ 19,29 con personalizada 970 y BCV 883,45).
+    const bsTotal = Number.isFinite(entered) ? entered : usd * rate;
+    if (!bsTotal) return null;
 
-    const value = round2(bs / rate);
+    const value = round2(bsTotal / rate);
     return {
       key: BCV_USD_RATE_KEY,
       code: BASE_CURRENCY_CODE,

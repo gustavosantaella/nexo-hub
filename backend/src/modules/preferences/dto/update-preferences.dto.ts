@@ -98,7 +98,7 @@ export class UpdatePreferencesDto {
 
   @ApiPropertyOptional({
     description:
-      'Tasa del dolar con la que el cajero cobra (`BCV_USD` o `CUSTOM_USD`). `null` = la tasa activa del sistema (la personalizada del dolar o, si no existe, la del BCV)',
+      'Tasa del dolar con la que el cajero cobra (`BCV_USD`). `null` equivale a la misma tasa oficial del BCV; la tasa personalizada nunca se usa para cobrar',
     enum: CHARGE_RATE_KEYS,
     example: 'BCV_USD',
     nullable: true,

@@ -145,7 +145,15 @@ export class RateConversionsComponent {
     return items.filter((item) => this.rates.showsConversion(item.currency));
   }
 
+  /**
+   * Tasas que se muestran debajo de un monto. La personalizada no se incluye:
+   * es la tasa de vitrina con la que se pintan los precios en bolívares, no una
+   * tasa de cobro ni una conversión comparable.
+   */
   private rateOptions() {
-    return this.rates.rates().filter((option) => option.rate > 0);
+    return this.rates
+      .rates()
+      .filter((option) => option.key !== 'CUSTOM_USD')
+      .filter((option) => option.rate > 0);
   }
 }

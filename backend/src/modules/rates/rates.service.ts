@@ -29,6 +29,16 @@ export { CUSTOM_RATE_KEY } from './rates.repository';
 export type RateKey = 'BCV_USD' | 'BCV_EUR' | 'CUSTOM_USD';
 
 /**
+ * Tasa con la que se cobran TODOS los movimientos de dinero.
+ *
+ * La tasa personalizada (`CUSTOM_USD`) solo sirve para mostrar los precios del
+ * catalogo en bolivares; nunca se usa para valorar un cobro, un pago, un fondo
+ * de caja ni una cuenta por cobrar/pagar. El cobro se hace siempre a la tasa
+ * oficial del dolar del BCV.
+ */
+export const CHARGE_RATE_KEY: RateKey = 'BCV_USD';
+
+/**
  * Tasas que el operador puede ELEGIR para convertir un monto del catalogo.
  *
  * Las tres se expresan en bolivares (por USD o por EUR), asi que cualquiera
@@ -545,17 +555,43 @@ export class RatesService {
   }
 
   /**
-   * Convierte un pago a la moneda base (USD) validando que la moneda este
-   * aceptada por el local y tenga tasa disponible.
+   * Convierte un movimiento de dinero (cobro, pago, fondo de caja, cuenta) a la
+   * moneda base (USD).
    *
-   * `rateKey` es la tasa elegida para ESE monto (opcional): reemplaza al puente
-   * por defecto (`personalizada ?? BCV dolar`).
+   * SIEMPRE usa la tasa oficial del dolar del BCV: la tasa personalizada es solo
+   * de vitrina y nunca puede alterar el valor de un cobro.
    */
   async resolvePayment(
     companyId: string,
     amount: number,
     currency?: string | null,
+  ): Promise<PaymentConversion> {
+    return this.resolveConversion(companyId, amount, currency, CHARGE_RATE_KEY);
+  }
+
+  /**
+   * Contexto de moneda de un monto que NO es un cobro: precio, costo o costo
+   * unitario del catalogo, o la valorizacion de un movimiento de inventario.
+   *
+   * `rateKey` (opcional) es la tasa elegida por el operador para ESE monto; sin
+   * ella se usa la tasa activa de vitrina (la personalizada o, si no existe, la
+   * oficial del BCV).
+   */
+  async resolveAmount(
+    companyId: string,
+    amount: number,
+    currency?: string | null,
     rateKey?: string | null,
+  ): Promise<PaymentConversion> {
+    return this.resolveConversion(companyId, amount, currency, rateKey);
+  }
+
+  /** Conversion validada de un monto a la moneda base con la tasa indicada. */
+  private async resolveConversion(
+    companyId: string,
+    amount: number,
+    currency: string | null | undefined,
+    rateKey: string | null | undefined,
   ): Promise<PaymentConversion> {
     const normalized = this.normalizeCurrency(currency);
     const setting = (await this.currencies.list(companyId)).find(
@@ -581,36 +617,6 @@ export class RatesService {
     }
 
     return conversion;
-  }
-
-  /**
-   * Equivalente en la moneda base (USD) de un monto en `currency`.
-   */
-  async toBaseAmount(
-    companyId: string,
-    amount: number,
-    currency?: string | null,
-  ): Promise<number> {
-    return (await this.resolvePayment(companyId, amount, currency)).baseAmount;
-  }
-
-  /**
-   * Contexto de moneda de un monto que NO es un cobro: precio, costo o costo
-   * unitario del catalogo, o la valorizacion de un movimiento de inventario.
-   *
-   * Hace exactamente el mismo calculo que `resolvePayment` (`baseAmount` en USD +
-   * la tasa aplicada), pero con el nombre del dominio del catalogo, que es quien
-   * lo usa desde productos, menus e inventario.
-   *
-   * `rateKey` (opcional) es la tasa elegida por el operador para ESE monto.
-   */
-  async resolveAmount(
-    companyId: string,
-    amount: number,
-    currency?: string | null,
-    rateKey?: string | null,
-  ): Promise<PaymentConversion> {
-    return this.resolvePayment(companyId, amount, currency, rateKey);
   }
 
   /**
@@ -644,57 +650,29 @@ export class RatesService {
   }
 
   /**
-   * Saldo que puede cubrir un cobro hecho con la **tasa de cobro** `rateKey`.
+   * Factor que convierte un precio de catalogo (USD base) al monto de venta en
+   * USD que se cobra: el precio de vitrina en bolivares usa la tasa personalizada
+   * y luego se valora a la tasa oficial del BCV.
    *
-   * El cajero cobra el precio que lee en pantalla, y los precios se muestran en
-   * la moneda que la empresa eligio para el cajero (`priceCurrency`), no
-   * necesariamente en la moneda base contable: cuando la tasa de cobro no es la
-   * activa (el BCV en vez de la personalizada del local), el cobro en divisas vale
-   * MAS que el total del pedido —que esta en dolares— sin que sea un exceso real,
-   * y al cobrar en bolivares el cliente paga el precio de la pantalla. Esta es la
-   * misma conversion que hace el punto de venta antes de mandar el cobro.
+   *   venta USD = precio USD × tasa personalizada ÷ tasa BCV
    *
-   * Sin tasa elegida devuelve el saldo tal cual (`fitToBalance` sigue comparando en
-   * dolares); con la empresa mostrando los precios en dolares, tambien.
+   * Sin tasa personalizada el factor es 1 (se cobra el precio base).
    */
-  async chargeBalance(
-    companyId: string,
-    balance: number,
-    rateKey?: string | null,
-  ): Promise<number> {
-    const key = normalizeRateKey(rateKey);
-    if (!key) return balance;
-
-    const displayCode = await this.chargeDisplayCode(companyId);
-    if (displayCode === BASE_CURRENCY_CODE) return balance;
-
-    const shown = convertFromBase(
-      balance,
-      displayCode,
-      await this.conversionRates(companyId, displayCode, null),
-    );
-    if (shown === null) return balance;
-
-    const converted = convertToBase(
-      shown,
-      displayCode,
-      await this.conversionRates(companyId, displayCode, key),
-    );
-    return converted?.baseAmount ?? balance;
-  }
-
-  /**
-   * Moneda en la que el cajero VE los precios: la preferencia de la empresa
-   * (`priceCurrency`) y, sin ella, la moneda base contable. El punto de venta
-   * aplica exactamente esta regla antes de enviar el cobro, asi que el saldo
-   * maximo del backend tiene que usar la misma moneda.
-   */
-  private async chargeDisplayCode(companyId: string): Promise<string> {
-    const [baseCode, preferences] = await Promise.all([
+  async saleFactor(companyId: string): Promise<number> {
+    const [{ payload }, custom, baseCode, preferences] = await Promise.all([
+      this.bcv(),
+      this.customRate(companyId),
       this.currencies.baseCurrencyCode(companyId),
       this.preferences.find(companyId),
     ]);
-    return normalizeCurrencyCode(preferences.priceCurrency) || baseCode;
+    const displayCode =
+      normalizeCurrencyCode(preferences.priceCurrency) || baseCode;
+    // La vitrina solo infla cuando el cajero ve los precios en bolivares. Si la
+    // empresa muestra otra moneda, el precio de venta es el precio base.
+    if (displayCode !== LOCAL_CURRENCY_CODE) return 1;
+    const displayRate = custom?.usd ?? payload.current.usd;
+    const chargeRate = payload.current.usd;
+    return chargeRate > 0 ? displayRate / chargeRate : 1;
   }
 
   /** Lee la tasa personalizada de la empresa (o `null` si no existe). */

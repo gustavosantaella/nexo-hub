@@ -6,12 +6,14 @@ import {
   inject,
 } from '@angular/core';
 import { RatesService, BCV_USD_RATE_KEY } from '../../core/services/rates.service';
-import type { RateConversion } from '../../core/models/rates.model';
+import type { RateConversion, RateKey } from '../../core/models/rates.model';
 import { LOCAL_CURRENCY_CODE } from '../../core/constants/currency';
 import {
   bsCompact,
+  displayBaseCode,
   money,
   moneyCompact,
+  moneyIn,
   moneyInCompact,
   moneyLoaded,
   moneyLoadedCompact,
@@ -99,10 +101,18 @@ export class MoneyComponent {
   @Input() currency: string | null | undefined = null;
   /** Tasa elegida al cargar `entered`, para mostrar esa misma conversión "al cambio". */
   @Input() rateKey: string | null | undefined = null;
+  /**
+   * Fuerza la tasa con la que se pinta el monto base. Las ventas y la caja usan
+   * `BCV_USD`: el monto guardado ya es el valor de venta en USD y debe mostrarse
+   * a la tasa oficial, no con el precio de vitrina.
+   */
+  @Input() displayRateKey: string | null | undefined = null;
 
   readonly showConversions = this.rates.showConversions;
 
   get base(): string {
+    const forced = this.displayWithRate();
+    if (forced) return forced;
     const loaded = this.compact
       ? moneyLoadedCompact(this.entered, this.currency)
       : moneyLoaded(this.entered, this.currency);
@@ -113,8 +123,23 @@ export class MoneyComponent {
   /** Monto exacto (tooltip) cuando el visible va abreviado. */
   get baseTitle(): string | null {
     if (!this.compact) return null;
+    const forced = this.displayWithRate();
+    if (forced) return forced;
     // Con el monto cargado visible, el exacto es el que escribió el operador.
     return moneyLoaded(this.entered, this.currency) ?? money(this.amount);
+  }
+
+  /** Monto base convertido con la tasa forzada (`displayRateKey`), si aplica. */
+  private displayWithRate(): string | null {
+    const key = String(this.displayRateKey ?? '').trim();
+    if (!key) return null;
+    const code = displayBaseCode();
+    const value =
+      code === 'USD'
+        ? Number(this.amount ?? 0)
+        : this.rates.fromBase(this.amount, code, key as RateKey);
+    if (value === null) return null;
+    return this.compact ? moneyInCompact(value, code) : moneyIn(value, code);
   }
 
   /**
@@ -126,10 +151,10 @@ export class MoneyComponent {
    * En modo compacto también se abrevian.
    */
   get conversions(): RateConversion[] {
-    const byRate = !this.rates.convertsBase();
-    const items = byRate
-      ? this.rates.conversions(this.amount)
-      : this.rates.conversionLines(this.amount);
+    const forced = String(this.displayRateKey ?? '').trim() as RateKey | '';
+    const items = this.rates.convertsBase()
+      ? this.rates.conversionLines(this.amount, forced || null)
+      : this.rates.conversions(this.amount);
     const exact = this.loadedRate;
     const resolved = exact
       ? items.map((item) =>

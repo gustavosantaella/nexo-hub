@@ -49,12 +49,9 @@ import {
   type CatalogFileOverview,
 } from '../../core/utils/catalog-file';
 import {
-  CHARGE_RATE_KEYS,
   PreferencesService,
   TIP_PERCENT_PRESETS,
-  normalizeChargeRateKey,
   normalizeTipPercent,
-  type ChargeRateKey,
   type DialogView,
   type PosView,
 } from '../../core/services/preferences.service';
@@ -443,41 +440,39 @@ interface CurrencyRow {
           </div>
         </section>
 
-        <!-- Tasa con la que cobra el cajero: con cuál de las tasas del dólar
-             convierte el saldo del pedido, el efectivo recibido y el vuelto. Por
-             defecto se usa la tasa activa del sistema. -->
+        <!-- Regla de cobro: siempre la tasa oficial del BCV. La tasa
+             personalizada solo se usa para el precio de vitrina en Bs. -->
         <section class="card mb-4">
           <div class="card-header">
             <div>
               <h2 class="text-sm font-semibold text-slate-900">Cobro</h2>
               <p class="mt-0.5 text-xs text-slate-500">
-                Tasa del dólar con la que el punto de venta cobra: el cajero convierte
-                el saldo del pedido, el efectivo recibido y el vuelto con ella, sin
-                preguntar nada. Por defecto se usa la tasa activa del sistema. Se
-                guarda para toda la empresa al pulsar «Guardar cambios».
+                Todo cobro se calcula a la tasa oficial del dólar del BCV. La tasa
+                personalizada no participa: solo infla el precio de vitrina que ve el
+                cajero en bolívares.
               </p>
             </div>
-            <span class="badge bg-slate-100 text-slate-600">{{ chargeRateLabel() }}</span>
+            <span class="badge bg-sky-100 text-sky-700">BCV Dólar</span>
           </div>
 
-          <div class="card-body space-y-4">
-            <div>
-              <label class="label" for="charge-rate">Tasa de cobro</label>
-              <select
-                id="charge-rate"
-                class="input"
-                [ngModel]="chargeRateDraft() ?? ''"
-                (ngModelChange)="pickChargeRate($event)"
-              >
-                <option value="">Tasa activa del sistema</option>
-                @for (option of chargeRateOptions(); track option.key) {
-                  <option [value]="option.key" [disabled]="option.rate === null">
-                    {{ option.label }}{{ option.rate === null ? ' · sin tasa' : '' }}
-                  </option>
-                }
-              </select>
-              <p class="mt-1 text-xs text-slate-500">{{ chargeRatePreview() }}</p>
+          <div class="card-body space-y-3">
+            <div class="flex flex-wrap items-center justify-between gap-2 rounded-lg bg-slate-50 px-3 py-2">
+              <span class="text-sm text-slate-600">Tasa de cobro</span>
+              <span class="font-semibold text-slate-900">
+                {{ chargeRateValue() === null ? 'Sin tasa BCV' : rate(chargeRateValue()) + ' Bs por $ 1' }}
+              </span>
             </div>
+            <p class="text-xs text-slate-500">{{ chargeRulePreview() }}</p>
+            @if (canManage()) {
+              <p class="flex items-start gap-2 rounded-lg bg-brand-50/60 px-3 py-2 text-xs text-slate-600">
+                <app-icon name="alert" size="h-3.5 w-3.5 shrink-0" />
+                <span>
+                  Si cambias la tasa personalizada, cambia el precio que se muestra en
+                  bolívares; el monto que se cobra sigue saliendo del precio en dólares a
+                  la tasa BCV.
+                </span>
+              </p>
+            }
           </div>
         </section>
 
@@ -545,8 +540,8 @@ interface CurrencyRow {
               <app-icon name="alert" size="h-3.5 w-3.5 shrink-0" />
               <span>
                 {{ posDirty()
-                  ? 'Tienes cambios sin guardar: la propina, la moneda de los precios, las conversiones, el precio en dólares BCV y la tasa de cobro se guardan para toda la empresa.'
-                  : 'La propina, la moneda de los precios, las conversiones, el precio en dólares BCV y la tasa de cobro se guardan para toda la empresa.' }}
+                  ? 'Tienes cambios sin guardar: la propina, la moneda de los precios, las conversiones y el precio en dólares BCV se guardan para toda la empresa.'
+                  : 'La propina, la moneda de los precios, las conversiones y el precio en dólares BCV se guardan para toda la empresa.' }}
               </span>
             </p>
 
@@ -859,7 +854,7 @@ interface CurrencyRow {
             </section>
             <section class="card">
               <div class="card-header">
-                <h2 class="text-sm font-semibold text-slate-900">Tasa personalizada</h2>
+                <h2 class="text-sm font-semibold text-slate-900">Tasa personalizada (vitrina)</h2>
                 @if (hasCustom()) {
                   <span class="badge bg-amber-100 text-amber-700">Activa</span>
                 } @else {
@@ -887,8 +882,9 @@ interface CurrencyRow {
                     </p>
                   } @else {
                     <p class="mt-1 text-xs text-slate-500">
-                      Mientras no definas una tasa personalizada solo se muestran las dos
-                      tasas del BCV (dólar y euro).
+                      Mientras no definas una tasa personalizada, la vitrina usa la tasa
+                      oficial del BCV. Esta tasa solo cambia los precios que se muestran
+                      en bolívares; los cobros se hacen siempre a la tasa BCV.
                     </p>
                   }
                 </div>
@@ -923,7 +919,7 @@ interface CurrencyRow {
                 }
 
                 <p class="rounded-lg bg-brand-50/60 px-3 py-2 text-xs text-slate-600">
-                  <span class="font-semibold">Tasas activas: {{ rates().length }}</span>
+                  <span class="font-semibold">Tasas de vitrina: {{ rates().length }}</span>
                   — {{ hasCustom() ? 'BCV dólar, BCV euro y personalizada' : 'BCV dólar y BCV euro' }}.
                 </p>
               </div>
@@ -1883,7 +1879,7 @@ export class SettingsPage implements OnInit, OnDestroy {
       value: 'pos',
       label: 'Cajero',
       icon: 'shopping-cart',
-      hint: 'Vista del catálogo, propina sugerida, moneda, conversiones, precio en dólares BCV y tasa de cobro del cajero.',
+      hint: 'Vista del catálogo, propina sugerida, moneda, conversiones y precio en dólares BCV.',
     },
     {
       value: 'notifications',
@@ -2082,8 +2078,7 @@ export class SettingsPage implements OnInit, OnDestroy {
       this.tipDraft() !== this.tipPercent() ||
       this.priceCurrencyDraft() !== this.priceCurrency() ||
       this.conversionsDirty() ||
-      this.bcvPriceDirty() ||
-      this.chargeRateDirty(),
+      this.bcvPriceDirty(),
   );
 
   /** Monedas elegibles: las habilitadas y con tasa configurada. */
@@ -2204,52 +2199,27 @@ export class SettingsPage implements OnInit, OnDestroy {
     return this.bcvPriceDraft() !== this.preferences.showBcvPrice();
   }
 
-  /**
-   * Tasa del dólar con la que el cajero cobra, todavía sin guardar
-   * (`null` = la tasa activa del sistema). Por defecto se cobra con la activa.
-   */
-  readonly chargeRateDraft = signal<ChargeRateKey | null>(this.preferences.chargeRateKey());
+  /** Tasa oficial del dólar con la que se cobra (`null` si el BCV no responde). */
+  readonly chargeRateValue = computed(
+    () => this.ratesService.rates().find((item) => item.key === 'BCV_USD')?.rate ?? null,
+  );
 
   /**
-   * Tasas del dólar que el admin puede fijar como tasa de cobro: la del BCV y la
-   * personalizada del local, con su valor en bolívares por dólar (o `null` cuando
-   * todavía no hay tasa con la que cobrar).
+   * Ejemplo de la regla de cobro: el precio de vitrina puede estar inflado con
+   * la tasa personalizada, pero el cobro siempre se calcula a la tasa BCV.
    */
-  readonly chargeRateOptions = computed(() => {
-    const rates = this.ratesService.rates();
-    return CHARGE_RATE_KEYS.map((key) => ({
-      key,
-      label: RATE_META[key]?.label ?? key,
-      rate: rates.find((item) => item.key === key)?.rate ?? null,
-    }));
-  });
-
-  /** Chip de la cabecera de la tarjeta «Cobro». */
-  readonly chargeRateLabel = computed(() => {
-    const key = this.chargeRateDraft();
-    return key ? (RATE_META[key]?.label ?? key) : 'Tasa activa';
-  });
-
-  /**
-   * Cómo cobra el cajero con la tasa elegida: el ejemplo que la pantalla muestra
-   * para comprobar la tasa antes de guardarla.
-   */
-  readonly chargeRatePreview = computed(() => {
-    const key = this.chargeRateDraft();
-    if (!key) {
-      return 'El cajero cobra con la tasa activa del sistema: la personalizada del dólar o, si no existe, la del BCV.';
+  readonly chargeRulePreview = computed(() => {
+    const bcv = this.chargeRateValue();
+    if (bcv === null) {
+      return 'No se pudo leer la tasa oficial del BCV: el cobro quedará bloqueado hasta que esté disponible.';
     }
-    const option = this.chargeRateOptions().find((item) => item.key === key);
-    if (!option || option.rate === null) {
-      return `La ${RATE_META[key]?.label ?? key} todavía no tiene tasa: configúrala en Tasas.`;
+    const custom = this.ratesService.custom()?.usd ?? null;
+    const charge = bs(10 * bcv);
+    if (custom === null) {
+      return `Un producto de $ 10.00 se muestra y se cobra a la tasa BCV: ${charge}.`;
     }
-    return `El cajero cobra a ${option.label} Bs ${rate(option.rate)} por $ 1.`;
+    return `Un producto de $ 10.00 se muestra ${bs(10 * custom)} en vitrina y se cobra ${charge} a la tasa BCV.`;
   });
-
-  /** `true` cuando la tasa de cobro de la pantalla no es lo guardado. */
-  private chargeRateDirty(): boolean {
-    return this.chargeRateDraft() !== this.preferences.chargeRateKey();
-  }
 
   // ----------------------------- Monedas aceptadas ---------------------------
   readonly currencySaving = this.currenciesService.saving;
@@ -3067,29 +3037,21 @@ export class SettingsPage implements OnInit, OnDestroy {
     this.bcvPriceDraft.set(show);
   }
 
-  /** Elige la tasa de cobro en la pantalla (`''` = la tasa activa del sistema). */
-  pickChargeRate(key: string | null): void {
-    this.chargeRateDraft.set(normalizeChargeRateKey(key));
-  }
-
   /** Deshace lo elegido en la pestaña Cajero y vuelve a lo que está guardado. */
   discardPos(): void {
     this.tipDraft.set(this.tipPercent());
     this.priceCurrencyDraft.set(this.priceCurrency());
     this.conversionDraft.set(this.preferences.conversionCurrencies() ?? []);
     this.bcvPriceDraft.set(this.preferences.showBcvPrice());
-    this.chargeRateDraft.set(this.preferences.chargeRateKey());
     this.tipInput = String(this.tipPercent());
   }
 
   /**
-   * Guarda las preferencias del cajero. Las cinco **viajan a la empresa**
+   * Guarda las preferencias del cajero. Las cuatro **viajan a la empresa**
    * (`PATCH /preferences`): la propina sugerida, la moneda en la que se ven los
-   * precios, las conversiones que puede ver debajo de cada monto, el precio en
-   * dólares del BCV y la tasa de cobro las comparte todo el personal, así que el
-   * cajero que entra desde otro equipo las recibe al iniciar sesión. Los montos
-   * de esta sesión se repintan con la moneda nueva sin esperar a la próxima carga
-   * de tasas.
+   * precios, las conversiones que puede ver debajo de cada monto y el precio en
+   * dólares del BCV. Los montos de esta sesión se repintan con la moneda nueva
+   * sin esperar a la próxima carga de tasas.
    */
   savePosPreferences(): void {
     if (!this.posDirty()) return;
@@ -3099,14 +3061,13 @@ export class SettingsPage implements OnInit, OnDestroy {
       this.priceCurrencyDraft(),
       this.conversionDraft(),
       this.bcvPriceDraft(),
-      this.chargeRateDraft(),
     );
     this.ratesService.applyDisplayPreference();
 
     // El servicio normaliza lo guardado: la pantalla refleja eso, no el borrador.
     this.tipInput = String(this.tipPercent());
     this.toast.success(
-      'La propina, la moneda de los precios, las conversiones, el precio en dólares BCV y la tasa de cobro se guardan para toda la empresa.',
+      'La propina, la moneda de los precios, las conversiones y el precio en dólares BCV se guardan para toda la empresa.',
       'Preferencias guardadas',
     );
   }

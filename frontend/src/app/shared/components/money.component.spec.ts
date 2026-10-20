@@ -258,11 +258,10 @@ describe('MoneyComponent (montos al cambio)', () => {
     expect(text).not.toContain('Personalizada');
   });
 
-  it('muestra la tercera tasa cuando el local define una personalizada', () => {
+  it('no lista la tasa personalizada debajo de los montos', () => {
     const text = load(WITH_CUSTOM);
 
-    expect(text).toContain('Personalizada');
-    expect(text).toContain('Bs 9,054.20');
+    expect(text).not.toContain('Personalizada');
     expect(text).toContain('Bs 8,767.98');
     expect(text).toContain('Bs 9,820.05');
   });
@@ -326,7 +325,7 @@ describe('MoneyComponent (montos al cambio)', () => {
     // a divisa: al BCV son 10,33 dolares y al euro del BCV 9,22.
     expect(text).toContain('USD · BCV $ 10.33');
     expect(text).toContain('EUR · BCV € 9.22');
-    expect(text).toContain('USD · personalizada $ 10.00');
+    expect(text).not.toContain('personalizada');
     // La moneda base usa la tasa activa (la personalizada del local).
     expect(text).toContain('Bs 9,054.20');
   });
@@ -683,6 +682,17 @@ describe('MoneyComponent (precio en dólares del BCV)', () => {
     expect(rates.allowedConversionCodes()).toEqual([]);
     expect(rates.showBcvPrice()).toBeTrue();
     expect(text).toContain('USD · BCV $ 10.00');
+  });
+
+  it('con tasa personalizada la línea del BCV usa la tasa oficial', () => {
+    companyPrefs({ showBcvPrice: true });
+    const text = load(withCustomDollar());
+
+    // El monto ya está en los bolívares del BCV, aunque la vitrina se muestre con
+    // la personalizada: la línea oficial debe devolver los mismos dólares.
+    expect(text).toContain('USD · BCV $ 10.00');
+    expect(text).not.toContain('USD · BCV $ 10.33');
+    expect(bcvLines(text)).toBe(1);
   });
 
   it('no repite la línea cuando el admin ya activó esa conversión', () => {

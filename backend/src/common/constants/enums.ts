@@ -182,14 +182,14 @@ export const POS_VIEWS: PosView[] = Object.values(PosView);
  * Tasas del dolar (bolivares por 1 USD) que el administrador puede fijar como
  * **tasa de cobro** del cajero (Configuracion > Cajero).
  *
- * Con una elegida, el punto de venta convierte el saldo del pedido, el efectivo
- * recibido y el vuelto con ESA tasa, sin preguntar nada al operador; sin eleccion
- * (`null`) se usa la tasa activa del sistema (la personalizada del dolar o, si no
- * existe, la del BCV), que es como funcionaba antes de esta preferencia.
+ * El cobro se hace SIEMPRE a la tasa oficial del BCV. La tasa personalizada del
+ * local es solo una tasa de vitrina: infla los precios en bolivares que ve el
+ * cajero, pero nunca se usa para valorar un cobro, un pago ni un fondo de caja.
  *
- * Son las dos tasas que expresan bolivares por dolar: la del BCV y la del local.
+ * La lista se conserva con una sola clave para que las instalaciones y clientes
+ * anteriores sigan enviando un valor valido; cualquier otro valor se descarta.
  */
-export const CHARGE_RATE_KEYS = ['BCV_USD', 'CUSTOM_USD'] as const;
+export const CHARGE_RATE_KEYS = ['BCV_USD'] as const;
 export type ChargeRateKey = (typeof CHARGE_RATE_KEYS)[number];
 
 /** Categorias que implican sacar efectivo de la caja (egreso por defecto). */

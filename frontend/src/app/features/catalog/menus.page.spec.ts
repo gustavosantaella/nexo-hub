@@ -358,7 +358,7 @@ describe('MenusPage (receta y costos)', () => {
       .flush({ items: [], meta: META });
   });
 
-  it('muestra el margen "al cambio" con cada tasa, incluida la personalizada', () => {
+  it('muestra el margen "al cambio" solo con las tasas oficiales', () => {
     const { fixture } = mount([MARGIN_MENU], RATES_WITH_CUSTOM);
 
     // El margen es la única celda del listado que pinta conversiones.
@@ -371,14 +371,14 @@ describe('MenusPage (receta y costos)', () => {
 
     // Margen del menú: precio 20 - costo 10 = $ 10, con su equivalente en Bs.
     expect(margin).toContain('$ 10.00');
-    // Tasa oficial del dólar y del euro (BCV)…
+    // Tasa oficial del dólar y del euro (BCV).
     expect(margin).toContain('BCV $');
     expect(margin).toContain('Bs 8,767.98');
     expect(margin).toContain('BCV €');
     expect(margin).toContain('Bs 9,820.05');
-    // …y la personalizada del local (905,42 Bs por dólar).
-    expect(margin).toContain('Personalizada');
-    expect(margin).toContain('Bs 9,054.20');
+    // La tasa personalizada no se lista debajo del monto.
+    expect(margin).not.toContain('Personalizada');
+    expect(margin).not.toContain('Bs 9,054.20');
   });
 
   /**
@@ -386,7 +386,7 @@ describe('MenusPage (receta y costos)', () => {
    * debajo del margen: no había forma de saber con qué tasa se convirtió cada
    * moneda ni dónde quedaba el dólar del BCV.
    */
-  it('lista las tres tasas del margen aunque la base sea el bolívar', () => {
+  it('lista las tasas oficiales del margen aunque la base sea el bolívar', () => {
     const { fixture } = mount([MARGIN_MENU], RATES_BASE_BOLIVARES);
 
     const cells = Array.from(
@@ -398,19 +398,19 @@ describe('MenusPage (receta y costos)', () => {
 
     // Margen del menú: precio 20 - costo 10 = $ 10, en Bs con la personalizada.
     expect(margin).toContain('Bs 9,054.20');
-    // Las tres tasas del sistema quedan listadas, cada una con su moneda y el
-    // origen de su tasa (el dólar del BCV no desaparece por usar el bolívar) y el
-    // equivalente del monto en esa divisa: los 9.054,20 Bs son 10,33 al BCV y
-    // 10,00 a la tasa del local.
+    // Las tasas oficiales quedan listadas, cada una con su moneda y el origen de
+    // su tasa, y el equivalente del monto en esa divisa: los 9.054,20 Bs son
+    // 10,33 al BCV y 10,00 al dólar del local.
     expect(margin).toContain('USD · BCV $ 10.33');
     expect(margin).toContain('EUR · BCV € 9.22');
-    expect(margin).toContain('USD · personalizada $ 10.00');
+    expect(margin).toContain('USD $ 10.00');
+    expect(margin).not.toContain('personalizada');
     // Y las demás monedas configuradas siguen en su propia moneda.
     expect(margin).toContain('COP · manual');
     expect(margin).toContain('COL$ 41,155.45');
   });
 
-  it('muestra el margen "al cambio" del formulario con la tasa personalizada', () => {
+  it('muestra el margen "al cambio" del formulario a la tasa oficial', () => {
     const { fixture, page } = mount([MARGIN_MENU], RATES_WITH_CUSTOM);
     page.openCreate();
     page.form.price = 12;
@@ -421,9 +421,9 @@ describe('MenusPage (receta y costos)', () => {
     ).find((item) => item.textContent?.includes('Margen:'));
 
     expect(summary).toBeTruthy();
-    // Sin receta el margen es el precio: 12 * 905,42 con la personalizada.
-    expect(summary?.textContent).toContain('Personalizada');
-    expect(summary?.textContent).toContain('Bs 10,865.04');
+    // Sin receta el margen es el precio: 12 * 876,7976 al BCV.
+    expect(summary?.textContent).not.toContain('Personalizada');
+    expect(summary?.textContent).toContain('Bs 10,521.57');
   });
 
 

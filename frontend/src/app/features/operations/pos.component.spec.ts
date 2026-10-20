@@ -1152,6 +1152,7 @@ describe('PosComponent (vista de cajero)', () => {
       amount: 33,
       method: 'CASH',
       currency: 'USD',
+      rateKey: 'BCV_USD',
       parts: [{ amount: 33, method: 'CASH', currency: 'USD' }],
       change: [],
     });
@@ -1182,10 +1183,10 @@ describe('PosComponent (vista de cajero)', () => {
     pos.setTip(false);
     pos.addProduct(PRODUCTS[0]);
 
-    // 30 USD se ven como Bs 28.500,00 (personalizada 950) y esos bolívares, al
-    // cambio del BCV (876,7976), son 32,50 USD: eso cobra el cajero.
+    // 30 USD de catálogo se ven como Bs 28.500,00 (personalizada 950); al
+    // valorarlos al BCV son $ 32,50: eso cobra el cajero.
     expect(pos.chargeAmount).toBe(32.5);
-    // Pagando en bolívares el cliente entrega el precio de la pantalla, tal cual.
+    // Pagando en bolívares se cobra el precio de vitrina completo.
     pos.charge.currency = 'VES';
     expect(pos.chargeAmount).toBe(28500);
     // La tarjeta de cobro no repite la conversión: el monto se lee en el campo y
@@ -1193,7 +1194,7 @@ describe('PosComponent (vista de cajero)', () => {
     fixture.detectChanges();
     expect(fixture.nativeElement.textContent as string).not.toContain('al cambio');
     expect(fixture.nativeElement.textContent as string).not.toContain(
-      '= $ 32.50 · Bs 28,500.00 · tasa BCV',
+      '= $ 30.00 · Bs 26,303.93 · tasa BCV',
     );
 
     pos.charge.currency = 'USD';
@@ -1204,7 +1205,7 @@ describe('PosComponent (vista de cajero)', () => {
     const createRequest = http.expectOne(
       (request) => request.method === 'POST' && request.url === `${API}/orders`,
     );
-    createRequest.flush(order({ total: 30 }));
+    createRequest.flush(order({ total: 32.5 }));
 
     const payRequest = http.expectOne(`${API}/orders/o1/payments`);
     expect(payRequest.request.body).toEqual({
@@ -1216,7 +1217,7 @@ describe('PosComponent (vista de cajero)', () => {
       change: [],
     });
     payRequest.flush(
-      order({ total: 30, paidAmount: 32.5, paymentStatus: 'PAID', status: 'COMPLETED' }),
+      order({ total: 32.5, paidAmount: 32.5, paymentStatus: 'PAID', status: 'COMPLETED' }),
     );
 
     expect(pos.saving()).toBeFalse();
@@ -1280,6 +1281,7 @@ describe('PosComponent (vista de cajero)', () => {
       amount: 30,
       method: 'CASH',
       currency: 'USD',
+      rateKey: 'BCV_USD',
       parts: [{ amount: 50, method: 'CASH', currency: 'USD' }],
       change: [{ amount: 20, method: 'CASH', currency: 'USD' }],
     });
@@ -1288,12 +1290,12 @@ describe('PosComponent (vista de cajero)', () => {
   });
 
   /**
-   * Regresion del saldo negativo: con los precios en Bs (tasa personalizada) y
-   * la tasa de cobro en el BCV, un cobro en Bs debe enviar el monto tal cual se
-   * lee en pantalla SIN la tasa de cobro. Si viajara el BCV, el backend valoraria
-   * esos mismos bolivares con otra tasa y el pedido quedaria sobrepagado.
+   * Aunque el cliente pague en la misma moneda de la pantalla, el cobro viaja
+   * con la tasa oficial del BCV: el backend valora los bolívares con esa tasa y
+   * el monto se calcula desde los dólares del pedido, no desde el precio de
+   * vitrina.
    */
-  it('no envia la tasa de cobro cuando el cliente paga en la moneda de pantalla', () => {
+  it('manda la tasa BCV aunque el cliente pague en la moneda de pantalla', () => {
     localStorage.setItem(CHARGE_RATE_KEY, 'BCV_USD');
     const { fixture, pos } = mount();
     TestBed.inject(RatesService).load();
@@ -1305,7 +1307,7 @@ describe('PosComponent (vista de cajero)', () => {
     pos.charge.method = 'CARD';
     pos.charge.currency = 'VES';
 
-    // 30 USD se leen como Bs 28.500 a la tasa personalizada (950).
+    // 30 USD de catálogo se leen como Bs 28.500 a la tasa personalizada (950).
     expect(pos.chargeAmount).toBe(28500);
 
     pos.submitSale(true);
@@ -1314,13 +1316,14 @@ describe('PosComponent (vista de cajero)', () => {
     const createRequest = http.expectOne(
       (request) => request.method === 'POST' && request.url === `${API}/orders`,
     );
-    createRequest.flush(order({ total: 30 }));
+    createRequest.flush(order({ total: 32.5 }));
 
     const payRequest = http.expectOne(`${API}/orders/o1/payments`);
     expect(payRequest.request.body).toEqual({
       amount: 28500,
       method: 'CARD',
       currency: 'VES',
+      rateKey: 'BCV_USD',
       parts: [{ amount: 28500, method: 'CARD', currency: 'VES' }],
       change: [],
     });
@@ -1362,10 +1365,10 @@ describe('PosComponent (vista de cajero)', () => {
       currency: 'USD',
       paymentReference: '1234',
       parts: [
-        { amount: 20, method: 'CASH', currency: 'USD' },
-        { amount: 20, method: 'TRANSFER', currency: 'USD' },
+        { amount: 20, method: 'CASH', currency: 'USD', rateKey: 'BCV_USD' },
+        { amount: 20, method: 'TRANSFER', currency: 'USD', rateKey: 'BCV_USD' },
       ],
-      change: [{ amount: 10, method: 'CASH', currency: 'USD' }],
+      change: [{ amount: 10, method: 'CASH', currency: 'USD', rateKey: 'BCV_USD' }],
     });
     payRequest.flush(order({ total: 30, paymentStatus: 'PAID' }));
     flushReload();

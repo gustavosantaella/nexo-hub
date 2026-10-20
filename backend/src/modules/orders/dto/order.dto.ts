@@ -250,8 +250,10 @@ export class OrderPaymentPartDto {
   currency?: string;
 
   @ApiPropertyOptional({
-    description: 'Tasa elegida para convertir esa parte (sin tasa = la del cobro)',
+    description:
+      'Campo heredado: el cobro siempre se valora a la tasa oficial del BCV. Se acepta para clientes anteriores, pero se ignora.',
     enum: RATE_KEYS,
+    deprecated: true,
   })
   @IsOptional()
   @IsIn(RATE_KEYS, { message: 'Tasa de conversion invalida' })
@@ -291,8 +293,9 @@ export class AddOrderPaymentDto {
 
   @ApiPropertyOptional({
     description:
-      'Tasa elegida para convertir el cobro (`BCV_USD`, `BCV_EUR` o `CUSTOM_USD`). Sin tasa se usa la personalizada del dolar (o, si no existe, la del BCV). El cajero envia aqui la tasa de cobro configurada por la empresa.',
+      'Campo heredado: el cobro siempre se valora a la tasa oficial del BCV. Se acepta para clientes anteriores, pero se ignora.',
     enum: RATE_KEYS,
+    deprecated: true,
   })
   @IsOptional()
   @IsIn(RATE_KEYS, { message: 'Tasa de conversion invalida' })

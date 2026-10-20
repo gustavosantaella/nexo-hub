@@ -10,7 +10,7 @@ import {
 } from '@angular/core';
 import { FormsModule } from '@angular/forms';
 import { firstValueFrom } from 'rxjs';
-import { BASE_CURRENCY, RATE_META } from '../../core/constants/currency';
+import { BASE_CURRENCY, CHARGE_RATE_KEY, RATE_META } from '../../core/constants/currency';
 import {
   ORDER_TYPE_LABELS,
   ORDER_STATUS_LABELS,
@@ -872,7 +872,7 @@ interface ChargeLineDraft {
                         </span>
                         <span class="flex flex-none flex-col items-end gap-1">
                           <span class="text-sm font-semibold text-slate-900">
-                            {{ money(item.total) }}
+                            {{ orderMoney(item.total) }}
                           </span>
                           <button
                             type="button"
@@ -1162,6 +1162,10 @@ interface ChargeLineDraft {
               <!-- Cobro de la venta en curso -->
               <div class="space-y-2 rounded-lg border border-slate-200 bg-slate-50 p-3">
                 <p class="text-sm font-medium text-slate-700">Cobro</p>
+                <p class="text-[11px] text-slate-500">
+                  Se cobra a la tasa BCV. El precio de vitrina en bolívares puede usar
+                  la tasa personalizada.
+                </p>
                 @if (!cashOpen()) {
                   <p class="text-xs text-amber-700">
                     La caja está cerrada: puedes guardar el pedido, pero el cobro se habilita al abrir
@@ -1650,7 +1654,7 @@ interface ChargeLineDraft {
                     </p>
                     <p class="text-xs text-slate-500">{{ customerLabel(order) }}</p>
                     <p class="mt-1 text-sm font-semibold text-slate-900">
-                      {{ money(balance(order)) }}
+                      {{ orderMoney(balance(order)) }}
                     </p>
                     <div class="mt-2 flex gap-1">
                       <button
@@ -1802,7 +1806,7 @@ interface ChargeLineDraft {
                             {{ item.quantity }} × {{ item.name }}
                           </span>
                           <span class="flex-none text-xs font-medium text-slate-600">
-                            {{ money(item.total) }}
+                            {{ orderMoney(item.total) }}
                           </span>
                           <button
                             type="button"
@@ -1834,7 +1838,7 @@ interface ChargeLineDraft {
                   <div class="mt-2 flex items-end justify-between gap-2">
                     <div>
                       <p class="text-[11px] uppercase tracking-wide text-slate-400">Total</p>
-                      <p class="text-sm font-semibold text-slate-900">{{ money(order.total) }}</p>
+                      <p class="text-sm font-semibold text-slate-900">{{ orderMoney(order.total) }}</p>
                     </div>
                     <div class="text-right">
                       <p class="text-[11px] uppercase tracking-wide text-slate-400">Saldo</p>
@@ -1842,7 +1846,7 @@ interface ChargeLineDraft {
                         class="text-sm font-semibold"
                         [class]="isPaid(order) ? 'text-emerald-700' : 'text-amber-700'"
                       >
-                        {{ money(balance(order)) }}
+                        {{ orderMoney(balance(order)) }}
                       </p>
                     </div>
                   </div>
@@ -2126,20 +2130,17 @@ export class PosComponent implements OnInit, OnDestroy {
   readonly moneyBaseCode = displayBaseCode;
 
   /**
-   * **Tasa de cobro** que fijó la empresa en Configuración → Cajero (`null` = la
-   * tasa activa del sistema).
+   * **Tasa de cobro**: siempre la oficial del BCV.
    *
-   * Es la que convierte el precio que el cajero lee en pantalla a la moneda del
-   * cobro: con la tasa de cobro en el BCV y los precios mostrados con la
-   * personalizada del local, el cobro en divisas vale más que el monto guardado en
-   * dólares (es el precio en bolívares del cliente pasado a divisas).
+   * La tasa personalizada solo infla el precio de vitrina en bolívares; el cobro
+   * (en Bs, USD o cualquier otra moneda) se calcula desde el monto en USD con la
+   * tasa oficial, nunca con la personalizada.
    */
-  readonly chargeRateKey = this.preferences.chargeRateKey;
+  readonly chargeRateKey = () => CHARGE_RATE_KEY;
 
-  /** Etiqueta de la tasa de cobro para la línea del cobro (`null` sin tasa fija). */
+  /** Etiqueta de la tasa de cobro para la línea del cobro. */
   chargeRateLabel(): string | null {
-    const key = this.chargeRateKey();
-    return key ? (RATE_META[key]?.label ?? key) : null;
+    return RATE_META[this.chargeRateKey()]?.label ?? null;
   }
 
   readonly loading = signal(false);
@@ -3496,20 +3497,18 @@ export class PosComponent implements OnInit, OnDestroy {
   // ===========================================================================
 
   /**
-   * Monto a cobrar en la moneda elegida: la cuenta del carrito (que ya incluye
-   * los productos de la mesa) menos lo que el cliente ya pagó, pasado a la moneda
-   * del cobro con la **tasa de cobro** de la empresa.
+   * Monto a cobrar en la moneda elegida: el saldo del pedido en USD convertido
+   * con la **tasa oficial del BCV**, nunca con el precio de vitrina.
    *
-   * El precio que el cajero cobra es el que lee en pantalla (en su moneda de
-   * precios), no los dólares guardados: por eso el cobro en divisas puede valer
-   * más que el monto del pedido y el backend lo acepta con la misma tasa.
+   * La tasa personalizada solo infla el precio que se muestra en bolívares; el
+   * cobro (en Bs, USD o cualquier otra moneda) sale siempre del monto en USD a la
+   * tasa BCV.
    */
   get chargeAmount(): number {
     const bill = this.bill;
-    return this.rates.chargeAmount(
+    return this.rates.saleChargeAmount(
       sumMoney([bill.total, -bill.paid]),
       this.charge.currency,
-      this.chargeRateKey(),
     );
   }
 
@@ -3569,7 +3568,7 @@ export class PosComponent implements OnInit, OnDestroy {
 
   /** Total del pedido expresado en USD con la tasa de cobro. */
   get mixedTargetBase(): number {
-    return this.rates.chargeAmount(this.bill.balance, BASE_CURRENCY.code, this.chargeRateKey());
+    return this.rates.saleChargeAmount(this.bill.balance, BASE_CURRENCY.code);
   }
 
   /**
@@ -3607,10 +3606,9 @@ export class PosComponent implements OnInit, OnDestroy {
 
   /** Total del pedido en la moneda que se lee en pantalla. */
   get mixedTargetDisplay(): number {
-    return this.rates.chargeAmount(
+    return this.rates.saleChargeAmount(
       this.bill.balance,
       displayBaseCode(),
-      this.chargeRateKey(),
     );
   }
 
@@ -3656,7 +3654,7 @@ export class PosComponent implements OnInit, OnDestroy {
     const paid = sumMoney(
       parts.map((part) => this.chargeIn(part.amount, part.currency, currency)),
     );
-    const target = this.rates.chargeAmount(this.bill.balance, currency, this.chargeRateKey());
+    const target = this.rates.saleChargeAmount(this.bill.balance, currency);
     const amount = sumMoney([paid, -target]);
     if (amount <= 0.005) return null;
     return { method: source.method, currency, amount };
@@ -3804,6 +3802,12 @@ export class PosComponent implements OnInit, OnDestroy {
   }
 
   /** Formatea un monto en la moneda indicada (atajo para la plantilla). */
+  /** Formatea un monto de un pedido guardado (ya en USD) a la tasa BCV. */
+  orderMoney(value: number | null | undefined): string {
+    const code = displayBaseCode();
+    return moneyIn(this.rates.chargeAmount(value, code), code);
+  }
+
   amountIn(value: number | null | undefined, currency?: string | null): string {
     return moneyIn(value, currency);
   }
@@ -3858,6 +3862,10 @@ export class PosComponent implements OnInit, OnDestroy {
 
     this.saving.set(true);
     this.formError.set(null);
+    // El monto que el cajero ve antes de crear el pedido: se cobra tal cual para
+    // no perder los bolívares exactos de la vitrina al redondear el USD.
+    const pendingCharge =
+      this.charge.method === 'MIXED' ? null : this.chargeAmount;
 
     if (order) {
       if (this.lines().length === 0) {
@@ -3896,7 +3904,8 @@ export class PosComponent implements OnInit, OnDestroy {
         items: this.lines().map((line) => this.itemsPayloadOf(line)),
       })
       .subscribe({
-        next: (created) => (willCharge ? this.payOrder(created) : this.finishSale(created)),
+        next: (created) =>
+          willCharge ? this.payOrder(created, pendingCharge) : this.finishSale(created),
         error: (error) => this.failSale(error),
       });
   }
@@ -3982,16 +3991,14 @@ export class PosComponent implements OnInit, OnDestroy {
   }
 
   /** Cobra el saldo pendiente del pedido en la moneda elegida. */
-  private payOrder(order: Order): void {
-    const rateKey = this.chargeRateKey();
+  private payOrder(order: Order, visibleCharge?: number | null): void {
     const mixed = this.charge.method === 'MIXED';
     const currency = mixed ? BASE_CURRENCY.code : this.charge.currency || BASE_CURRENCY.code;
-    // El cobro es el precio que el cajero lee en pantalla pasado a la moneda del
-    // cobro con la tasa de cobro: el backend hace la misma conversión con
-    // `rateKey` antes de compararlo con el saldo del pedido.
+    // El cobro se calcula desde el saldo en USD con la tasa oficial del BCV. Al
+    // crear la venta se conserva el monto visible antes del redondeo.
     const amount = mixed
       ? this.mixedAppliedBase
-      : this.rates.chargeAmount(this.balance(order), currency, rateKey);
+      : visibleCharge ?? this.rates.chargeAmount(this.balance(order), currency);
 
     if (!(amount > 0)) {
       this.toast.info(`El pedido ${order.code} ya está pagado en su totalidad`);
@@ -4000,15 +4007,10 @@ export class PosComponent implements OnInit, OnDestroy {
     }
 
     /**
-     * La tasa solo viaja con las partes que se cobran en una moneda DISTINTA a
-     * la que el cajero ve en pantalla. Si el cliente paga en la misma moneda,
-     * el monto ya es el precio final y el backend debe valorarlo con la tasa
-     * de visualización (la activa), no reexpresarlo con la tasa de cobro.
+     * El cobro siempre viaja con la tasa oficial del BCV. El backend la vuelve a
+     * aplicar sobre cada parte en su moneda; la tasa personalizada no participa.
      */
-    const chargeRate = (lineCurrency: string) => {
-      const key = this.rates.chargeKeyFor(lineCurrency);
-      return key ? { rateKey: key } : {};
-    };
+    const chargeRate = () => ({ rateKey: CHARGE_RATE_KEY });
 
     const payload = mixed
       ? {
@@ -4022,7 +4024,7 @@ export class PosComponent implements OnInit, OnDestroy {
               amount: Number(part.amount),
               method: part.method,
               currency: part.currency,
-              ...chargeRate(part.currency),
+              ...chargeRate(),
             })),
           change: this.charge.changes
             .filter((line) => Number(line.amount) > 0)
@@ -4030,7 +4032,7 @@ export class PosComponent implements OnInit, OnDestroy {
               amount: Number(line.amount),
               method: line.method,
               currency: line.currency,
-              ...chargeRate(line.currency),
+              ...chargeRate(),
             })),
         }
       : this.singlePaymentPayload(

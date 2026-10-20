@@ -278,9 +278,12 @@ npm run db:clear -- --yes   # borra y crea un respaldo .db antes
 - **Tasas de cambio**: las tasas oficiales se leen del BCV (publicadas por
   [dolarvzla](https://rates.dolarvzla.com/bcv/current.json)) y se cachean en el
   backend; el local puede además fijar una **tasa personalizada** (Bs por USD)
-  desde `/configuracion`. Con 2 tasas (BCV dólar y euro) o 3 (más la
-  personalizada) todos los montos del sistema se muestran "al cambio" en
-  bolívares. Los montos se guardan y se muestran en la moneda base del sistema
+  desde `/configuracion`. La tasa personalizada es **solo de vitrina**: infla los
+  precios que se muestran en bolívares, pero **ningún cobro, pago, fondo de caja
+  ni cuenta** se valora con ella. El precio de venta se calcula como
+  `precio USD × tasa personalizada ÷ tasa BCV`: un producto de $ 10 con
+  personalizada 970 se muestra Bs 9.700 y se cobra su equivalente en USD a la
+  tasa oficial del BCV. Los montos se guardan en la moneda base del sistema
   (**USD**).
 - **Tasa USDT de referencia (solo informativa)**: junto a las anteriores,
   `GET /api/rates` devuelve `reference` con la tasa **USDT/VES** publicada por
@@ -293,17 +296,16 @@ npm run db:clear -- --yes   # borra y crea un respaldo .db antes
   es `null` (el resto de la pantalla de tasas sigue funcionando).
 - **Monedas de pago**: en Caja, al cobrar un pedido, al cobrar/pagar una cuenta
   y al registrar un gasto se elige la **moneda del pago**. El sistema trae por
-  defecto **USD** (moneda base, tasa del BCV o la personalizada), **VES**
-  (1 Bs = 1 Bs) y **EUR** (tasa del BCV): las tres se mantienen conectadas a la
-  API del BCV y no necesitan tasa manual. Las monedas por defecto **no se pueden
-  quitar** (solo desactivar, y el dólar tampoco eso) desde `/configuracion` →
-  *Monedas aceptadas*; ahí mismo se agregan y quitan otras monedas (COP, PEN, …),
-  que sí exigen su **tasa en bolívares por unidad**; cuando existe una **tasa
-  personalizada** del dólar es la que se usa para convertir cualquier cobro a
-  USD. Cada pago guarda la moneda, la tasa aplicada (`exchangeRate`) y su
-  **equivalente en USD** (`baseAmount`), que es lo que suman el arqueo, los
-  listados y las estadísticas; los desgloses *por moneda* muestran además los
-  montos originales.
+  defecto **USD** (moneda base), **VES** (1 Bs = 1 Bs) y **EUR** (tasa del BCV):
+  las tres se mantienen conectadas a la API del BCV y no necesitan tasa manual.
+  Las monedas por defecto **no se pueden quitar** (solo desactivar, y el dólar
+  tampoco eso) desde `/configuracion` → *Monedas aceptadas*; ahí mismo se agregan
+  y quitan otras monedas (COP, PEN, …), que sí exigen su **tasa en bolívares por
+  unidad**. Todo cobro se valora a la tasa oficial del dólar del BCV; la tasa
+  personalizada del local solo se usa para el precio de vitrina. Cada pago guarda
+  la moneda, la tasa aplicada (`exchangeRate`) y su **equivalente en USD**
+  (`baseAmount`), que es lo que suman el arqueo, los listados y las estadísticas;
+  los desgloses *por moneda* muestran además los montos originales.
 - **API de monedas**: `GET /api/currencies` (lista), `PUT /api/currencies`
   (reemplaza la configuración), `PUT|DELETE /api/currencies/:code` y
   `GET /api/stats/currencies` (cobros agrupados por moneda).

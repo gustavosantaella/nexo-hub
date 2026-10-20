@@ -33,6 +33,7 @@ const CARD_COMPACT_FROM = 1_000;
           [class]="valueClasses('block')"
           [amount]="amount"
           [compact]="abbreviated"
+          [displayRateKey]="displayRateKey"
         />
       } @else {
         <p [class]="valueClasses('')" [attr.title]="title">{{ text }}</p>
@@ -50,6 +51,8 @@ export class StatCardComponent {
   @Input() icon = 'chart';
   @Input() tone: 'brand' | 'emerald' | 'amber' | 'rose' | 'sky' | 'slate' = 'brand';
   @Input() isCurrency = false;
+  /** Tasa con la que se pinta el monto (las ventas y la caja usan `BCV_USD`). */
+  @Input() displayRateKey: string | null = null;
 
   /** Monto (moneda base) que se pinta con su equivalente "al cambio". */
   get amount(): number {

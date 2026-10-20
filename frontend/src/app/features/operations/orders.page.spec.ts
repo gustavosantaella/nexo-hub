@@ -579,9 +579,10 @@ describe('OrdersPage (formulario del cajero)', () => {
 
     const text = (fixture.nativeElement.textContent as string).replace(/\s+/g, ' ');
     expect(text).toContain('Costo de delivery');
-    for (const label of ['BCV $', 'BCV €', 'Personalizada']) {
+    for (const label of ['BCV $', 'BCV €']) {
       expect(text).toContain(label);
     }
+    expect(text).not.toContain('Personalizada');
 
     page.submitCreate();
 
@@ -638,14 +639,19 @@ describe('OrdersPage (formulario del cajero)', () => {
 
     const text = (fixture.nativeElement.textContent as string).replace(/\s+/g, ' ');
     expect(text).toContain('Delivery (incluido)');
-    // El monto a cobrar se muestra en cada tasa del sistema.
-    for (const label of ['BCV $', 'BCV €', 'Personalizada']) {
+    // El monto a cobrar se muestra con las tasas oficiales del BCV.
+    for (const label of ['BCV $', 'BCV €']) {
       expect(text).toContain(label);
     }
+    expect(text).not.toContain('Personalizada');
   });
 
   it('crea el pedido y registra el cobro en una sola acción', () => {
     const { fixture, page } = mount();
+    // Tasas con la personalizada activa: $ 30 se venden como $ 33.
+    TestBed.inject(RatesService).load(true);
+    http.expectOne(`${API}/rates?refresh=true`).flush(RATES_SNAPSHOT);
+    fixture.detectChanges();
     openCreate(fixture, page);
 
     page.addProduct(PRODUCTS[0]);
@@ -659,17 +665,18 @@ describe('OrdersPage (formulario del cajero)', () => {
       { productId: 'p1', quantity: 1, unitPrice: 30 },
     ]);
 
-    createRequest.flush(order({ total: 30 }));
+    createRequest.flush(order({ total: 33 }));
 
     const payRequest = http.expectOne(`${API}/orders/o1/payments`);
     expect(payRequest.request.body).toEqual({
-      amount: 30,
+      amount: 33,
       method: 'CASH',
       currency: 'USD',
-      parts: [{ amount: 30, method: 'CASH', currency: 'USD' }],
+      rateKey: 'BCV_USD',
+      parts: [{ amount: 33, method: 'CASH', currency: 'USD' }],
       change: [],
     });
-    payRequest.flush(order({ total: 30, paymentStatus: 'PAID', status: 'COMPLETED' }));
+    payRequest.flush(order({ total: 33, paymentStatus: 'PAID', status: 'COMPLETED' }));
 
     expect(page.saving()).toBeFalse();
     expect(page.createOpen()).toBeFalse();
@@ -939,6 +946,7 @@ describe('OrdersPage (formulario del cajero)', () => {
       amount: 28934.32,
       method: 'CASH',
       currency: 'VES',
+      rateKey: 'BCV_USD',
       parts: [{ amount: 28934.32, method: 'CASH', currency: 'VES' }],
       change: [],
     });
@@ -967,11 +975,10 @@ describe('OrdersPage (formulario del cajero)', () => {
     page.form.tipRate = 0;
     page.addProduct(PRODUCTS[0]);
 
-    // 30 USD se ven como Bs 28.500,00 y, pagando en bolívares, el cliente entrega
-    // ese precio tal cual.
+    // 30 USD de catálogo se ven como Bs 28.500,00 (personalizada 950); al
+    // valorarlos al BCV son $ 32,50: eso cobra el cajero.
     page.onChargeCurrencyChange('VES');
     expect(page.chargeTotal).toBe(28500);
-    // En divisas, al cambio del BCV (876,7976), ese precio son 32,50 USD.
     page.onChargeCurrencyChange('USD');
     expect(page.chargeTotal).toBe(32.5);
 
@@ -980,7 +987,7 @@ describe('OrdersPage (formulario del cajero)', () => {
     const createRequest = http.expectOne(
       (request) => request.method === 'POST' && request.url === `${API}/orders`,
     );
-    createRequest.flush(order({ total: 30 }));
+    createRequest.flush(order({ total: 32.5 }));
 
     const payRequest = http.expectOne(`${API}/orders/o1/payments`);
     expect(payRequest.request.body).toEqual({
@@ -991,7 +998,7 @@ describe('OrdersPage (formulario del cajero)', () => {
       parts: [{ amount: 32.5, method: 'CASH', currency: 'USD' }],
       change: [],
     });
-    payRequest.flush(order({ total: 30, paidAmount: 32.5, paymentStatus: 'PAID' }));
+    payRequest.flush(order({ total: 32.5, paidAmount: 32.5, paymentStatus: 'PAID' }));
 
     flushReload();
   });

@@ -87,6 +87,7 @@ describe('InventoryPage (registrar movimiento)', () => {
   let http: HttpTestingController;
 
   beforeEach(async () => {
+    setDisplayCurrency(null);
     await TestBed.configureTestingModule({
       imports: [InventoryPage],
       providers: [

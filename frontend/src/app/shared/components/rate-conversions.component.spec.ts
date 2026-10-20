@@ -146,13 +146,13 @@ describe('RateConversionsComponent', () => {
     expect(text().trim()).toBe('');
   });
 
-  it('convierte un monto en dolares a bolivares con las tres tasas', () => {
+  it('convierte un monto en dolares solo con las tasas oficiales', () => {
     fixture.componentInstance.amount.set(10);
     fixture.detectChanges();
 
     expect(text()).toContain('BCV $: Bs 9,000.00');
     expect(text()).toContain('BCV €: Bs 10,000.00');
-    expect(text()).toContain('Personalizada: Bs 9,500.00');
+    expect(text()).not.toContain('Personalizada');
   });
 
   it('convierte un monto en bolivares a la divisa de cada tasa', () => {
@@ -164,7 +164,7 @@ describe('RateConversionsComponent', () => {
     // El euro del BCV se muestra en euros: su tasa (1.000 Bs) es la oficial de esa
     // divisa, así que el equivalente no puede salir rotulado con el dólar.
     expect(text()).toContain('BCV €: € 9.00');
-    expect(text()).toContain('Personalizada: $ 9.47');
+    expect(text()).not.toContain('Personalizada');
   });
 
   it('muestra el equivalente de otra moneda configurada', () => {
@@ -218,11 +218,10 @@ describe('RateConversionsComponent', () => {
    */
   it('resalta la linea de la tasa elegida', () => {
     fixture.componentInstance.amount.set(10);
-    fixture.componentInstance.rateKey.set('CUSTOM_USD');
+    fixture.componentInstance.rateKey.set('BCV_USD');
     fixture.detectChanges();
 
-    // (10 USD al cambio de la personalizada = 9.500 Bs.)
-    expect(highlighted()).toBe('Personalizada: Bs 9,500.00');
+    expect(highlighted()).toBe('BCV $: Bs 9,000.00');
 
     fixture.componentInstance.rateKey.set('BCV_EUR');
     fixture.detectChanges();
@@ -330,6 +329,6 @@ describe('RateConversionsComponent (conversiones que ve el cajero)', () => {
     expect(rates.allowedConversionCodes()).toBeNull();
     expect(text()).toContain('BCV $: Bs 9,000.00');
     expect(text()).toContain('BCV €: Bs 10,000.00');
-    expect(text()).toContain('Personalizada: Bs 9,500.00');
+    expect(text()).not.toContain('Personalizada');
   });
 });

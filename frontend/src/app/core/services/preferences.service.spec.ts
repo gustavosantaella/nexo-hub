@@ -676,7 +676,7 @@ describe('PreferencesService (tasa de cobro del cajero)', () => {
 
   it('recupera lo guardado en el navegador y descarta lo inválido', () => {
     localStorage.setItem(CHARGE_RATE_KEY, 'custom_usd');
-    expect(TestBed.inject(PreferencesService).chargeRateKey()).toBe('CUSTOM_USD');
+    expect(TestBed.inject(PreferencesService).chargeRateKey()).toBeNull();
 
     localStorage.setItem(CHARGE_RATE_KEY, 'euros');
     TestBed.resetTestingModule();
@@ -699,7 +699,7 @@ describe('PreferencesService (tasa de cobro del cajero)', () => {
     localStorage.setItem(CHARGE_RATE_KEY, 'CUSTOM_USD');
 
     const preferences = TestBed.inject(PreferencesService);
-    expect(preferences.chargeRateKey()).toBe('CUSTOM_USD');
+    expect(preferences.chargeRateKey()).toBeNull();
 
     preferences.load();
     http.expectOne({ method: 'GET', url: API }).flush(prefs({ chargeRateKey: null }));
@@ -757,7 +757,7 @@ describe('PreferencesService (vista del catálogo del cajero)', () => {
 describe('normalizeChargeRateKey', () => {
   it('solo acepta las tasas del dólar que pueden cobrar', () => {
     expect(normalizeChargeRateKey('bcv_usd')).toBe('BCV_USD');
-    expect(normalizeChargeRateKey(' custom_usd ')).toBe('CUSTOM_USD');
+    expect(normalizeChargeRateKey(' custom_usd ')).toBeNull();
 
     expect(normalizeChargeRateKey('BCV_EUR')).toBeNull();
     expect(normalizeChargeRateKey('')).toBeNull();

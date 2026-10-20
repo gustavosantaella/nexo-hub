@@ -12,8 +12,8 @@ import type {
 
 export type { ChargeRateKey, DialogView, PosView };
 
-/** Tasas del dólar que el cajero puede fijar como tasa de cobro (igual que el API). */
-export const CHARGE_RATE_KEYS: readonly ChargeRateKey[] = ['BCV_USD', 'CUSTOM_USD'];
+/** Tasa de cobro: siempre la oficial del BCV. */
+export const CHARGE_RATE_KEYS: readonly ChargeRateKey[] = ['BCV_USD'];
 
 /** Vistas soportadas (se usan también para validar lo guardado). */
 export const DIALOG_VIEWS: readonly DialogView[] = ['modal', 'sidebar'];
@@ -47,8 +47,8 @@ const CONVERSION_CURRENCIES_KEY = 'nexo-hub.conversion-currencies';
 const SHOW_BCV_PRICE_KEY = 'nexo-hub.show-bcv-price';
 
 /**
- * Clave de `localStorage` con la tasa del dólar con la que el cajero cobra
- * (`BCV_USD`, `CUSTOM_USD` o vacío = la tasa activa del sistema).
+ * Clave de `localStorage` con la tasa de cobro del cajero (`BCV_USD` o vacío;
+ * la personalizada se descarta porque nunca se usa para cobrar).
  */
 const CHARGE_RATE_KEY = 'nexo-hub.charge-rate';
 
@@ -110,9 +110,8 @@ export function normalizePosView(value: unknown): PosView | null {
 }
 
 /**
- * Deja la tasa de cobro del cajero en una de las tasas del dólar permitidas o en
- * `null` para cobrar con la tasa activa del sistema. Cualquier otro valor se
- * descarta, igual que en el API.
+ * Deja la tasa de cobro en la única tasa válida (`BCV_USD`) o en `null`, que
+ * significa lo mismo. La personalizada se descarta: es solo de vitrina.
  */
 export function normalizeChargeRateKey(value: unknown): ChargeRateKey | null {
   const key = String(value ?? '')
@@ -207,9 +206,9 @@ function storedShowBcvPrice(): boolean {
 }
 
 /**
- * Copia local de la tasa de cobro del cajero (`null` = la tasa activa del
- * sistema). El arranque pinta con ella antes de que conteste el servidor; al
- * iniciar sesión, lo que responde el servidor manda.
+ * Copia local de la tasa de cobro (`null` = la oficial del BCV, que es siempre
+ * con la que se cobra). El arranque pinta con ella antes de que conteste el
+ * servidor; al iniciar sesión, lo que responde el servidor manda.
  */
 function storedChargeRateKey(): ChargeRateKey | null {
   try {
@@ -338,16 +337,11 @@ export class PreferencesService {
   private readonly _chargeRateKey = signal<ChargeRateKey | null>(storedChargeRateKey());
 
   /**
-   * Tasa del dólar con la que el cajero cobra (`BCV_USD`, `CUSTOM_USD` o `null`
-   * = la tasa activa del sistema).
+   * Tasa del dólar con la que se cobra. Siempre es la oficial del BCV (o `null`,
+   * que significa lo mismo): la personalizada solo define el precio de vitrina.
    *
-   * Es una preferencia de la **empresa**, como la propina y las conversiones: el
-   * admin la configura en Configuración → Cajero y el punto de venta la aplica a
-   * todo el personal que cobra (el cajero que entra desde otro equipo la recibe al
-   * iniciar sesión). Con ella, el cajero cobra el precio que **lee en pantalla**
-   * pasado a la moneda del cobro: con la tasa de cobro en el BCV y los precios
-   * mostrados con la personalizada del local, el cobro en divisas vale más que el
-   * monto guardado en dólares.
+   * Se conserva como preferencia de la empresa por compatibilidad con versiones
+   * anteriores; el punto de venta ya no la usa para calcular cobros.
    */
   readonly chargeRateKey = this._chargeRateKey.asReadonly();
 
@@ -477,10 +471,9 @@ export class PreferencesService {
   }
 
   /**
-   * Cambia (y persiste) la tasa del dólar con la que el cajero cobra. Viaja a la
-   * empresa, así que el cajero que entra desde otro equipo la recibe al iniciar
-   * sesión. Con `null` o con una clave inválida se cobra con la tasa activa del
-   * sistema.
+   * Cambia (y persiste) la tasa de cobro. Solo se acepta `BCV_USD` (o `null`,
+   * que significa lo mismo); la personalizada se descarta porque nunca se usa
+   * para cobrar. Se conserva por compatibilidad con versiones anteriores.
    */
   setChargeRateKey(key: string | null): void {
     this._chargeRateKey.set(normalizeChargeRateKey(key));
@@ -508,13 +501,11 @@ export class PreferencesService {
     priceCurrency: string | null,
     conversionCurrencies: readonly string[] | null = null,
     showBcvPrice = false,
-    chargeRateKey: ChargeRateKey | null = null,
   ): void {
     this._tipPercent.set(normalizeTipPercent(tipPercent));
     this._priceCurrency.set(normalizePriceCurrency(priceCurrency));
     this._conversionCurrencies.set(normalizeConversionCurrencies(conversionCurrencies));
     this._showBcvPrice.set(normalizeShowBcvPrice(showBcvPrice));
-    this._chargeRateKey.set(normalizeChargeRateKey(chargeRateKey));
     this.save();
   }
 
