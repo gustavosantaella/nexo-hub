@@ -12,9 +12,7 @@ import {
 } from '../../common/constants/enums';
 import {
   accountBalance,
-  buildDateRangeFilter,
   resolveAccountStatus,
-  startOfToday,
 } from '../../common/utils/account.util';
 import {
   compareMoney,
@@ -23,12 +21,8 @@ import {
   toMoney,
 } from '../../common/utils/money.util';
 import { normalizeNullableId } from '../../common/utils/normalize.util';
-import {
-  buildPaginatedResult,
-  toSkip,
-} from '../../common/utils/pagination.util';
-import { tenantWhere } from '../../common/utils/tenant.util';
-import { PrismaService } from '../../prisma/prisma.service';
+import { buildPaginatedResult } from '../../common/utils/pagination.util';
+import type { PrismaClientLike } from '../../prisma/prisma.service';
 import { CashService } from '../cash/cash.service';
 import { RatesService } from '../rates/rates.service';
 import { ReceivableQueryDto } from './dto/receivable-query.dto';
@@ -37,19 +31,15 @@ import {
   CreateReceivableDto,
   UpdateReceivableDto,
 } from './dto/receivable.dto';
-
-const RECEIVABLE_INCLUDE = {
-  customer: { select: { id: true, name: true, phone: true } },
-  payments: {
-    orderBy: { createdAt: 'desc' },
-    include: { createdBy: { select: { id: true, name: true } } },
-  },
-} satisfies Prisma.AccountReceivableInclude;
+import {
+  RECEIVABLE_REFERENCE_TYPE,
+  ReceivablesRepository,
+} from './receivables.repository';
 
 @Injectable()
 export class ReceivablesService {
   constructor(
-    private readonly prisma: PrismaService,
+    private readonly repository: ReceivablesRepository,
     private readonly cash: CashService,
     private readonly rates: RatesService,
   ) {}
@@ -65,66 +55,30 @@ export class ReceivablesService {
       dto.currency,
     );
 
-    const receivable = await this.prisma.accountReceivable.create({
-      data: {
-        companyId,
-        customerId: normalizeNullableId(dto.customerId),
-        orderId: normalizeNullableId(dto.orderId),
-        description: dto.description,
-        amount,
-        currency: conversion.currency,
-        exchangeRate: conversion.exchangeRate,
-        baseAmount: conversion.baseAmount,
-        dueDate: dto.dueDate ? new Date(dto.dueDate) : null,
-        reference: dto.reference,
-        notes: dto.notes,
-        status: AccountStatus.PENDING,
-        createdById: userId,
-      },
-      include: RECEIVABLE_INCLUDE,
-    });
+    const data: Prisma.AccountReceivableUncheckedCreateInput = {
+      companyId,
+      customerId: normalizeNullableId(dto.customerId),
+      orderId: normalizeNullableId(dto.orderId),
+      description: dto.description,
+      amount,
+      currency: conversion.currency,
+      exchangeRate: conversion.exchangeRate,
+      baseAmount: conversion.baseAmount,
+      dueDate: dto.dueDate ? new Date(dto.dueDate) : null,
+      reference: dto.reference,
+      notes: dto.notes,
+      status: AccountStatus.PENDING,
+      createdById: userId,
+    };
+
+    const receivable = await this.repository.create(data);
 
     return this.withBalance(receivable);
   }
 
   async findAll(companyId: string, query: ReceivableQueryDto) {
-    const today = startOfToday();
-
-    const where: Prisma.AccountReceivableWhereInput = {
-      ...tenantWhere(companyId),
-      ...(query.status ? { status: query.status } : {}),
-      ...(query.customerId ? { customerId: query.customerId } : {}),
-      ...(query.search ? { description: { contains: query.search } } : {}),
-      ...(query.overdueOnly
-        ? {
-            dueDate: { lt: today },
-            status: { in: [AccountStatus.PENDING, AccountStatus.PARTIAL] },
-          }
-        : {}),
-      ...(query.from || query.to
-        ? { dueDate: buildDateRangeFilter(query.from, query.to) }
-        : {}),
-    };
-
-    const [items, total, aggregate] = await this.prisma.$transaction([
-      this.prisma.accountReceivable.findMany({
-        where,
-        include: RECEIVABLE_INCLUDE,
-        orderBy: query.toOrderBy(['dueDate', 'amount', 'createdAt'], {
-          createdAt: 'desc',
-        }),
-        skip: toSkip(query.page, query.limit),
-        take: query.limit,
-      }),
-      this.prisma.accountReceivable.count({ where }),
-      this.prisma.accountReceivable.aggregate({
-        where,
-        _sum: { baseAmount: true, paidAmount: true },
-      }),
-    ]);
-
-    const totalAmount = toMoney(aggregate._sum.baseAmount ?? 0);
-    const totalPaid = toMoney(aggregate._sum.paidAmount ?? 0);
+    const { items, total, totalBaseAmount, totalPaidAmount } =
+      await this.repository.findPage(companyId, query);
 
     return {
       ...buildPaginatedResult(
@@ -134,18 +88,18 @@ export class ReceivablesService {
         query.limit,
       ),
       totals: {
-        amount: totalAmount,
-        collected: totalPaid,
-        balance: money.sub(totalAmount, totalPaid),
+        amount: toMoney(totalBaseAmount),
+        collected: toMoney(totalPaidAmount),
+        balance: money.sub(
+          toMoney(totalBaseAmount),
+          toMoney(totalPaidAmount),
+        ),
       },
     };
   }
 
   async findOne(companyId: string, id: string) {
-    const receivable = await this.prisma.accountReceivable.findFirst({
-      where: { id, ...tenantWhere(companyId) },
-      include: RECEIVABLE_INCLUDE,
-    });
+    const receivable = await this.repository.findWithRelations(companyId, id);
     if (!receivable) {
       throw new NotFoundException('Cuenta por cobrar no encontrada');
     }
@@ -196,29 +150,26 @@ export class ReceivablesService {
         )
       : null;
 
-    await this.prisma.accountReceivable.updateMany({
-      where: { id, ...tenantWhere(companyId) },
-      data: {
-        ...(dto.customerId !== undefined
-          ? { customerId: normalizeNullableId(dto.customerId) }
-          : {}),
-        ...(dto.description !== undefined
-          ? { description: dto.description }
-          : {}),
-        ...(conversion
-          ? {
-              amount,
-              currency: conversion.currency,
-              exchangeRate: conversion.exchangeRate,
-              baseAmount: conversion.baseAmount,
-            }
-          : {}),
-        ...(dto.dueDate !== undefined
-          ? { dueDate: dto.dueDate ? new Date(dto.dueDate) : null }
-          : {}),
-        ...(dto.reference !== undefined ? { reference: dto.reference } : {}),
-        ...(dto.notes !== undefined ? { notes: dto.notes } : {}),
-      },
+    await this.repository.update(companyId, id, {
+      ...(dto.customerId !== undefined
+        ? { customerId: normalizeNullableId(dto.customerId) }
+        : {}),
+      ...(dto.description !== undefined
+        ? { description: dto.description }
+        : {}),
+      ...(conversion
+        ? {
+            amount,
+            currency: conversion.currency,
+            exchangeRate: conversion.exchangeRate,
+            baseAmount: conversion.baseAmount,
+          }
+        : {}),
+      ...(dto.dueDate !== undefined
+        ? { dueDate: dto.dueDate ? new Date(dto.dueDate) : null }
+        : {}),
+      ...(dto.reference !== undefined ? { reference: dto.reference } : {}),
+      ...(dto.notes !== undefined ? { notes: dto.notes } : {}),
     });
 
     return this.findOne(companyId, id);
@@ -263,9 +214,9 @@ export class ReceivablesService {
     const method = dto.method ?? PaymentMethod.CASH;
     const depositToCash = dto.depositToCash ?? method === PaymentMethod.CASH;
 
-    return this.prisma.$transaction(async (tx) => {
-      const payment = await tx.receivablePayment.create({
-        data: {
+    return this.repository.transaction(async (tx) => {
+      const payment = await this.repository.createPayment(
+        {
           companyId,
           receivableId: id,
           amount,
@@ -276,7 +227,8 @@ export class ReceivablesService {
           note: dto.note,
           createdById: userId,
         },
-      });
+        tx,
+      );
 
       if (depositToCash) {
         const session = await this.cash.getOpenSessionOrThrow(companyId, tx);
@@ -291,7 +243,7 @@ export class ReceivablesService {
             currency,
             baseAmount,
             description: `Cobro CxC: ${receivable.description}`,
-            referenceType: 'RECEIVABLE',
+            referenceType: RECEIVABLE_REFERENCE_TYPE,
             referenceId: payment.id,
             createdById: userId,
           },
@@ -300,18 +252,21 @@ export class ReceivablesService {
       }
 
       const paidAmount = money.add(receivable.paidAmount, baseAmount);
-      await tx.accountReceivable.updateMany({
-        where: { id, ...tenantWhere(companyId) },
-        data: {
+      await this.repository.updatePaymentTotals(
+        companyId,
+        id,
+        {
           paidAmount,
           status: resolveAccountStatus(receivable.baseAmount, paidAmount),
         },
-      });
+        tx,
+      );
 
-      const updated = await tx.accountReceivable.findFirst({
-        where: { id, ...tenantWhere(companyId) },
-        include: RECEIVABLE_INCLUDE,
-      });
+      const updated = await this.repository.findWithRelations(
+        companyId,
+        id,
+        tx,
+      );
       if (!updated) {
         throw new NotFoundException('Cuenta por cobrar no encontrada');
       }
@@ -330,10 +285,7 @@ export class ReceivablesService {
     }
     if (receivable.status === AccountStatus.CANCELLED) return receivable;
 
-    await this.prisma.accountReceivable.updateMany({
-      where: { id, ...tenantWhere(companyId) },
-      data: { status: AccountStatus.CANCELLED },
-    });
+    await this.repository.cancel(companyId, id);
     return this.findOne(companyId, id);
   }
 
@@ -347,50 +299,30 @@ export class ReceivablesService {
       );
     }
 
-    await this.prisma.accountReceivable.deleteMany({
-      where: { id, ...tenantWhere(companyId) },
-    });
+    await this.repository.remove(companyId, id);
     return { id, deleted: true };
   }
 
   /** Resumen por estado + saldo total por cobrar. */
   async summary(companyId: string) {
-    // Promise.all (y no $transaction): Prisma pierde la inferencia de tipos de
-    // `groupBy` dentro del arreglo de la transaccion. Solo son lecturas.
-    const [byStatus, aggregate] = await Promise.all([
-      this.prisma.accountReceivable.groupBy({
-        by: ['status'],
-        where: tenantWhere(companyId),
-        orderBy: { status: 'asc' },
-        _sum: { baseAmount: true, paidAmount: true },
-        _count: { _all: true },
-      }),
-      this.prisma.accountReceivable.aggregate({
-        where: {
-          status: { in: [AccountStatus.PENDING, AccountStatus.PARTIAL] },
-          ...tenantWhere(companyId),
-        },
-        _sum: { baseAmount: true, paidAmount: true },
-        _count: { _all: true },
-      }),
-    ]);
+    const summary = await this.repository.summary(companyId);
 
-    const totalAmount = toMoney(aggregate._sum.baseAmount ?? 0);
-    const totalPaid = toMoney(aggregate._sum.paidAmount ?? 0);
+    const totalAmount = toMoney(summary.openBaseAmount);
+    const totalPaid = toMoney(summary.openPaidAmount);
 
     return {
       openAmount: totalAmount,
       openCollected: totalPaid,
       openBalance: money.sub(totalAmount, totalPaid),
-      openCount: aggregate._count._all,
-      byStatus: byStatus.map((row) => ({
+      openCount: summary.openCount,
+      byStatus: summary.byStatus.map((row) => ({
         status: row.status,
-        count: row._count._all,
-        amount: toMoney(row._sum.baseAmount ?? 0),
-        collected: toMoney(row._sum.paidAmount ?? 0),
+        count: row.count,
+        amount: toMoney(row.baseAmount),
+        collected: toMoney(row.paidAmount),
         balance: money.sub(
-          toMoney(row._sum.baseAmount ?? 0),
-          toMoney(row._sum.paidAmount ?? 0),
+          toMoney(row.baseAmount),
+          toMoney(row.paidAmount),
         ),
       })),
     };
@@ -398,16 +330,10 @@ export class ReceivablesService {
 
   /** Saldo total pendiente de cobro (para estadisticas). */
   async outstandingBalance(companyId: string) {
-    const result = await this.prisma.accountReceivable.aggregate({
-      where: {
-        status: { in: [AccountStatus.PENDING, AccountStatus.PARTIAL] },
-        ...tenantWhere(companyId),
-      },
-      _sum: { baseAmount: true, paidAmount: true },
-    });
+    const result = await this.repository.outstanding(companyId);
     return money.sub(
-      toMoney(result._sum.baseAmount ?? 0),
-      toMoney(result._sum.paidAmount ?? 0),
+      toMoney(result.baseAmount),
+      toMoney(result.paidAmount),
     );
   }
 }

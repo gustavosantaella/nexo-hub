@@ -5,6 +5,7 @@ import { MenusModule } from '../menus/menus.module';
 import { ProductsModule } from '../products/products.module';
 import { SuppliersModule } from '../suppliers/suppliers.module';
 import { DataTransferController } from './data-transfer.controller';
+import { DataTransferRepository } from './data-transfer.repository';
 import { DataTransferService } from './data-transfer.service';
 
 /**
@@ -24,7 +25,7 @@ import { DataTransferService } from './data-transfer.service';
     InventoryModule,
   ],
   controllers: [DataTransferController],
-  providers: [DataTransferService],
+  providers: [DataTransferService, DataTransferRepository],
   exports: [DataTransferService],
 })
 export class DataTransferModule {}

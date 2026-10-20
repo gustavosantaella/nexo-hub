@@ -8,8 +8,9 @@ nexo-hub/
 │   ├── prisma/schema.prisma Modelo de datos (multi-empresa)
 │   ├── prisma/seed.ts       Datos demo (maestros + historial de 30 días)
 │   └── src/modules/         auth, companies, users, categories, suppliers,
-│                            customers, inventory, products, orders, cash,
-│                            expenses, payables, receivables, stats, rates,
+│                            customers, inventory, products, menus, orders,
+│                            cash, expenses, payables, receivables, stats,
+│                            rates, currencies, preferences, data-transfer,
 │                            health
 └── frontend/                SPA Angular 18
     └── src/app/
@@ -18,6 +19,20 @@ nexo-hub/
         ├── layout/          shell con barra lateral + cabecera
         └── features/        páginas por dominio (carga diferida)
 ```
+
+### Arquitectura del backend
+
+Cada módulo separa **reglas de negocio** y **acceso a datos**:
+
+- `<dominio>.service.ts`: validaciones, cálculos y coordinación de casos de uso.
+- `<dominio>.repository.ts`: **único** punto autorizado para usar Prisma
+  (`prisma.<modelo>`, `$transaction`, `tx.<modelo>`). Expone métodos de dominio
+  y recibe `PrismaClientLike` cuando participa de una transacción existente.
+
+Los servicios no inyectan `PrismaService`; los repositorios se registran en el
+`providers` de su módulo. Al agregar una consulta o escritura nueva, va en el
+repositorio del dominio correspondiente, nunca en el servicio ni en el
+controlador.
 
 ## Requisitos
 

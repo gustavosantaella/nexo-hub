@@ -5,7 +5,6 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import type { Prisma } from '@prisma/client';
 import {
   CASH_OUT_CATEGORIES,
   CashMovementCategory,
@@ -18,10 +17,8 @@ import {
   MIXED_CURRENCY_CODE,
   normalizeCurrencyCode,
 } from '../../common/constants/currencies';
-import { buildPaginatedResult, toSkip } from '../../common/utils/pagination.util';
+import { buildPaginatedResult } from '../../common/utils/pagination.util';
 import { buildCode } from '../../common/utils/code.util';
-import { buildDateRange } from '../../common/utils/date.util';
-import { tenantWhere } from '../../common/utils/tenant.util';
 import {
   compareMoney,
   money,
@@ -30,8 +27,9 @@ import {
   toMoney,
 } from '../../common/utils/money.util';
 import { OPENING_LINE_MONEY_FIELDS } from '../../common/constants/money-columns';
-import { PrismaService, type PrismaClientLike } from '../../prisma/prisma.service';
+import type { PrismaClientLike } from '../../prisma/prisma.service';
 import { RatesService } from '../rates/rates.service';
+import { CashRepository, type CashSessionWithRelations } from './cash.repository';
 import { CashMovementQueryDto, CashSessionQueryDto } from './dto/cash-query.dto';
 import { CloseSessionDto } from './dto/close-session.dto';
 import { CreateCashMovementDto } from './dto/create-cash-movement.dto';
@@ -156,23 +154,10 @@ export interface RegisterMovementInput {
   createdById?: string;
 }
 
-const SESSION_INCLUDE = {
-  openedBy: { select: { id: true, name: true, email: true } },
-  closedBy: { select: { id: true, name: true, email: true } },
-  movements: {
-    orderBy: { createdAt: 'desc' },
-    include: { createdBy: { select: { id: true, name: true } } },
-  },
-} satisfies Prisma.CashSessionInclude;
-
-type SessionWithRelations = Prisma.CashSessionGetPayload<{
-  include: typeof SESSION_INCLUDE;
-}>;
-
 @Injectable()
 export class CashService {
   constructor(
-    private readonly prisma: PrismaService,
+    private readonly cash: CashRepository,
     private readonly config: ConfigService,
     private readonly rates: RatesService,
   ) {}
@@ -548,28 +533,7 @@ export class CashService {
     ];
     if (orderIds.length === 0) return [...movements];
 
-    const orders = await this.prisma.order.findMany({
-      where: {
-        id: { in: orderIds },
-        // Sin propina no hay nada que separar.
-        tip: { gt: 0 },
-        ...tenantWhere(companyId),
-      },
-      select: {
-        id: true,
-        total: true,
-        tip: true,
-        payments: {
-          select: {
-            id: true,
-            amount: true,
-            baseAmount: true,
-            cashMovementId: true,
-          },
-          orderBy: { createdAt: 'asc' },
-        },
-      },
-    });
+    const orders = await this.cash.findOrdersWithTips(companyId, orderIds);
 
     const tipsByMovement = new Map<string, number>();
     for (const order of orders) {
@@ -604,7 +568,7 @@ export class CashService {
    * Antes de sumar se reparte la propina de cada cobro (`withTips`) para que
    * `salesTotal` quede neto de propinas y `tipsTotal` traiga lo recaudado.
    */
-  private async serializeSession(session: SessionWithRelations) {
+  private async serializeSession(session: CashSessionWithRelations) {
     // El desglose del fondo viaja siempre parseado (y como lista vacia cuando la
     // apertura fue de una sola moneda antes del soporte multimoneda).
     const openingLines = this.openingLinesOf(session.openingLines);
@@ -646,50 +610,20 @@ export class CashService {
 
   /** Devuelve la sesion de caja abierta actualmente (o null). */
   async getCurrentSession(companyId: string) {
-    const session = await this.prisma.cashSession.findFirst({
-      where: { status: CashSessionStatus.OPEN, ...tenantWhere(companyId) },
-      include: SESSION_INCLUDE,
-      orderBy: { openedAt: 'desc' },
-    });
+    const session = await this.cash.findCurrentSession(companyId);
 
     if (!session) return { session: null, summary: null, reconciliation: null };
     return this.serializeSession(session);
   }
 
   async getSessionById(companyId: string, id: string) {
-    const session = await this.prisma.cashSession.findFirst({
-      where: { id, ...tenantWhere(companyId) },
-      include: SESSION_INCLUDE,
-    });
+    const session = await this.cash.findSessionById(companyId, id);
     if (!session) throw new NotFoundException('Sesion de caja no encontrada');
     return this.serializeSession(session);
   }
 
   async listSessions(companyId: string, query: CashSessionQueryDto) {
-    const dateFilter = buildDateRange(query.from, query.to);
-
-    const where: Prisma.CashSessionWhereInput = {
-      ...tenantWhere(companyId),
-      ...(query.status ? { status: query.status } : {}),
-      // El rango (opcional) se aplica sobre la apertura: las cajas que se
-      // abrieron dentro del periodo pedido.
-      ...(query.from || query.to ? { openedAt: dateFilter } : {}),
-    };
-
-    const [items, total] = await this.prisma.$transaction([
-      this.prisma.cashSession.findMany({
-        where,
-        include: {
-          openedBy: { select: { id: true, name: true } },
-          closedBy: { select: { id: true, name: true } },
-          _count: { select: { movements: true, orders: true } },
-        },
-        orderBy: query.toOrderBy(['openedAt', 'closedAt'], { openedAt: 'desc' }),
-        skip: toSkip(query.page, query.limit),
-        take: query.limit,
-      }),
-      this.prisma.cashSession.count({ where }),
-    ]);
+    const { items, total } = await this.cash.findSessionPage(companyId, query);
 
     // El desglose del fondo se guarda como JSON en texto: se devuelve siempre
     // parseado (lista) para que los listados no tengan que saber del formato.
@@ -706,33 +640,7 @@ export class CashService {
   }
 
   async listMovements(companyId: string, query: CashMovementQueryDto) {
-    const dateFilter = buildDateRange(query.from, query.to);
-
-    const where: Prisma.CashMovementWhereInput = {
-      ...tenantWhere(companyId),
-      ...(query.sessionId ? { sessionId: query.sessionId } : {}),
-      ...(query.type ? { type: query.type } : {}),
-      ...(query.category ? { category: query.category } : {}),
-      ...(query.paymentMethod ? { paymentMethod: query.paymentMethod } : {}),
-      ...(query.currency
-        ? { currency: normalizeCurrencyCode(query.currency) }
-        : {}),
-      ...(query.from || query.to ? { createdAt: dateFilter } : {}),
-    };
-
-    const [items, total] = await this.prisma.$transaction([
-      this.prisma.cashMovement.findMany({
-        where,
-        include: {
-          createdBy: { select: { id: true, name: true } },
-          session: { select: { id: true, code: true, status: true } },
-        },
-        orderBy: query.toOrderBy(['createdAt', 'amount'], { createdAt: 'desc' }),
-        skip: toSkip(query.page, query.limit),
-        take: query.limit,
-      }),
-      this.prisma.cashMovement.count({ where }),
-    ]);
+    const { items, total } = await this.cash.findMovementPage(companyId, query);
 
     return buildPaginatedResult(items, total, query.page, query.limit);
   }
@@ -757,16 +665,12 @@ export class CashService {
 
     const single = this.config.get<boolean>('cash.singleOpenSession') ?? true;
 
-    const session = await this.prisma.$transaction(async (tx) => {
-      const existing = await tx.cashSession.findFirst({
-        where: single
-          ? { status: CashSessionStatus.OPEN, ...tenantWhere(companyId) }
-          : {
-              status: CashSessionStatus.OPEN,
-              openedById: userId,
-              ...tenantWhere(companyId),
-            },
-      });
+    const session = await this.cash.transaction(async (tx) => {
+      const existing = await this.cash.findOpenSession(
+        companyId,
+        single ? {} : { openedById: userId },
+        tx,
+      );
 
       if (existing) {
         throw new ConflictException(
@@ -774,14 +678,10 @@ export class CashService {
         );
       }
 
-      const startOfDay = new Date();
-      startOfDay.setHours(0, 0, 0, 0);
-      const todayCount = await tx.cashSession.count({
-        where: { openedAt: { gte: startOfDay }, ...tenantWhere(companyId) },
-      });
+      const todayCount = await this.cash.countToday(companyId, tx);
 
-      return tx.cashSession.create({
-        data: {
+      return this.cash.createSession(
+        {
           companyId,
           code: buildCode('CJ', todayCount + 1),
           status: CashSessionStatus.OPEN,
@@ -796,8 +696,8 @@ export class CashService {
             : {}),
           openingNotes: dto.openingNotes,
         },
-        include: SESSION_INCLUDE,
-      });
+        tx,
+      );
     });
 
     return this.serializeSession(session);
@@ -828,12 +728,8 @@ export class CashService {
       countedCurrency = conversion.currency;
     }
 
-    const closed = await this.prisma.$transaction(async (tx) => {
-      const session = await tx.cashSession.findFirst({
-        where: { status: CashSessionStatus.OPEN, ...tenantWhere(companyId) },
-        include: { movements: true },
-        orderBy: { openedAt: 'desc' },
-      });
+    const closed = await this.cash.transaction(async (tx) => {
+      const session = await this.cash.findOpenSessionWithMovements(companyId, tx);
 
       if (!session) {
         throw new BadRequestException('No hay ninguna caja abierta para cerrar');
@@ -848,13 +744,10 @@ export class CashService {
       const difference = money.sub(countedAmount, expectedAmount);
 
       // updateMany con filtro de estado => cierre atomico (evita doble cierre).
-      const guard = await tx.cashSession.updateMany({
-        where: {
-          id: session.id,
-          status: CashSessionStatus.OPEN,
-          ...tenantWhere(companyId),
-        },
-        data: {
+      const guard = await this.cash.closeSession(
+        companyId,
+        session.id,
+        {
           status: CashSessionStatus.CLOSED,
           closedById: userId,
           closedAt: new Date(),
@@ -865,7 +758,8 @@ export class CashService {
           difference,
           closingNotes: dto.closingNotes,
         },
-      });
+        tx,
+      );
 
       if (guard.count === 0) {
         throw new ConflictException(
@@ -873,10 +767,7 @@ export class CashService {
         );
       }
 
-      return tx.cashSession.findUniqueOrThrow({
-        where: { id: session.id, ...tenantWhere(companyId) },
-        include: SESSION_INCLUDE,
-      });
+      return this.cash.findSessionOrThrow(companyId, session.id, tx);
     });
 
     // Fuera de la transaccion: el reparto de propinas solo lee del pedido.
@@ -906,11 +797,7 @@ export class CashService {
 
   /** Devuelve la sesion abierta o lanza error. Usado por pedidos/gastos. */
   async getOpenSessionOrThrow(companyId: string, tx?: PrismaClientLike) {
-    const client = tx ?? this.prisma;
-    const session = await client.cashSession.findFirst({
-      where: { status: CashSessionStatus.OPEN, ...tenantWhere(companyId) },
-      orderBy: { openedAt: 'desc' },
-    });
+    const session = await this.cash.findOpenSession(companyId, {}, tx);
     if (!session) {
       throw new BadRequestException(
         'No hay una caja abierta. Debes abrir la caja antes de registrar esta operacion.',
@@ -928,7 +815,6 @@ export class CashService {
     input: RegisterMovementInput,
     tx?: PrismaClientLike,
   ) {
-    const client = tx ?? this.prisma;
     const amount = toMoney(input.amount);
 
     if (amount <= 0) {
@@ -949,12 +835,13 @@ export class CashService {
         : toMoney(input.baseAmount);
 
     const sessionId =
-      input.sessionId ?? (await this.getOpenSessionOrThrow(companyId, client)).id;
+      input.sessionId ?? (await this.getOpenSessionOrThrow(companyId, tx)).id;
 
-    const session = await client.cashSession.findFirst({
-      where: { id: sessionId, ...tenantWhere(companyId) },
-      select: { id: true, code: true, status: true },
-    });
+    const session = await this.cash.findSessionForMovement(
+      companyId,
+      sessionId,
+      tx,
+    );
 
     if (!session) throw new NotFoundException('Sesion de caja no encontrada');
     if (session.status !== CashSessionStatus.OPEN) {
@@ -963,8 +850,8 @@ export class CashService {
       );
     }
 
-    return client.cashMovement.create({
-      data: {
+    return this.cash.createMovement(
+      {
         companyId,
         sessionId: session.id,
         type: input.type ?? this.inferType(input.category),
@@ -979,7 +866,8 @@ export class CashService {
         referenceId: input.referenceId,
         createdById: input.createdById,
       },
-    });
+      tx,
+    );
   }
 
   /** Endpoint manual: ingreso/egreso de caja. */

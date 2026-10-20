@@ -9,6 +9,7 @@ import { hashPassword } from '../../common/utils/password.util';
 import type { PrismaService } from '../../prisma/prisma.service';
 import type { CompaniesService } from '../companies/companies.service';
 import type { UsersService } from '../users/users.service';
+import { AuthRepository } from './auth.repository';
 import { AuthService } from './auth.service';
 import type { LoginDto } from './dto/login.dto';
 import type { SwitchCompanyDto } from './dto/switch-company.dto';
@@ -95,6 +96,11 @@ describe('AuthService (acceso por empresa)', () => {
     markLogin: jest.Mock;
   };
   let companies: { findOne: jest.Mock };
+  /** Doble de `PrismaService` que solo cubre el registro publico. */
+  let prisma: {
+    user: { findUnique: jest.Mock };
+    company: { findUnique: jest.Mock };
+  };
 
   /** Deja al usuario con las membresias indicadas y la contrasena correcta. */
   function session(
@@ -131,11 +137,15 @@ describe('AuthService (acceso por empresa)', () => {
       markLogin: jest.fn(async () => undefined),
     };
     companies = { findOne: jest.fn(async (id: string) => companyProfile(id)) };
+    prisma = {
+      user: { findUnique: jest.fn(async () => null) },
+      company: { findUnique: jest.fn(async () => null) },
+    };
 
     service = new AuthService(
       users as unknown as UsersService,
       companies as unknown as CompaniesService,
-      {} as PrismaService,
+      new AuthRepository(prisma as unknown as PrismaService),
       { signAsync: jest.fn(async () => 'jwt-token') } as unknown as JwtService,
     );
   });

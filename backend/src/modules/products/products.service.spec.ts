@@ -2,6 +2,7 @@ import { NotFoundException } from '@nestjs/common';
 import type { PrismaService } from '../../prisma/prisma.service';
 import type { InventoryService } from '../inventory/inventory.service';
 import type { RatesService } from '../rates/rates.service';
+import { ProductsRepository } from './products.repository';
 import { ProductsService } from './products.service';
 
 const COMPANY_ID = 'company-1';
@@ -116,7 +117,7 @@ function createService(
     ...ratesOverride,
   } as unknown as RatesService;
   const service = new ProductsService(
-    prisma as unknown as PrismaService,
+    new ProductsRepository(prisma as unknown as PrismaService),
     inventory,
     rates,
   );

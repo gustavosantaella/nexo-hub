@@ -2,8 +2,11 @@ import { Injectable } from '@nestjs/common';
 import type { Prisma } from '@prisma/client';
 import type { ChargeRateKey, DialogView, PosView } from '../../common/constants/enums';
 import { CHARGE_RATE_KEYS, POS_VIEWS } from '../../common/constants/enums';
-import { PrismaService } from '../../prisma/prisma.service';
 import { UpdatePreferencesDto } from './dto/update-preferences.dto';
+import {
+  PreferencesRepository,
+  type PreferenceRow,
+} from './preferences.repository';
 
 /**
  * Preferencias de interfaz de la EMPRESA activa.
@@ -39,21 +42,6 @@ export interface CompanyPreferences {
    */
   posView: PosView | null;
 }
-
-/** Columnas que viajan al cliente (el `companyId` es la sesion, no hace falta). */
-const PREFERENCES_SELECT = {
-  tipPercent: true,
-  dialogView: true,
-  priceCurrency: true,
-  conversionCurrencies: true,
-  showBcvPrice: true,
-  chargeRateKey: true,
-  posView: true,
-} satisfies Prisma.CompanyPreferenceSelect;
-
-type PreferenceRow = Prisma.CompanyPreferenceGetPayload<{
-  select: typeof PREFERENCES_SELECT;
-}>;
 
 /** Sin fila guardada la empresa nunca configuro nada: todo de fabrica. */
 const NO_PREFERENCES: CompanyPreferences = {
@@ -190,14 +178,11 @@ function toPreferences(row: PreferenceRow): CompanyPreferences {
  */
 @Injectable()
 export class PreferencesService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(private readonly preferences: PreferencesRepository) {}
 
   /** Preferencias guardadas de la empresa (`null` en un campo = sin configurar). */
   async find(companyId: string): Promise<CompanyPreferences> {
-    const row = await this.prisma.companyPreference.findUnique({
-      where: { companyId },
-      select: PREFERENCES_SELECT,
-    });
+    const row = await this.preferences.find(companyId);
     return row ? toPreferences(row) : { ...NO_PREFERENCES };
   }
 
@@ -234,9 +219,9 @@ export class PreferencesService {
       update.posView = normalizePosView(dto.posView);
     }
 
-    const row = await this.prisma.companyPreference.upsert({
-      where: { companyId },
-      create: {
+    const row = await this.preferences.upsert(
+      companyId,
+      {
         companyId,
         tipPercent: normalizeTipPercent(dto.tipPercent),
         dialogView: dto.dialogView ?? null,
@@ -249,8 +234,7 @@ export class PreferencesService {
         posView: normalizePosView(dto.posView),
       },
       update,
-      select: PREFERENCES_SELECT,
-    });
+    );
     return toPreferences(row);
   }
 }

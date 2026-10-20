@@ -8,18 +8,13 @@ import type { Prisma } from '@prisma/client';
 import {
   type PaginatedResult,
   buildPaginatedResult,
-  toSkip,
 } from '../../common/utils/pagination.util';
 import { sortCategoryHierarchy } from '../../common/utils/category-hierarchy.util';
 import { normalizeNullableId } from '../../common/utils/normalize.util';
-import { tenantWhere } from '../../common/utils/tenant.util';
-import { PrismaService } from '../../prisma/prisma.service';
 import { CreateMenuCategoryDto } from './dto/menu-category.dto';
 import { MenuCategoryQueryDto } from './dto/menu-category-query.dto';
 import { UpdateMenuCategoryDto } from './dto/update-menu-category.dto';
-
-/** Datos del padre que viajan en el listado para pintar la jerarquia. */
-const PARENT_SELECT = { select: { id: true, name: true } } as const;
+import { MenuCategoriesRepository } from './menu-categories.repository';
 
 /**
  * Categorias de menu (Desayunos, Almuerzos, Combos...). Son independientes de
@@ -28,15 +23,18 @@ const PARENT_SELECT = { select: { id: true, name: true } } as const;
  */
 @Injectable()
 export class MenuCategoriesService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(private readonly categories: MenuCategoriesRepository) {}
 
   async create(companyId: string, dto: CreateMenuCategoryDto) {
     await this.assertNameAvailable(companyId, dto.name);
     // La subcategoria es opcional: sin `parentId` la categoria es principal.
     const parentId = normalizeNullableId(dto.parentId);
     await this.assertParentAssignable(companyId, parentId);
-    return this.prisma.menuCategory.create({
-      data: { ...dto, parentId, companyId, active: dto.active ?? true },
+    return this.categories.create({
+      ...dto,
+      parentId,
+      companyId,
+      active: dto.active ?? true,
     });
   }
 
@@ -44,35 +42,7 @@ export class MenuCategoriesService {
     companyId: string,
     query: MenuCategoryQueryDto,
   ): Promise<PaginatedResult<unknown>> {
-    const where: Prisma.MenuCategoryWhereInput = {
-      ...tenantWhere(companyId),
-      ...(query.search ? { name: { contains: query.search } } : {}),
-      // `parentId` filtra las subcategorias de una principal.
-      ...(query.parentId ? { parentId: query.parentId } : {}),
-    };
-
-    const [items, total] = await this.prisma.$transaction([
-      this.prisma.menuCategory.findMany({
-        where,
-        include: {
-          // La principal, para la columna del padre del listado.
-          parent: PARENT_SELECT,
-          // Los conteos tambien se aislan a la empresa activa.
-          _count: {
-            select: {
-              menus: { where: tenantWhere(companyId) },
-              subcategories: { where: tenantWhere(companyId) },
-            },
-          },
-        },
-        orderBy: query.toOrderBy(['name', 'sortOrder', 'createdAt'], {
-          sortOrder: 'asc',
-        }),
-        skip: toSkip(query.page, query.limit),
-        take: query.limit,
-      }),
-      this.prisma.menuCategory.count({ where }),
-    ]);
+    const { items, total } = await this.categories.findPage(companyId, query);
 
     return buildPaginatedResult(items, total, query.page, query.limit);
   }
@@ -83,16 +53,7 @@ export class MenuCategoriesService {
    * subcategorias justo debajo de su principal para indentarlas en el select.
    */
   async findOptions(companyId: string) {
-    const rows = await this.prisma.menuCategory.findMany({
-      where: { active: true, ...tenantWhere(companyId) },
-      select: {
-        id: true,
-        name: true,
-        color: true,
-        sortOrder: true,
-        parentId: true,
-      },
-    });
+    const rows = await this.categories.findOptions(companyId);
     return sortCategoryHierarchy(
       rows,
       (a, b) => a.sortOrder - b.sortOrder || a.name.localeCompare(b.name),
@@ -100,10 +61,7 @@ export class MenuCategoriesService {
   }
 
   async findOne(companyId: string, id: string) {
-    const category = await this.prisma.menuCategory.findFirst({
-      where: { id, ...tenantWhere(companyId) },
-      include: { parent: PARENT_SELECT },
-    });
+    const category = await this.categories.findOne(companyId, id);
     if (!category) throw new NotFoundException('Categoria de menu no encontrada');
     return category;
   }
@@ -119,10 +77,7 @@ export class MenuCategoriesService {
       data.parentId = await this.resolveParentId(companyId, id, dto.parentId);
     }
 
-    await this.prisma.menuCategory.updateMany({
-      where: { id, ...tenantWhere(companyId) },
-      data,
-    });
+    await this.categories.update(companyId, id, data);
     return this.findOne(companyId, id);
   }
 
@@ -130,9 +85,7 @@ export class MenuCategoriesService {
     await this.findOne(companyId, id);
     // Prisma pone categoryId = null en los menus y parentId = null en las
     // subcategorias (SetNull): no se pierden, las hijas quedan como principales.
-    return this.prisma.menuCategory.deleteMany({
-      where: { id, ...tenantWhere(companyId) },
-    });
+    return this.categories.remove(companyId, id);
   }
 
   /** Normaliza el `parentId` recibido y valida la jerarquia antes de guardarlo. */
@@ -165,10 +118,7 @@ export class MenuCategoriesService {
       );
     }
 
-    const parent = await this.prisma.menuCategory.findFirst({
-      where: { id: parentId, ...tenantWhere(companyId) },
-      select: { id: true, parentId: true },
-    });
+    const parent = await this.categories.findParentRef(companyId, parentId);
     if (!parent) {
       throw new BadRequestException(
         'La categoria de menu principal indicada no existe',
@@ -179,10 +129,7 @@ export class MenuCategoriesService {
     }
 
     if (!categoryId) return;
-    const subcategory = await this.prisma.menuCategory.findFirst({
-      where: { parentId: categoryId, ...tenantWhere(companyId) },
-      select: { id: true },
-    });
+    const subcategory = await this.categories.findChildRef(companyId, categoryId);
     if (subcategory) {
       throw new BadRequestException(
         'Esta categoria tiene subcategorias: no puede ser subcategoria de otra',
@@ -196,14 +143,7 @@ export class MenuCategoriesService {
     name: string,
     excludeId?: string,
   ): Promise<void> {
-    const existing = await this.prisma.menuCategory.findFirst({
-      where: {
-        ...tenantWhere(companyId),
-        name,
-        ...(excludeId ? { id: { not: excludeId } } : {}),
-      },
-      select: { id: true },
-    });
+    const existing = await this.categories.findByName(companyId, name, excludeId);
     if (existing) {
       throw new ConflictException(
         'Ya existe una categoria de menu con ese nombre en esta empresa',

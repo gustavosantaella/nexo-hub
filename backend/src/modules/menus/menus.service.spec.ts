@@ -6,6 +6,7 @@ import {
   MenusService,
   servingsAvailable,
 } from './menus.service';
+import { MenusRepository } from './menus.repository';
 
 const COMPANY_ID = 'company-1';
 
@@ -154,7 +155,7 @@ function createService(
   } as unknown as RatesService;
 
   const service = new MenusService(
-    prisma as unknown as PrismaService,
+    new MenusRepository(prisma as unknown as PrismaService),
     rates,
   );
   return { service, prisma, created };

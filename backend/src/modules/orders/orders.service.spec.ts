@@ -18,6 +18,7 @@ import {
   encodeRatesHistory,
   parseRatesHistory,
 } from './orders.service';
+import { OrdersRepository } from './orders.repository';
 
 const COMPANY_ID = 'company-1';
 
@@ -299,7 +300,7 @@ function createService(
   };
 
   const service = new OrdersService(
-    prisma as unknown as PrismaService,
+    new OrdersRepository(prisma as unknown as PrismaService),
     inventory as unknown as InventoryService,
     cash as unknown as CashService,
     // Cada test declara solo las tasas que usa: todo cobro guarda ademas el

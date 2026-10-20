@@ -19,12 +19,12 @@ import {
   convertFromBase,
   PaymentConversion,
 } from '../../common/utils/currency.util';
-import { PrismaService } from '../../prisma/prisma.service';
 import { CurrenciesService } from '../currencies/currencies.service';
 import { PreferencesService } from '../preferences/preferences.service';
+import { RatesRepository } from './rates.repository';
 
 /** Clave de `Setting` donde vive la tasa personalizada (Bs por USD). */
-export const CUSTOM_RATE_KEY = 'rates.custom_usd';
+export { CUSTOM_RATE_KEY } from './rates.repository';
 
 export type RateKey = 'BCV_USD' | 'BCV_EUR' | 'CUSTOM_USD';
 
@@ -239,7 +239,7 @@ export class RatesService {
   private usdtInflight: Promise<ReferenceRate> | null = null;
 
   constructor(
-    private readonly prisma: PrismaService,
+    private readonly ratesRepository: RatesRepository,
     private readonly currencies: CurrenciesService,
     private readonly preferences: PreferencesService,
     config: ConfigService,
@@ -699,10 +699,7 @@ export class RatesService {
 
   /** Lee la tasa personalizada de la empresa (o `null` si no existe). */
   async customRate(companyId: string): Promise<CustomRate | null> {
-    const row = await this.prisma.setting.findUnique({
-      where: { companyId_key: { companyId, key: CUSTOM_RATE_KEY } },
-      include: { updatedBy: { select: { name: true } } },
-    });
+    const row = await this.ratesRepository.findCustomRateSetting(companyId);
     if (!row) return null;
 
     const usd = Number(row.value);
@@ -722,18 +719,12 @@ export class RatesService {
     userId?: string,
   ): Promise<CustomRate | null> {
     if (usd === null) {
-      await this.prisma.setting.deleteMany({
-        where: { companyId, key: CUSTOM_RATE_KEY },
-      });
+      await this.ratesRepository.deleteCustomRate(companyId);
       return null;
     }
 
     const value = String(usd);
-    await this.prisma.setting.upsert({
-      where: { companyId_key: { companyId, key: CUSTOM_RATE_KEY } },
-      update: { value, updatedById: userId },
-      create: { companyId, key: CUSTOM_RATE_KEY, value, updatedById: userId },
-    });
+    await this.ratesRepository.upsertCustomRate(companyId, value, userId);
 
     return this.customRate(companyId);
   }

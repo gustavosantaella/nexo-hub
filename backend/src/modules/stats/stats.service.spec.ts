@@ -3,6 +3,7 @@ import type { CashService } from '../cash/cash.service';
 import type { PayablesService } from '../payables/payables.service';
 import type { ReceivablesService } from '../receivables/receivables.service';
 import { StatsQueryDto } from './dto/stats-query.dto';
+import { StatsRepository } from './stats.repository';
 import { StatsService } from './stats.service';
 
 const COMPANY_ID = 'company-1';
@@ -93,7 +94,7 @@ function createService(options: { session?: unknown } = {}) {
 
   return {
     service: new StatsService(
-      prisma as unknown as PrismaService,
+      new StatsRepository(prisma as unknown as PrismaService),
       cash,
       payables,
       receivables,
@@ -227,7 +228,7 @@ describe('StatsService (panel)', () => {
         },
       };
       const service = new StatsService(
-        prisma as unknown as PrismaService,
+        new StatsRepository(prisma as unknown as PrismaService),
         {} as CashService,
         {} as PayablesService,
         {} as ReceivablesService,
@@ -253,7 +254,7 @@ describe('StatsService (panel)', () => {
   describe('resolveRange (filtro de fechas)', () => {
     function buildService() {
       return new StatsService(
-        {} as PrismaService,
+        new StatsRepository({} as PrismaService),
         {} as CashService,
         {} as PayablesService,
         {} as ReceivablesService,

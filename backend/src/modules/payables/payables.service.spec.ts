@@ -3,6 +3,7 @@ import { convertToBase } from '../../common/utils/currency.util';
 import type { PrismaService } from '../../prisma/prisma.service';
 import type { CashService } from '../cash/cash.service';
 import type { RatesService } from '../rates/rates.service';
+import { PayablesRepository } from './payables.repository';
 import { PayablesService } from './payables.service';
 
 /** Tasa del dolar usada en las pruebas (Bs por USD): 1 VES = 1/900 USD. */
@@ -57,10 +58,10 @@ function account(partial: Record<string, unknown> = {}) {
   };
 }
 
-/** Servicio con Prisma simulado; `cash` no se usa en estos casos. */
+/** Servicio con Prisma simulado (via repositorio); `cash` no se usa aqui. */
 function buildService(prisma: Record<string, unknown>) {
   return new PayablesService(
-    prisma as unknown as PrismaService,
+    new PayablesRepository(prisma as unknown as PrismaService),
     {} as CashService,
     rates,
   );

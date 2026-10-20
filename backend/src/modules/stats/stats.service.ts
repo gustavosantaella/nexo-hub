@@ -1,14 +1,12 @@
 import { Injectable } from '@nestjs/common';
 import { BASE_CURRENCY_CODE } from '../../common/constants/currencies';
-import { CashSessionStatus, OrderStatus } from '../../common/constants/enums';
 import { parseDateBoundary } from '../../common/utils/date.util';
-import { tenantWhere } from '../../common/utils/tenant.util';
 import { money, toMoney } from '../../common/utils/money.util';
-import { PrismaService } from '../../prisma/prisma.service';
 import { CashService } from '../cash/cash.service';
 import { PayablesService } from '../payables/payables.service';
 import { ReceivablesService } from '../receivables/receivables.service';
 import { StatsQueryDto, StatGranularity } from './dto/stats-query.dto';
+import { StatsRepository } from './stats.repository';
 
 export interface DateRange {
   from: Date;
@@ -47,9 +45,6 @@ function toCurrencyAmounts(rows: CurrencyGroupRow[]): CurrencyAmount[] {
     .sort((a, b) => b.baseAmount - a.baseAmount);
 }
 
-/** Estados de pedido que cuentan como venta efectiva. */
-const SALE_STATUSES = [OrderStatus.COMPLETED];
-
 /** Inicio del dia en hora local. */
 function startOfDay(date: Date) {
   const copy = new Date(date);
@@ -85,7 +80,7 @@ function bucketKey(date: Date, granularity: StatGranularity): string {
 @Injectable()
 export class StatsService {
   constructor(
-    private readonly prisma: PrismaService,
+    private readonly repository: StatsRepository,
     private readonly cash: CashService,
     private readonly payables: PayablesService,
     private readonly receivables: ReceivablesService,
@@ -121,25 +116,11 @@ export class StatsService {
   /** Serie temporal de ventas, gastos y utilidad operativa. */
   async salesSeries(companyId: string, query: StatsQueryDto) {
     const range = this.resolveRange(query);
-    const where = {
-      ...tenantWhere(companyId),
-      status: { in: SALE_STATUSES },
-      createdAt: { gte: range.from, lte: range.to },
-    };
 
-    const [orders, expenses] = await this.prisma.$transaction([
-      this.prisma.order.findMany({
-        where,
-        select: { total: true, paidAmount: true, createdAt: true },
-      }),
-      this.prisma.expense.findMany({
-        where: {
-          date: { gte: range.from, lte: range.to },
-          ...tenantWhere(companyId),
-        },
-        select: { amount: true, baseAmount: true, date: true },
-      }),
-    ]);
+    const [orders, expenses] = await this.repository.findSalesSeriesRows(
+      companyId,
+      range,
+    );
 
     interface Bucket {
       period: string;
@@ -220,29 +201,10 @@ export class StatsService {
    */
   async topProducts(companyId: string, query: StatsQueryDto) {
     const range = this.resolveRange(query);
-    const rangeWhere = {
-      ...tenantWhere(companyId),
-      order: {
-        status: { in: SALE_STATUSES },
-        createdAt: { gte: range.from, lte: range.to },
-      },
-    };
 
     const [productRows, menuRows] = await Promise.all([
-      this.prisma.orderItem.groupBy({
-        by: ['productId'],
-        where: { ...rangeWhere, productId: { not: null } },
-        orderBy: { _sum: { total: 'desc' } },
-        _sum: { quantity: true, total: true },
-        take: query.limit,
-      }),
-      this.prisma.orderItem.groupBy({
-        by: ['menuId'],
-        where: { ...rangeWhere, menuId: { not: null } },
-        orderBy: { _sum: { total: 'desc' } },
-        _sum: { quantity: true, total: true },
-        take: query.limit,
-      }),
+      this.repository.findSoldByProduct(companyId, range, query.limit),
+      this.repository.findSoldByMenu(companyId, range, query.limit),
     ]);
 
     const productIds = productRows
@@ -253,22 +215,8 @@ export class StatsService {
       .filter((id): id is string => !!id);
 
     const [products, menus] = await Promise.all([
-      productIds.length
-        ? this.prisma.product.findMany({
-            where: { id: { in: productIds }, ...tenantWhere(companyId) },
-            select: { id: true, name: true, sku: true, cost: true },
-          })
-        : Promise.resolve(
-            [] as { id: string; name: string; sku: string; cost: number }[],
-          ),
-      menuIds.length
-        ? this.prisma.menu.findMany({
-            where: { id: { in: menuIds }, ...tenantWhere(companyId) },
-            select: { id: true, name: true, code: true, cost: true },
-          })
-        : Promise.resolve(
-            [] as { id: string; name: string; code: string; cost: number }[],
-          ),
+      this.repository.findProductCosts(companyId, productIds),
+      this.repository.findMenuCosts(companyId, menuIds),
     ]);
 
     const productById = new Map(products.map((product) => [product.id, product]));
@@ -319,17 +267,10 @@ export class StatsService {
   async paymentsByMethod(companyId: string, query: StatsQueryDto) {
     const range = this.resolveRange(query);
 
-    const grouped = await this.prisma.orderPayment.groupBy({
-      by: ['method'],
-      where: {
-        createdAt: { gte: range.from, lte: range.to },
-        ...tenantWhere(companyId),
-      },
-      orderBy: { method: 'asc' },
-      // Se agrupa en la moneda base (USD) para poder sumar/comparar montos
-      // cobrados en distintas monedas; el desglose por moneda se expone aparte.
-      _sum: { baseAmount: true },
-      _count: { _all: true },
+    // Se agrupa en la moneda base (USD) para poder sumar/comparar montos
+    // cobrados en distintas monedas; el desglose por moneda se expone aparte.
+    const grouped = await this.repository.groupPaymentsByMethod(companyId, {
+      createdAt: { gte: range.from, lte: range.to },
     });
 
     const total = money.sum(grouped.map((row) => row._sum.baseAmount ?? 0));
@@ -357,15 +298,8 @@ export class StatsService {
   async paymentsByCurrency(companyId: string, query: StatsQueryDto) {
     const range = this.resolveRange(query);
 
-    const grouped = await this.prisma.orderPayment.groupBy({
-      by: ['currency'],
-      where: {
-        createdAt: { gte: range.from, lte: range.to },
-        ...tenantWhere(companyId),
-      },
-      orderBy: { currency: 'asc' },
-      _sum: { amount: true, baseAmount: true },
-      _count: { _all: true },
+    const grouped = await this.repository.groupPaymentsByCurrency(companyId, {
+      createdAt: { gte: range.from, lte: range.to },
     });
 
     const items = grouped
@@ -394,25 +328,10 @@ export class StatsService {
    */
   async salesByCategory(companyId: string, query: StatsQueryDto) {
     const range = this.resolveRange(query);
-    const rangeWhere = {
-      ...tenantWhere(companyId),
-      order: {
-        status: { in: SALE_STATUSES },
-        createdAt: { gte: range.from, lte: range.to },
-      },
-    };
 
     const [productRows, menuRows] = await Promise.all([
-      this.prisma.orderItem.groupBy({
-        by: ['productId'],
-        where: { ...rangeWhere, productId: { not: null } },
-        _sum: { quantity: true, total: true },
-      }),
-      this.prisma.orderItem.groupBy({
-        by: ['menuId'],
-        where: { ...rangeWhere, menuId: { not: null } },
-        _sum: { quantity: true, total: true },
-      }),
+      this.repository.findSoldByProduct(companyId, range),
+      this.repository.findSoldByMenu(companyId, range),
     ]);
 
     const productIds = productRows
@@ -423,22 +342,8 @@ export class StatsService {
       .filter((id): id is string => !!id);
 
     const [products, menus] = await Promise.all([
-      productIds.length
-        ? this.prisma.product.findMany({
-            where: { id: { in: productIds }, ...tenantWhere(companyId) },
-            select: { id: true, category: { select: { id: true, name: true } } },
-          })
-        : Promise.resolve(
-            [] as { id: string; category: { id: string; name: string } | null }[],
-          ),
-      menuIds.length
-        ? this.prisma.menu.findMany({
-            where: { id: { in: menuIds }, ...tenantWhere(companyId) },
-            select: { id: true, category: { select: { id: true, name: true } } },
-          })
-        : Promise.resolve(
-            [] as { id: string; category: { id: string; name: string } | null }[],
-          ),
+      this.repository.findProductCategories(companyId, productIds),
+      this.repository.findMenuCategories(companyId, menuIds),
     ]);
 
     const categoryByProduct = new Map(
@@ -497,18 +402,7 @@ export class StatsService {
    * dos columnas en un `where` de Prisma, por eso se filtra en memoria.
    */
   async lowStockProducts(companyId: string, limit = 20) {
-    const products = await this.prisma.product.findMany({
-      where: { active: true, trackStock: true, ...tenantWhere(companyId) },
-      select: {
-        id: true,
-        sku: true,
-        name: true,
-        stock: true,
-        minStock: true,
-        unit: true,
-      },
-      orderBy: { stock: 'asc' },
-    });
+    const products = await this.repository.findLowStockCandidates(companyId);
 
     return products
       .filter((product) => product.stock <= product.minStock)
@@ -533,6 +427,24 @@ export class StatsService {
     );
 
     const [
+      snapshot,
+      lowStock,
+      payableBalance,
+      receivableBalance,
+    ] = await Promise.all([
+      this.repository.dashboardSnapshot(companyId, {
+        todayFrom,
+        todayTo,
+        monthFrom,
+        prevMonthFrom,
+        prevMonthTo,
+      }),
+      this.lowStockProducts(companyId, 5),
+      this.payables.outstandingBalance(companyId),
+      this.receivables.outstandingBalance(companyId),
+    ]);
+
+    const {
       todayOrders,
       monthOrders,
       prevMonthOrders,
@@ -540,124 +452,13 @@ export class StatsService {
       monthExpenses,
       openSession,
       activeOrders,
-      lowStock,
-      payableBalance,
-      receivableBalance,
       productCount,
       customerCount,
       supplierCount,
       paymentsToday,
       paymentsTodayByCurrency,
       expensesTodayByCurrency,
-    ] = await Promise.all([
-      this.prisma.order.aggregate({
-        where: {
-          ...tenantWhere(companyId),
-          status: { in: SALE_STATUSES },
-          createdAt: { gte: todayFrom, lte: todayTo },
-        },
-        _sum: { total: true, paidAmount: true },
-        _count: { _all: true },
-      }),
-      this.prisma.order.aggregate({
-        where: {
-          ...tenantWhere(companyId),
-          status: { in: SALE_STATUSES },
-          createdAt: { gte: monthFrom, lte: todayTo },
-        },
-        _sum: { total: true, paidAmount: true },
-        _count: { _all: true },
-      }),
-      this.prisma.order.aggregate({
-        where: {
-          ...tenantWhere(companyId),
-          status: { in: SALE_STATUSES },
-          createdAt: { gte: prevMonthFrom, lte: prevMonthTo },
-        },
-        _sum: { total: true },
-      }),
-      this.prisma.expense.aggregate({
-        where: {
-          date: { gte: todayFrom, lte: todayTo },
-          ...tenantWhere(companyId),
-        },
-        _sum: { baseAmount: true },
-      }),
-      this.prisma.expense.aggregate({
-        where: {
-          date: { gte: monthFrom, lte: todayTo },
-          ...tenantWhere(companyId),
-        },
-        _sum: { baseAmount: true },
-      }),
-      this.prisma.cashSession.findFirst({
-        where: { status: CashSessionStatus.OPEN, ...tenantWhere(companyId) },
-        orderBy: { openedAt: 'desc' },
-        select: {
-          id: true,
-          code: true,
-          openedAt: true,
-          openingAmount: true,
-          openedBy: { select: { id: true, name: true } },
-          movements: { orderBy: { createdAt: 'desc' } },
-        },
-      }),
-      this.prisma.order.count({
-        where: {
-          ...tenantWhere(companyId),
-          status: {
-            in: [
-              OrderStatus.PENDING,
-              OrderStatus.CONFIRMED,
-              OrderStatus.PREPARING,
-              OrderStatus.READY,
-            ],
-          },
-        },
-      }),
-      this.lowStockProducts(companyId, 5),
-      this.payables.outstandingBalance(companyId),
-      this.receivables.outstandingBalance(companyId),
-      this.prisma.product.count({
-        where: { active: true, ...tenantWhere(companyId) },
-      }),
-      this.prisma.customer.count({
-        where: { active: true, ...tenantWhere(companyId) },
-      }),
-      this.prisma.supplier.count({
-        where: { active: true, ...tenantWhere(companyId) },
-      }),
-      this.prisma.orderPayment.groupBy({
-        by: ['method'],
-        where: {
-          createdAt: { gte: todayFrom, lte: todayTo },
-          ...tenantWhere(companyId),
-        },
-        orderBy: { method: 'asc' },
-        _sum: { baseAmount: true },
-        _count: { _all: true },
-      }),
-      this.prisma.orderPayment.groupBy({
-        by: ['currency'],
-        where: {
-          createdAt: { gte: todayFrom, lte: todayTo },
-          ...tenantWhere(companyId),
-        },
-        orderBy: { currency: 'asc' },
-        _sum: { amount: true, baseAmount: true },
-        _count: { _all: true },
-      }),
-      this.prisma.expense.groupBy({
-        by: ['currency'],
-        where: {
-          date: { gte: todayFrom, lte: todayTo },
-          ...tenantWhere(companyId),
-        },
-        orderBy: { currency: 'asc' },
-        _sum: { amount: true, baseAmount: true },
-        _count: { _all: true },
-      }),
-    ]);
+    } = snapshot;
 
     const todaySales = toMoney(todayOrders._sum.total ?? 0);
     const todayOrderCount = todayOrders._count._all;

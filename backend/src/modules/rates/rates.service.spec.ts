@@ -5,6 +5,7 @@ import type { PrismaService } from '../../prisma/prisma.service';
 import type { CurrenciesService } from '../currencies/currencies.service';
 import type { PreferencesService } from '../preferences/preferences.service';
 import { CUSTOM_RATE_KEY, RatesService } from './rates.service';
+import { RatesRepository } from './rates.repository';
 
 /** Empresa de prueba usada en todas las llamadas (multi-tenant). */
 const COMPANY_ID = 'company-1';
@@ -132,7 +133,7 @@ function buildService(options: {
   };
 
   const service = new RatesService(
-    { setting: settingDelegate } as unknown as PrismaService,
+    new RatesRepository({ setting: settingDelegate } as unknown as PrismaService),
     currencies as unknown as CurrenciesService,
     preferences as unknown as PreferencesService,
     config as unknown as ConfigService,

@@ -8,30 +8,28 @@ import type { Prisma } from '@prisma/client';
 import {
   type PaginatedResult,
   buildPaginatedResult,
-  toSkip,
 } from '../../common/utils/pagination.util';
 import { sortCategoryHierarchy } from '../../common/utils/category-hierarchy.util';
 import { normalizeNullableId } from '../../common/utils/normalize.util';
-import { tenantWhere } from '../../common/utils/tenant.util';
-import { PrismaService } from '../../prisma/prisma.service';
+import { CategoriesRepository } from './categories.repository';
 import { CategoryQueryDto } from './dto/category-query.dto';
 import { CreateCategoryDto } from './dto/create-category.dto';
 import { UpdateCategoryDto } from './dto/update-category.dto';
 
-/** Datos del padre que viajan en el listado para pintar la jerarquia. */
-const PARENT_SELECT = { select: { id: true, name: true } } as const;
-
 @Injectable()
 export class CategoriesService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(private readonly categories: CategoriesRepository) {}
 
   async create(companyId: string, dto: CreateCategoryDto) {
     await this.assertNameAvailable(companyId, dto.name);
     // La subcategoria es opcional: sin `parentId` la categoria es principal.
     const parentId = normalizeNullableId(dto.parentId);
     await this.assertParentAssignable(companyId, parentId);
-    return this.prisma.category.create({
-      data: { ...dto, parentId, companyId, active: dto.active ?? true },
+    return this.categories.create({
+      ...dto,
+      parentId,
+      companyId,
+      active: dto.active ?? true,
     });
   }
 
@@ -39,34 +37,7 @@ export class CategoriesService {
     companyId: string,
     query: CategoryQueryDto,
   ): Promise<PaginatedResult<unknown>> {
-    const where: Prisma.CategoryWhereInput = {
-      ...tenantWhere(companyId),
-      ...(query.search ? { name: { contains: query.search } } : {}),
-      // `parentId` filtra las subcategorias de una categoria principal.
-      ...(query.parentId ? { parentId: query.parentId } : {}),
-    };
-
-    const [items, total] = await this.prisma.$transaction([
-      this.prisma.category.findMany({
-        where,
-        include: {
-          // La principal, para la columna del padre del listado.
-          parent: PARENT_SELECT,
-          // Los conteos tambien se aislan a la empresa activa.
-          _count: {
-            select: {
-              products: { where: tenantWhere(companyId) },
-              subcategories: { where: tenantWhere(companyId) },
-            },
-          },
-        },
-        orderBy: query.toOrderBy(['name', 'createdAt'], { name: 'asc' }),
-        skip: toSkip(query.page, query.limit),
-        take: query.limit,
-      }),
-      this.prisma.category.count({ where }),
-    ]);
-
+    const { items, total } = await this.categories.findPage(companyId, query);
     return buildPaginatedResult(items, total, query.page, query.limit);
   }
 
@@ -76,18 +47,12 @@ export class CategoriesService {
    * `<option>` solo tenga que indentar las filas que traen `parentId`.
    */
   async findOptions(companyId: string) {
-    const rows = await this.prisma.category.findMany({
-      where: { active: true, ...tenantWhere(companyId) },
-      select: { id: true, name: true, parentId: true },
-    });
+    const rows = await this.categories.findOptions(companyId);
     return sortCategoryHierarchy(rows);
   }
 
   async findOne(companyId: string, id: string) {
-    const category = await this.prisma.category.findFirst({
-      where: { id, ...tenantWhere(companyId) },
-      include: { parent: PARENT_SELECT },
-    });
+    const category = await this.categories.findOne(companyId, id);
     if (!category) throw new NotFoundException('Categoria no encontrada');
     return category;
   }
@@ -104,10 +69,7 @@ export class CategoriesService {
     }
 
     // updateMany + filtro por empresa: nunca se toca una categoria de otra.
-    await this.prisma.category.updateMany({
-      where: { id, ...tenantWhere(companyId) },
-      data,
-    });
+    await this.categories.updateMany(companyId, id, data);
     return this.findOne(companyId, id);
   }
 
@@ -116,9 +78,7 @@ export class CategoriesService {
     // Al eliminar, Prisma pone categoryId = null en los productos y parentId =
     // null en las subcategorias (SetNull): nada se borra en cascada, las
     // subcategorias pasan a ser categorias principales.
-    return this.prisma.category.deleteMany({
-      where: { id, ...tenantWhere(companyId) },
-    });
+    return this.categories.deleteMany(companyId, id);
   }
 
   /** Normaliza el `parentId` recibido y valida la jerarquia antes de guardarlo. */
@@ -151,10 +111,7 @@ export class CategoriesService {
       );
     }
 
-    const parent = await this.prisma.category.findFirst({
-      where: { id: parentId, ...tenantWhere(companyId) },
-      select: { id: true, parentId: true },
-    });
+    const parent = await this.categories.findParent(companyId, parentId);
     if (!parent) {
       throw new BadRequestException(
         'La categoria principal indicada no existe',
@@ -165,10 +122,10 @@ export class CategoriesService {
     }
 
     if (!categoryId) return;
-    const subcategory = await this.prisma.category.findFirst({
-      where: { parentId: categoryId, ...tenantWhere(companyId) },
-      select: { id: true },
-    });
+    const subcategory = await this.categories.findSubcategory(
+      companyId,
+      categoryId,
+    );
     if (subcategory) {
       throw new BadRequestException(
         'Esta categoria tiene subcategorias: no puede ser subcategoria de otra',
@@ -182,14 +139,11 @@ export class CategoriesService {
     name: string,
     excludeId?: string,
   ): Promise<void> {
-    const existing = await this.prisma.category.findFirst({
-      where: {
-        ...tenantWhere(companyId),
-        name,
-        ...(excludeId ? { id: { not: excludeId } } : {}),
-      },
-      select: { id: true },
-    });
+    const existing = await this.categories.findByName(
+      companyId,
+      name,
+      excludeId,
+    );
     if (existing) {
       throw new ConflictException(
         'Ya existe una categoria con ese nombre en esta empresa',

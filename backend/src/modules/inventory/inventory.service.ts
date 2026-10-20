@@ -3,22 +3,20 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
-import type { Prisma } from '@prisma/client';
 import {
   StockMovementType,
   type StockMovementType as StockMovementTypeT,
 } from '../../common/constants/enums';
-import { buildPaginatedResult, toSkip } from '../../common/utils/pagination.util';
-import { buildDateRange } from '../../common/utils/date.util';
+import { buildPaginatedResult } from '../../common/utils/pagination.util';
 import { money } from '../../common/utils/money.util';
 import { boxUnitsOf, inputUnits, stockQuantity } from '../../common/utils/packaging.util';
 import { compareQty, toQty } from '../../common/utils/quantity.util';
-import { tenantWhere } from '../../common/utils/tenant.util';
-import { PrismaService, type PrismaClientLike } from '../../prisma/prisma.service';
+import type { PrismaClientLike } from '../../prisma/prisma.service';
 import { RatesService } from '../rates/rates.service';
 import { AdjustStockDto } from './dto/adjust-stock.dto';
 import { CreateMovementDto } from './dto/create-movement.dto';
 import { MovementQueryDto } from './dto/movement-query.dto';
+import { InventoryRepository } from './inventory.repository';
 
 /** Entrada del motor de stock. `tx` permite participar de una transaccion. */
 export interface MovementInput {
@@ -67,7 +65,7 @@ export interface MovementResult {
 @Injectable()
 export class InventoryService {
   constructor(
-    private readonly prisma: PrismaService,
+    private readonly inventory: InventoryRepository,
     private readonly rates: RatesService,
   ) {}
 
@@ -81,19 +79,12 @@ export class InventoryService {
     input: MovementInput,
     tx?: PrismaClientLike,
   ): Promise<MovementResult> {
-    const client = tx ?? this.prisma;
-
     // El producto debe pertenecer a la empresa activa (aislamiento).
-    const product = await client.product.findFirst({
-      where: { id: input.productId, ...tenantWhere(companyId) },
-      select: {
-        id: true,
-        name: true,
-        stock: true,
-        unit: true,
-        unitsPerBox: true,
-      },
-    });
+    const product = await this.inventory.findMovementProduct(
+      companyId,
+      input.productId,
+      tx,
+    );
     if (!product) {
       throw new NotFoundException(`Producto no encontrado: ${input.productId}`);
     }
@@ -141,8 +132,8 @@ export class InventoryService {
         throw new BadRequestException('Tipo de movimiento invalido');
     }
 
-    const movement = await client.stockMovement.create({
-      data: {
+    const movement = await this.inventory.createMovement(
+      {
         companyId,
         productId: product.id,
         type: input.type,
@@ -160,9 +151,10 @@ export class InventoryService {
         referenceId: input.referenceId,
         createdById: input.createdById,
       },
-    });
+      tx,
+    );
 
-    // updateMany + filtro por empresa: nunca se toca un producto de otra.
+    // Filtro por empresa en el repositorio: nunca se toca un producto de otra.
     // Al ingresar mercaderia se actualiza el costo de referencia del producto
     // (el unitario y el de la presentacion, que es `unitario x unidades`).
     const units = boxUnitsOf(product);
@@ -194,10 +186,12 @@ export class InventoryService {
           }
         : {};
 
-    await client.product.updateMany({
-      where: { id: product.id, ...tenantWhere(companyId) },
-      data: { stock: stockAfter, ...costUpdate, ...priceUpdate },
-    });
+    await this.inventory.updateProductStock(
+      companyId,
+      product.id,
+      { stock: stockAfter, ...costUpdate, ...priceUpdate },
+      tx,
+    );
 
     return { movement, stockBefore, stockAfter };
   }
@@ -266,31 +260,7 @@ export class InventoryService {
   }
 
   async findMovements(companyId: string, query: MovementQueryDto) {
-    const dateFilter = buildDateRange(query.from, query.to);
-
-    const where: Prisma.StockMovementWhereInput = {
-      ...tenantWhere(companyId),
-      ...(query.productId ? { productId: query.productId } : {}),
-      ...(query.type ? { type: query.type } : {}),
-      ...(query.from || query.to ? { createdAt: dateFilter } : {}),
-    };
-
-    const [items, total] = await this.prisma.$transaction([
-      this.prisma.stockMovement.findMany({
-        where,
-        include: {
-          // El movimiento ya viene filtrado por empresa; su producto es el mismo.
-          product: { select: { id: true, name: true, sku: true, unit: true } },
-          createdBy: { select: { id: true, name: true } },
-        },
-        orderBy: query.toOrderBy(['createdAt', 'quantity'], {
-          createdAt: 'desc',
-        }),
-        skip: toSkip(query.page, query.limit),
-        take: query.limit,
-      }),
-      this.prisma.stockMovement.count({ where }),
-    ]);
+    const { items, total } = await this.inventory.findMovementPage(companyId, query);
 
     return buildPaginatedResult(items, total, query.page, query.limit);
   }
@@ -300,49 +270,7 @@ export class InventoryService {
     companyId: string,
     options: { lowOnly?: boolean; search?: string },
   ) {
-    const products = await this.prisma.product.findMany({
-      where: {
-        active: true,
-        ...tenantWhere(companyId),
-        ...(options.search
-          ? {
-              OR: [
-                { name: { contains: options.search } },
-                { sku: { contains: options.search } },
-              ],
-            }
-          : {}),
-      },
-      select: {
-        id: true,
-        sku: true,
-        name: true,
-        stock: true,
-        minStock: true,
-        unit: true,
-        // Presentacion y precio de la unidad suelta: el formulario de movimientos
-        // los necesita para convertir cajas <-> unidades y para mostrar a cuanto
-        // se vende la unidad que se abre de la presentacion.
-        unitsPerBox: true,
-        unitPrice: true,
-        cost: true,
-        price: true,
-        // Contexto de moneda de los montos (que viajan en USD): la tabla vuelve a
-        // mostrar el monto tal como lo escribio el operador (Bs 350,00) y no su
-        // equivalente en dolares redondeado a centavos.
-        priceCurrency: true,
-        priceRateKey: true,
-        priceEntered: true,
-        costCurrency: true,
-        costRateKey: true,
-        costEntered: true,
-        unitPriceCurrency: true,
-        unitPriceRateKey: true,
-        unitPriceEntered: true,
-        category: { select: { id: true, name: true } },
-      },
-      orderBy: { name: 'asc' },
-    });
+    const products = await this.inventory.findStockLevels(companyId, options);
 
     const items = products.map((p) => ({
       ...p,

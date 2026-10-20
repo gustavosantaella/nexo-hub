@@ -4,7 +4,6 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
-import type { Prisma } from '@prisma/client';
 import {
   BASE_CURRENCY_CODE,
   normalizeCurrencyCode,
@@ -26,7 +25,6 @@ import {
   serializeConsumption,
   type ConsumptionPart,
 } from '../../common/utils/consumption.util';
-import { buildDateRange } from '../../common/utils/date.util';
 import {
   compareMoney,
   fitToBalance,
@@ -35,13 +33,9 @@ import {
   toMoney,
 } from '../../common/utils/money.util';
 import { normalizeNullableId } from '../../common/utils/normalize.util';
-import {
-  buildPaginatedResult,
-  toSkip,
-} from '../../common/utils/pagination.util';
+import { buildPaginatedResult } from '../../common/utils/pagination.util';
 import { mulQty, sumQty } from '../../common/utils/quantity.util';
-import { tenantWhere } from '../../common/utils/tenant.util';
-import { PrismaService, type PrismaClientLike } from '../../prisma/prisma.service';
+import type { PrismaClientLike } from '../../prisma/prisma.service';
 import { CashService } from '../cash/cash.service';
 import { InventoryService } from '../inventory/inventory.service';
 import { MenusService, type MenuRecipe } from '../menus/menus.service';
@@ -60,32 +54,11 @@ import {
   UpdateOrderItemDto,
 } from './dto/order.dto';
 import { OrderQueryDto, UpdateOrderStatusDto } from './dto/order-query.dto';
-
-const ORDER_LIST_INCLUDE = {
-  customer: { select: { id: true, name: true, phone: true } },
-  createdBy: { select: { id: true, name: true } },
-  _count: { select: { items: true, payments: true } },
-} satisfies Prisma.OrderInclude;
-
-const ORDER_DETAIL_INCLUDE = {
-  customer: { select: { id: true, name: true, phone: true, docNumber: true } },
-  createdBy: { select: { id: true, name: true } },
-  cashSession: { select: { id: true, code: true, status: true } },
-  items: true,
-  payments: { orderBy: { createdAt: 'asc' } },
-} satisfies Prisma.OrderInclude;
-
-/**
- * Pedidos activos del tablero operativo (cocina/salon y mapa de mesas del POS).
- * Ademas del resumen trae las lineas del pedido: el cajero necesita ver los
- * productos ya cargados en la mesa al entrar a agregar o cobrar.
- */
-const ORDER_ACTIVE_INCLUDE = {
-  ...ORDER_LIST_INCLUDE,
-  items: true,
-} satisfies Prisma.OrderInclude;
-
-type OrderWithItems = Prisma.OrderGetPayload<{ include: { items: true } }>;
+import {
+  OrdersRepository,
+  type OrderStatusContext,
+  type OrderWithItems,
+} from './orders.repository';
 
 /** Maquina de estados del pedido. Estados terminales: COMPLETED / CANCELLED. */
 const ORDER_TRANSITIONS: Record<string, OrderStatusT[]> = {
@@ -258,7 +231,7 @@ export function parseRatesHistory(value: unknown): RateHistory | null {
 @Injectable()
 export class OrdersService {
   constructor(
-    private readonly prisma: PrismaService,
+    private readonly orders: OrdersRepository,
     private readonly inventory: InventoryService,
     private readonly cash: CashService,
     private readonly rates: RatesService,
@@ -282,9 +255,9 @@ export class OrdersService {
       deliveryFee: deliveryFee?.base,
     });
 
-    return this.prisma.$transaction(async (tx) => {
-      const order = await tx.order.create({
-        data: {
+    return this.orders.transaction(async (tx) => {
+      const order = await this.orders.create(
+        {
           companyId,
           code: await this.nextCode(companyId, tx),
           customerId: normalizeNullableId(dto.customerId),
@@ -314,8 +287,8 @@ export class OrdersService {
             })),
           },
         },
-        include: ORDER_DETAIL_INCLUDE,
-      });
+        tx,
+      );
 
       // El stock se consume al registrar la venta (trazable con referenceId).
       // Los menus se expanden a su receta: una sola salida por producto.
@@ -350,10 +323,7 @@ export class OrdersService {
     dto: AddOrderItemsDto,
     userId: string,
   ) {
-    const order = await this.prisma.order.findFirst({
-      where: { id, ...tenantWhere(companyId) },
-      include: { items: true },
-    });
+    const order = await this.orders.findWithItems(companyId, id);
     if (!order) throw new NotFoundException('Pedido no encontrado');
     if (
       order.status === OrderStatus.COMPLETED ||
@@ -401,10 +371,11 @@ export class OrdersService {
     // Un menu aporta la cantidad de cada ingrediente de su receta.
     const stockOut = this.consumptionOf(newItems);
 
-    return this.prisma.$transaction(async (tx) => {
-      const updated = await tx.order.update({
-        where: { id, ...tenantWhere(companyId) },
-        data: {
+    return this.orders.transaction(async (tx) => {
+      const updated = await this.orders.update(
+        companyId,
+        id,
+        {
           ...totals,
           paymentStatus,
           items: {
@@ -443,8 +414,8 @@ export class OrdersService {
               : {}),
           },
         },
-        include: ORDER_DETAIL_INCLUDE,
-      });
+        tx,
+      );
 
       // El stock de los productos agregados se consume igual que al crear.
       await this.applyConsumption(companyId, tx, {
@@ -670,10 +641,7 @@ export class OrdersService {
     ];
 
     const products = productIds.length
-      ? await this.prisma.product.findMany({
-          where: { id: { in: productIds }, ...tenantWhere(companyId) },
-          select: { id: true, name: true, price: true, active: true },
-        })
+      ? await this.orders.findSaleProducts(companyId, productIds)
       : [];
     const recipes = await this.menus.loadRecipes(companyId, menuIds);
 
@@ -846,77 +814,24 @@ export class OrdersService {
   // =========================================================================
 
   async findAll(companyId: string, query: OrderQueryDto) {
-    const dateFilter = buildDateRange(query.from, query.to);
-
-    const where: Prisma.OrderWhereInput = {
-      ...tenantWhere(companyId),
-      ...(query.status ? { status: query.status } : {}),
-      ...(query.type ? { type: query.type } : {}),
-      ...(query.paymentStatus ? { paymentStatus: query.paymentStatus } : {}),
-      ...(query.customerId ? { customerId: query.customerId } : {}),
-      ...(query.cashSessionId ? { cashSessionId: query.cashSessionId } : {}),
-      ...(query.from || query.to ? { createdAt: dateFilter } : {}),
-      ...(query.search
-        ? {
-            OR: [
-              { code: { contains: query.search } },
-              { tableNumber: { contains: query.search } },
-              { customer: { name: { contains: query.search } } },
-            ],
-          }
-        : {}),
-    };
-
-    const [items, total] = await this.prisma.$transaction([
-      this.prisma.order.findMany({
-        where,
-        include: ORDER_LIST_INCLUDE,
-        orderBy: query.toOrderBy(['createdAt', 'total', 'code'], {
-          createdAt: 'desc',
-        }),
-        skip: toSkip(query.page, query.limit),
-        take: query.limit,
-      }),
-      this.prisma.order.count({ where }),
-    ]);
-
+    const { items, total } = await this.orders.findPage(companyId, query);
     return buildPaginatedResult(items, total, query.page, query.limit);
   }
 
   /** Pedidos activos (no terminados) para el tablero operativo. */
   findActiveOrders(companyId: string) {
-    return this.prisma.order.findMany({
-      where: {
-        ...tenantWhere(companyId),
-        status: {
-          in: [
-            OrderStatus.PENDING,
-            OrderStatus.CONFIRMED,
-            OrderStatus.PREPARING,
-            OrderStatus.READY,
-          ],
-        },
-      },
-      include: ORDER_ACTIVE_INCLUDE,
-      orderBy: { createdAt: 'asc' },
-    });
+    return this.orders.findActive(companyId);
   }
 
   async findOne(companyId: string, id: string) {
-    const order = await this.prisma.order.findFirst({
-      where: { id, ...tenantWhere(companyId) },
-      include: ORDER_DETAIL_INCLUDE,
-    });
+    const order = await this.orders.findDetail(companyId, id);
     if (!order) throw new NotFoundException('Pedido no encontrado');
     return this.withRatesHistory(order);
   }
 
   /** Actualiza datos editables y recalcula totales sobre los items existentes. */
   async update(companyId: string, id: string, dto: UpdateOrderDto) {
-    const order = await this.prisma.order.findFirst({
-      where: { id, ...tenantWhere(companyId) },
-      include: { items: true },
-    });
+    const order = await this.orders.findWithItems(companyId, id);
     if (!order) throw new NotFoundException('Pedido no encontrado');
     if (order.status === OrderStatus.CANCELLED) {
       throw new BadRequestException('No se puede editar un pedido cancelado');
@@ -954,21 +869,17 @@ export class OrdersService {
           ? PaymentStatus.PAID
           : PaymentStatus.PARTIAL;
 
-    const updated = await this.prisma.order.update({
-      where: { id, ...tenantWhere(companyId) },
-      data: {
-        ...(dto.customerId !== undefined
-          ? { customerId: normalizeNullableId(dto.customerId) }
-          : {}),
-        ...(dto.tableNumber !== undefined ? { tableNumber: dto.tableNumber } : {}),
-        ...(dto.notes !== undefined ? { notes: dto.notes } : {}),
-        ...totals,
-        ...(dto.deliveryFee !== undefined
-          ? this.deliveryFeeWrite(deliveryFee)
-          : {}),
-        paymentStatus,
-      },
-      include: ORDER_DETAIL_INCLUDE,
+    const updated = await this.orders.update(companyId, id, {
+      ...(dto.customerId !== undefined
+        ? { customerId: normalizeNullableId(dto.customerId) }
+        : {}),
+      ...(dto.tableNumber !== undefined ? { tableNumber: dto.tableNumber } : {}),
+      ...(dto.notes !== undefined ? { notes: dto.notes } : {}),
+      ...totals,
+      ...(dto.deliveryFee !== undefined
+        ? this.deliveryFeeWrite(deliveryFee)
+        : {}),
+      paymentStatus,
     });
 
     return this.withRatesHistory(updated);
@@ -995,10 +906,8 @@ export class OrdersService {
     dto: AddOrderPaymentDto,
     userId: string,
   ) {
-    return this.prisma.$transaction(async (tx) => {
-      const order = await tx.order.findFirst({
-        where: { id: orderId, ...tenantWhere(companyId) },
-      });
+    return this.orders.transaction(async (tx) => {
+      const order = await this.orders.findDetail(companyId, orderId, tx);
       if (!order) throw new NotFoundException('Pedido no encontrado');
       if (order.status === OrderStatus.CANCELLED) {
         throw new BadRequestException('No se puede cobrar un pedido cancelado');
@@ -1061,8 +970,8 @@ export class OrdersService {
         tx,
       );
 
-      await tx.orderPayment.create({
-        data: {
+      await this.orders.createPayment(
+        {
           companyId,
           orderId: order.id,
           amount,
@@ -1078,7 +987,8 @@ export class OrdersService {
           note: dto.note,
           createdById: userId,
         },
-      });
+        tx,
+      );
 
       const paidAmount = money.add(order.paidAmount, baseAmount);
       const paymentStatus =
@@ -1086,9 +996,10 @@ export class OrdersService {
           ? PaymentStatus.PAID
           : PaymentStatus.PARTIAL;
 
-      const updated = await tx.order.update({
-        where: { id: order.id, ...tenantWhere(companyId) },
-        data: {
+      const updated = await this.orders.update(
+        companyId,
+        order.id,
+        {
           paidAmount,
           paymentStatus,
           cashSessionId: session.id,
@@ -1097,8 +1008,8 @@ export class OrdersService {
             ? { status: OrderStatus.COMPLETED }
             : {}),
         },
-        include: ORDER_DETAIL_INCLUDE,
-      });
+        tx,
+      );
 
       return this.withRatesHistory(updated);
     });
@@ -1115,10 +1026,7 @@ export class OrdersService {
     dto: UpdateOrderStatusDto,
     userId: string,
   ) {
-    const order = await this.prisma.order.findFirst({
-      where: { id, ...tenantWhere(companyId) },
-      include: { items: true, _count: { select: { payments: true } } },
-    });
+    const order = await this.orders.findStatusContext(companyId, id);
     if (!order) throw new NotFoundException('Pedido no encontrado');
 
     if (order.status === dto.status) return this.findOne(companyId, id);
@@ -1139,21 +1047,14 @@ export class OrdersService {
       return this.restockAndSetCancelled(companyId, order, userId);
     }
 
-    const updated = await this.prisma.order.update({
-      where: { id, ...tenantWhere(companyId) },
-      data: { status: dto.status },
-      include: ORDER_DETAIL_INCLUDE,
-    });
+    const updated = await this.orders.updateStatus(companyId, id, dto.status);
 
     return this.withRatesHistory(updated);
   }
 
   /** Elimina un pedido sin pagos, devolviendo el stock consumido. */
   async remove(companyId: string, id: string, userId: string) {
-    const order = await this.prisma.order.findFirst({
-      where: { id, ...tenantWhere(companyId) },
-      include: { items: true, _count: { select: { payments: true } } },
-    });
+    const order = await this.orders.findWithPayments(companyId, id);
     if (!order) throw new NotFoundException('Pedido no encontrado');
     if (order._count.payments > 0) {
       throw new BadRequestException(
@@ -1164,11 +1065,11 @@ export class OrdersService {
       throw new BadRequestException('No se puede eliminar un pedido completado');
     }
 
-    await this.prisma.$transaction(async (tx) => {
+    await this.orders.transaction(async (tx) => {
       if (order.status !== OrderStatus.CANCELLED) {
         await this.restockItems(companyId, tx, order, userId);
       }
-      await tx.order.delete({ where: { id, ...tenantWhere(companyId) } });
+      await this.orders.delete(companyId, id, tx);
     });
 
     return { id, deleted: true };
@@ -1180,28 +1081,18 @@ export class OrdersService {
    */
   private async restockAndSetCancelled(
     companyId: string,
-    order: OrderWithItems,
+    order: OrderStatusContext,
     userId: string,
   ) {
-    return this.prisma.$transaction(async (tx) => {
-      const guard = await tx.order.updateMany({
-        where: {
-          id: order.id,
-          ...tenantWhere(companyId),
-          status: { not: OrderStatus.CANCELLED },
-        },
-        data: { status: OrderStatus.CANCELLED },
-      });
+    return this.orders.transaction(async (tx) => {
+      const guard = await this.orders.markCancelled(companyId, order.id, tx);
       if (guard.count === 0) {
         throw new ConflictException('El pedido ya estaba cancelado');
       }
 
       await this.restockItems(companyId, tx, order, userId);
 
-      const updated = await tx.order.findUniqueOrThrow({
-        where: { id: order.id },
-        include: ORDER_DETAIL_INCLUDE,
-      });
+      const updated = await this.orders.findDetailById(order.id, tx);
 
       return this.withRatesHistory(updated);
     });
@@ -1379,10 +1270,7 @@ export class OrdersService {
     companyId: string,
     id: string,
   ): Promise<OrderWithItems> {
-    const order = await this.prisma.order.findFirst({
-      where: { id, ...tenantWhere(companyId) },
-      include: { items: true },
-    });
+    const order = await this.orders.findWithItems(companyId, id);
     if (!order) throw new NotFoundException('Pedido no encontrado');
     if (
       order.status === OrderStatus.COMPLETED ||
@@ -1460,10 +1348,11 @@ export class OrdersService {
       movements.map((movement) => movement.productId),
     );
 
-    return this.prisma.$transaction(async (tx) => {
-      const updated = await tx.order.update({
-        where: { id: order.id, ...tenantWhere(companyId) },
-        data: {
+    return this.orders.transaction(async (tx) => {
+      const updated = await this.orders.update(
+        companyId,
+        order.id,
+        {
           ...totals,
           paymentStatus,
           items: {
@@ -1483,8 +1372,8 @@ export class OrdersService {
               : {}),
           },
         },
-        include: ORDER_DETAIL_INCLUDE,
-      });
+        tx,
+      );
 
       // El stock se mueve solo para productos con control de inventario.
       for (const movement of movements) {
@@ -1515,18 +1404,12 @@ export class OrdersService {
     productIds: string[],
     tx?: PrismaClientLike,
   ): Promise<Set<string>> {
-    const unique = [...new Set(productIds)];
-    if (unique.length === 0) return new Set();
-    const client = tx ?? this.prisma;
-    const products = await client.product.findMany({
-      where: { id: { in: unique }, ...tenantWhere(companyId) },
-      select: { id: true, trackStock: true },
-    });
-    return new Set(
-      products
-        .filter((product) => product.trackStock)
-        .map((product) => product.id),
+    const ids = await this.orders.findTrackedProductIds(
+      companyId,
+      productIds,
+      tx,
     );
+    return new Set(ids);
   }
 
   /** Siguiente codigo secuencial del dia: PED-YYYYMMDD-NNNN (por empresa). */
@@ -1534,11 +1417,7 @@ export class OrdersService {
     companyId: string,
     tx: PrismaClientLike,
   ): Promise<string> {
-    const startOfDay = new Date();
-    startOfDay.setHours(0, 0, 0, 0);
-    const count = await tx.order.count({
-      where: { createdAt: { gte: startOfDay }, ...tenantWhere(companyId) },
-    });
+    const count = await this.orders.countToday(companyId, tx);
     return buildCode('PED', count + 1);
   }
 }

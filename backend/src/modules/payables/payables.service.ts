@@ -18,17 +18,11 @@ import {
 } from '../../common/utils/money.util';
 import {
   accountBalance,
-  buildDateRangeFilter,
   resolveAccountStatus,
-  startOfToday,
 } from '../../common/utils/account.util';
 import { normalizeNullableId } from '../../common/utils/normalize.util';
-import {
-  buildPaginatedResult,
-  toSkip,
-} from '../../common/utils/pagination.util';
-import { tenantWhere } from '../../common/utils/tenant.util';
-import { PrismaService } from '../../prisma/prisma.service';
+import { buildPaginatedResult } from '../../common/utils/pagination.util';
+import type { PrismaClientLike } from '../../prisma/prisma.service';
 import { CashService } from '../cash/cash.service';
 import { RatesService } from '../rates/rates.service';
 import { PayableQueryDto } from './dto/payable-query.dto';
@@ -37,21 +31,15 @@ import {
   PayPayableDto,
   UpdatePayableDto,
 } from './dto/payable.dto';
+import {
+  PAYABLE_REFERENCE_TYPE,
+  PayablesRepository,
+} from './payables.repository';
 
-const PAYABLE_INCLUDE = {
-  supplier: { select: { id: true, name: true, phone: true } },
-  createdBy: { select: { id: true, name: true } },
-  payments: {
-    orderBy: { createdAt: 'desc' },
-    include: { createdBy: { select: { id: true, name: true } } },
-  },
-} satisfies Prisma.AccountPayableInclude;
-
-/** Filtro por fecha de vencimiento (acepta 'YYYY-MM-DD' o ISO completo). */
 @Injectable()
 export class PayablesService {
   constructor(
-    private readonly prisma: PrismaService,
+    private readonly repository: PayablesRepository,
     private readonly cash: CashService,
     private readonly rates: RatesService,
   ) {}
@@ -67,65 +55,29 @@ export class PayablesService {
       dto.currency,
     );
 
-    const payable = await this.prisma.accountPayable.create({
-      data: {
-        companyId,
-        supplierId: normalizeNullableId(dto.supplierId),
-        description: dto.description,
-        amount,
-        currency: conversion.currency,
-        exchangeRate: conversion.exchangeRate,
-        baseAmount: conversion.baseAmount,
-        dueDate: dto.dueDate ? new Date(dto.dueDate) : null,
-        reference: dto.reference,
-        notes: dto.notes,
-        status: AccountStatus.PENDING,
-        createdById: userId,
-      },
-      include: PAYABLE_INCLUDE,
-    });
+    const data: Prisma.AccountPayableUncheckedCreateInput = {
+      companyId,
+      supplierId: normalizeNullableId(dto.supplierId),
+      description: dto.description,
+      amount,
+      currency: conversion.currency,
+      exchangeRate: conversion.exchangeRate,
+      baseAmount: conversion.baseAmount,
+      dueDate: dto.dueDate ? new Date(dto.dueDate) : null,
+      reference: dto.reference,
+      notes: dto.notes,
+      status: AccountStatus.PENDING,
+      createdById: userId,
+    };
+
+    const payable = await this.repository.create(data);
 
     return this.withBalance(payable);
   }
 
   async findAll(companyId: string, query: PayableQueryDto) {
-    const today = startOfToday();
-
-    const where: Prisma.AccountPayableWhereInput = {
-      ...tenantWhere(companyId),
-      ...(query.status ? { status: query.status } : {}),
-      ...(query.supplierId ? { supplierId: query.supplierId } : {}),
-      ...(query.search ? { description: { contains: query.search } } : {}),
-      ...(query.from || query.to
-        ? { dueDate: buildDateRangeFilter(query.from, query.to) }
-        : {}),
-      ...(query.overdueOnly
-        ? {
-            dueDate: { lt: today },
-            status: { in: [AccountStatus.PENDING, AccountStatus.PARTIAL] },
-          }
-        : {}),
-    };
-
-    const [items, total, aggregate] = await this.prisma.$transaction([
-      this.prisma.accountPayable.findMany({
-        where,
-        include: PAYABLE_INCLUDE,
-        orderBy: query.toOrderBy(['dueDate', 'amount', 'createdAt'], {
-          createdAt: 'desc',
-        }),
-        skip: toSkip(query.page, query.limit),
-        take: query.limit,
-      }),
-      this.prisma.accountPayable.count({ where }),
-      this.prisma.accountPayable.aggregate({
-        where,
-        _sum: { baseAmount: true, paidAmount: true },
-      }),
-    ]);
-
-    const totalAmount = toMoney(aggregate._sum.baseAmount ?? 0);
-    const totalPaid = toMoney(aggregate._sum.paidAmount ?? 0);
+    const { items, total, totalBaseAmount, totalPaidAmount } =
+      await this.repository.findPage(companyId, query);
 
     return {
       ...buildPaginatedResult(
@@ -135,18 +87,18 @@ export class PayablesService {
         query.limit,
       ),
       totals: {
-        amount: totalAmount,
-        paid: totalPaid,
-        balance: money.sub(totalAmount, totalPaid),
+        amount: toMoney(totalBaseAmount),
+        paid: toMoney(totalPaidAmount),
+        balance: money.sub(
+          toMoney(totalBaseAmount),
+          toMoney(totalPaidAmount),
+        ),
       },
     };
   }
 
   async findOne(companyId: string, id: string) {
-    const payable = await this.prisma.accountPayable.findFirst({
-      where: { id, ...tenantWhere(companyId) },
-      include: PAYABLE_INCLUDE,
-    });
+    const payable = await this.repository.findWithRelations(companyId, id);
     if (!payable) throw new NotFoundException('Cuenta por pagar no encontrada');
     return this.withBalance(payable);
   }
@@ -198,29 +150,26 @@ export class PayablesService {
         )
       : null;
 
-    await this.prisma.accountPayable.updateMany({
-      where: { id, ...tenantWhere(companyId) },
-      data: {
-        ...(dto.supplierId !== undefined
-          ? { supplierId: normalizeNullableId(dto.supplierId) }
-          : {}),
-        ...(dto.description !== undefined
-          ? { description: dto.description }
-          : {}),
-        ...(conversion
-          ? {
-              amount,
-              currency: conversion.currency,
-              exchangeRate: conversion.exchangeRate,
-              baseAmount: conversion.baseAmount,
-            }
-          : {}),
-        ...(dto.dueDate !== undefined
-          ? { dueDate: dto.dueDate ? new Date(dto.dueDate) : null }
-          : {}),
-        ...(dto.reference !== undefined ? { reference: dto.reference } : {}),
-        ...(dto.notes !== undefined ? { notes: dto.notes } : {}),
-      },
+    await this.repository.update(companyId, id, {
+      ...(dto.supplierId !== undefined
+        ? { supplierId: normalizeNullableId(dto.supplierId) }
+        : {}),
+      ...(dto.description !== undefined
+        ? { description: dto.description }
+        : {}),
+      ...(conversion
+        ? {
+            amount,
+            currency: conversion.currency,
+            exchangeRate: conversion.exchangeRate,
+            baseAmount: conversion.baseAmount,
+          }
+        : {}),
+      ...(dto.dueDate !== undefined
+        ? { dueDate: dto.dueDate ? new Date(dto.dueDate) : null }
+        : {}),
+      ...(dto.reference !== undefined ? { reference: dto.reference } : {}),
+      ...(dto.notes !== undefined ? { notes: dto.notes } : {}),
     });
 
     return this.findOne(companyId, id);
@@ -265,9 +214,9 @@ export class PayablesService {
     const method = dto.method ?? PaymentMethod.CASH;
     const payFromCash = dto.payFromCash ?? method === PaymentMethod.CASH;
 
-    return this.prisma.$transaction(async (tx) => {
-      const payment = await tx.payablePayment.create({
-        data: {
+    return this.repository.transaction(async (tx) => {
+      const payment = await this.repository.createPayment(
+        {
           companyId,
           payableId: id,
           amount,
@@ -278,7 +227,8 @@ export class PayablesService {
           note: dto.note,
           createdById: userId,
         },
-      });
+        tx,
+      );
 
       if (payFromCash) {
         const session = await this.cash.getOpenSessionOrThrow(companyId, tx);
@@ -293,7 +243,7 @@ export class PayablesService {
             currency,
             baseAmount,
             description: `Abono CxP: ${payable.description}`,
-            referenceType: 'PAYABLE',
+            referenceType: PAYABLE_REFERENCE_TYPE,
             referenceId: payment.id,
             createdById: userId,
           },
@@ -302,18 +252,21 @@ export class PayablesService {
       }
 
       const paidAmount = money.add(payable.paidAmount, baseAmount);
-      await tx.accountPayable.updateMany({
-        where: { id, ...tenantWhere(companyId) },
-        data: {
+      await this.repository.updatePaymentTotals(
+        companyId,
+        id,
+        {
           paidAmount,
           status: resolveAccountStatus(payable.baseAmount, paidAmount),
         },
-      });
+        tx,
+      );
 
-      const updated = await tx.accountPayable.findFirst({
-        where: { id, ...tenantWhere(companyId) },
-        include: PAYABLE_INCLUDE,
-      });
+      const updated = await this.repository.findWithRelations(
+        companyId,
+        id,
+        tx,
+      );
       if (!updated) {
         throw new NotFoundException('Cuenta por pagar no encontrada');
       }
@@ -334,10 +287,7 @@ export class PayablesService {
       return payable;
     }
 
-    await this.prisma.accountPayable.updateMany({
-      where: { id, ...tenantWhere(companyId) },
-      data: { status: AccountStatus.CANCELLED },
-    });
+    await this.repository.cancel(companyId, id);
     return this.findOne(companyId, id);
   }
 
@@ -351,50 +301,30 @@ export class PayablesService {
       );
     }
 
-    await this.prisma.accountPayable.deleteMany({
-      where: { id, ...tenantWhere(companyId) },
-    });
+    await this.repository.remove(companyId, id);
     return { id, deleted: true };
   }
 
   /** Resumen por estado + saldo total pendiente. */
   async summary(companyId: string) {
-    // Promise.all (y no $transaction): Prisma pierde la inferencia de tipos de
-    // `groupBy` dentro del arreglo de la transaccion. Solo son lecturas.
-    const [byStatus, aggregate] = await Promise.all([
-      this.prisma.accountPayable.groupBy({
-        by: ['status'],
-        where: tenantWhere(companyId),
-        orderBy: { status: 'asc' },
-        _sum: { baseAmount: true, paidAmount: true },
-        _count: { _all: true },
-      }),
-      this.prisma.accountPayable.aggregate({
-        where: {
-          status: { in: [AccountStatus.PENDING, AccountStatus.PARTIAL] },
-          ...tenantWhere(companyId),
-        },
-        _sum: { baseAmount: true, paidAmount: true },
-        _count: { _all: true },
-      }),
-    ]);
+    const summary = await this.repository.summary(companyId);
 
-    const totalAmount = toMoney(aggregate._sum.baseAmount ?? 0);
-    const totalPaid = toMoney(aggregate._sum.paidAmount ?? 0);
+    const totalAmount = toMoney(summary.openBaseAmount);
+    const totalPaid = toMoney(summary.openPaidAmount);
 
     return {
       openAmount: totalAmount,
       openPaid: totalPaid,
       openBalance: money.sub(totalAmount, totalPaid),
-      openCount: aggregate._count._all,
-      byStatus: byStatus.map((row) => ({
+      openCount: summary.openCount,
+      byStatus: summary.byStatus.map((row) => ({
         status: row.status,
-        count: row._count._all,
-        amount: toMoney(row._sum.baseAmount ?? 0),
-        paid: toMoney(row._sum.paidAmount ?? 0),
+        count: row.count,
+        amount: toMoney(row.baseAmount),
+        paid: toMoney(row.paidAmount),
         balance: money.sub(
-          toMoney(row._sum.baseAmount ?? 0),
-          toMoney(row._sum.paidAmount ?? 0),
+          toMoney(row.baseAmount),
+          toMoney(row.paidAmount),
         ),
       })),
     };
@@ -402,16 +332,10 @@ export class PayablesService {
 
   /** Saldo total pendiente de pago (para estadisticas del dashboard). */
   async outstandingBalance(companyId: string) {
-    const result = await this.prisma.accountPayable.aggregate({
-      where: {
-        status: { in: [AccountStatus.PENDING, AccountStatus.PARTIAL] },
-        ...tenantWhere(companyId),
-      },
-      _sum: { baseAmount: true, paidAmount: true },
-    });
+    const result = await this.repository.outstanding(companyId);
     return money.sub(
-      toMoney(result._sum.baseAmount ?? 0),
-      toMoney(result._sum.paidAmount ?? 0),
+      toMoney(result.baseAmount),
+      toMoney(result.paidAmount),
     );
   }
 }

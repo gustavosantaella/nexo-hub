@@ -1,8 +1,10 @@
 import { Module } from '@nestjs/common';
 import { RatesModule } from '../rates/rates.module';
 import { MenuCategoriesController } from './menu-categories.controller';
+import { MenuCategoriesRepository } from './menu-categories.repository';
 import { MenuCategoriesService } from './menu-categories.service';
 import { MenusController } from './menus.controller';
+import { MenusRepository } from './menus.repository';
 import { MenusService } from './menus.service';
 
 /**
@@ -14,7 +16,12 @@ import { MenusService } from './menus.service';
 @Module({
   imports: [RatesModule],
   controllers: [MenusController, MenuCategoriesController],
-  providers: [MenusService, MenuCategoriesService],
+  providers: [
+    MenusService,
+    MenuCategoriesService,
+    MenusRepository,
+    MenuCategoriesRepository,
+  ],
   exports: [MenusService, MenuCategoriesService],
 })
 export class MenusModule {}

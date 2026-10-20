@@ -1,6 +1,7 @@
 import { BadRequestException, NotFoundException } from '@nestjs/common';
 import type { PrismaService } from '../../prisma/prisma.service';
 import type { RatesService } from '../rates/rates.service';
+import { InventoryRepository } from './inventory.repository';
 import { InventoryService } from './inventory.service';
 
 const COMPANY_ID = 'company-1';
@@ -54,7 +55,7 @@ function createService(
   } as unknown as RatesService;
 
   const service = new InventoryService(
-    prisma as unknown as PrismaService,
+    new InventoryRepository(prisma as unknown as PrismaService),
     rates,
   );
   return { service, prisma };

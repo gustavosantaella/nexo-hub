@@ -11,30 +11,23 @@ import {
   PaymentMethod,
 } from '../../common/constants/enums';
 import { money, toMoney } from '../../common/utils/money.util';
-import { buildDateRangeFilter } from '../../common/utils/account.util';
 import { normalizeNullableId } from '../../common/utils/normalize.util';
-import {
-  buildPaginatedResult,
-  toSkip,
-} from '../../common/utils/pagination.util';
-import { tenantWhere } from '../../common/utils/tenant.util';
-import { PrismaService, type PrismaClientLike } from '../../prisma/prisma.service';
+import { buildPaginatedResult } from '../../common/utils/pagination.util';
+import type { PrismaClientLike } from '../../prisma/prisma.service';
 import { CashService } from '../cash/cash.service';
 import { RatesService } from '../rates/rates.service';
 import { CreateExpenseDto } from './dto/create-expense.dto';
 import { ExpenseQueryDto } from './dto/expense-query.dto';
 import { UpdateExpenseDto } from './dto/update-expense.dto';
-
-const EXPENSE_INCLUDE = {
-  supplier: { select: { id: true, name: true } },
-  createdBy: { select: { id: true, name: true } },
-  cashSession: { select: { id: true, code: true, status: true } },
-} satisfies Prisma.ExpenseInclude;
+import {
+  EXPENSE_REFERENCE_TYPE,
+  ExpensesRepository,
+} from './expenses.repository';
 
 @Injectable()
 export class ExpensesService {
   constructor(
-    private readonly prisma: PrismaService,
+    private readonly repository: ExpensesRepository,
     private readonly cash: CashService,
     private readonly rates: RatesService,
   ) {}
@@ -56,22 +49,21 @@ export class ExpensesService {
     const paymentMethod = dto.paymentMethod ?? PaymentMethod.CASH;
     const payFromCash = dto.payFromCash ?? paymentMethod === PaymentMethod.CASH;
 
-    return this.prisma.$transaction(async (tx) => {
-      const expense = await tx.expense.create({
-        data: {
-          companyId,
-          category: dto.category,
-          description: dto.description,
-          amount,
-          currency: conversion.currency,
-          exchangeRate: conversion.exchangeRate,
-          baseAmount: conversion.baseAmount,
-          date: dto.date ? new Date(dto.date) : new Date(),
-          paymentMethod,
-          supplierId: normalizeNullableId(dto.supplierId),
-          createdById: userId,
-        },
-      });
+    return this.repository.transaction(async (tx) => {
+      const data: Prisma.ExpenseUncheckedCreateInput = {
+        companyId,
+        category: dto.category,
+        description: dto.description,
+        amount,
+        currency: conversion.currency,
+        exchangeRate: conversion.exchangeRate,
+        baseAmount: conversion.baseAmount,
+        date: dto.date ? new Date(dto.date) : new Date(),
+        paymentMethod,
+        supplierId: normalizeNullableId(dto.supplierId),
+        createdById: userId,
+      };
+      const expense = await this.repository.create(data, tx);
 
       if (!payFromCash) return this.findWithInclude(companyId, tx, expense.id);
 
@@ -86,17 +78,19 @@ export class ExpensesService {
           amount,
           currency: conversion.currency,
           description: `Gasto: ${dto.description}`,
-          referenceType: 'EXPENSE',
+          referenceType: EXPENSE_REFERENCE_TYPE,
           referenceId: expense.id,
           createdById: userId,
         },
         tx,
       );
 
-      await tx.expense.updateMany({
-        where: { id: expense.id, ...tenantWhere(companyId) },
-        data: { cashSessionId: session.id },
-      });
+      await this.repository.attachCashSession(
+        companyId,
+        expense.id,
+        session.id,
+        tx,
+      );
 
       return this.findWithInclude(companyId, tx, expense.id);
     });
@@ -108,102 +102,46 @@ export class ExpensesService {
     tx: PrismaClientLike,
     id: string,
   ) {
-    const expense = await tx.expense.findFirst({
-      where: { id, ...tenantWhere(companyId) },
-      include: EXPENSE_INCLUDE,
-    });
+    const expense = await this.repository.findWithRelations(companyId, id, tx);
     if (!expense) throw new NotFoundException('Gasto no encontrado');
     return expense;
   }
 
   async findAll(companyId: string, query: ExpenseQueryDto) {
-    const where: Prisma.ExpenseWhereInput = {
-      ...tenantWhere(companyId),
-      ...(query.category ? { category: query.category } : {}),
-      ...(query.paymentMethod ? { paymentMethod: query.paymentMethod } : {}),
-      ...(query.supplierId ? { supplierId: query.supplierId } : {}),
-      ...(query.cashSessionId ? { cashSessionId: query.cashSessionId } : {}),
-      ...(query.from || query.to
-        ? { date: buildDateRangeFilter(query.from, query.to) }
-        : {}),
-      ...(query.search ? { description: { contains: query.search } } : {}),
-    };
-
-    const [items, total, sum] = await this.prisma.$transaction([
-      this.prisma.expense.findMany({
-        where,
-        include: EXPENSE_INCLUDE,
-        orderBy: query.toOrderBy(['date', 'amount', 'createdAt'], {
-          date: 'desc',
-        }),
-        skip: toSkip(query.page, query.limit),
-        take: query.limit,
-      }),
-      this.prisma.expense.count({ where }),
-      // Los totales se suman en la moneda base (USD) para no mezclar monedas.
-      this.prisma.expense.aggregate({ where, _sum: { baseAmount: true } }),
-    ]);
+    const { items, total, totalBaseAmount } = await this.repository.findPage(
+      companyId,
+      query,
+    );
 
     return {
       ...buildPaginatedResult(items, total, query.page, query.limit),
-      totals: { amount: toMoney(sum._sum.baseAmount ?? 0) },
+      totals: { amount: toMoney(totalBaseAmount) },
     };
   }
 
   async findOne(companyId: string, id: string) {
-    const expense = await this.prisma.expense.findFirst({
-      where: { id, ...tenantWhere(companyId) },
-      include: EXPENSE_INCLUDE,
-    });
+    const expense = await this.repository.findWithRelations(companyId, id);
     if (!expense) throw new NotFoundException('Gasto no encontrado');
     return expense;
   }
 
   /** Totales agregados por categoria/metodo para el panel de gastos. */
   async summary(companyId: string, query: ExpenseQueryDto) {
-    const where: Prisma.ExpenseWhereInput = {
-      ...tenantWhere(companyId),
-      ...(query.category ? { category: query.category } : {}),
-      ...(query.supplierId ? { supplierId: query.supplierId } : {}),
-      ...(query.from || query.to
-        ? { date: buildDateRangeFilter(query.from, query.to) }
-        : {}),
-    };
-
-    // Nota: se usa Promise.all (en lugar de $transaction) porque Prisma pierde
-    // la inferencia de tipos de `groupBy` cuando va dentro del arreglo de una
-    // transaccion. Son solo lecturas, asi que no se requiere atomicidad.
-    const [byCategory, byMethod, total] = await Promise.all([
-      this.prisma.expense.groupBy({
-        by: ['category'],
-        where,
-        orderBy: { category: 'asc' },
-        _sum: { baseAmount: true },
-        _count: { _all: true },
-      }),
-      this.prisma.expense.groupBy({
-        by: ['paymentMethod'],
-        where,
-        orderBy: { paymentMethod: 'asc' },
-        _sum: { baseAmount: true },
-        _count: { _all: true },
-      }),
-      this.prisma.expense.aggregate({ where, _sum: { baseAmount: true } }),
-    ]);
+    const summary = await this.repository.summary(companyId, query);
 
     return {
-      total: toMoney(total._sum.baseAmount ?? 0),
-      byCategory: byCategory
+      total: toMoney(summary.totalBaseAmount),
+      byCategory: summary.byCategory
         .map((row) => ({
           category: row.category,
-          amount: toMoney(row._sum.baseAmount ?? 0),
-          count: row._count._all,
+          amount: toMoney(row.baseAmount),
+          count: row.count,
         }))
         .sort((a, b) => b.amount - a.amount),
-      byMethod: byMethod.map((row) => ({
-        method: row.paymentMethod,
-        amount: toMoney(row._sum.baseAmount ?? 0),
-        count: row._count._all,
+      byMethod: summary.byMethod.map((row) => ({
+        method: row.method,
+        amount: toMoney(row.baseAmount),
+        count: row.count,
       })),
     };
   }
@@ -236,35 +174,36 @@ export class ExpensesService {
           baseAmount: expense.baseAmount,
         };
 
-    return this.prisma.$transaction(async (tx) => {
+    return this.repository.transaction(async (tx) => {
       if (expense.cashSessionId && changed) {
-        const movement = await tx.cashMovement.findFirst({
-          where: {
-            referenceType: 'EXPENSE',
-            referenceId: expense.id,
-            ...tenantWhere(companyId),
-          },
-        });
+        const movement = await this.repository.findCashMovement(
+          companyId,
+          expense.id,
+          tx,
+        );
         if (!movement) {
           throw new BadRequestException(
             'Inconsistencia: el gasto no tiene movimiento de caja asociado',
           );
         }
-        await tx.cashMovement.updateMany({
-          where: { id: movement.id, ...tenantWhere(companyId) },
-          data: {
+        await this.repository.updateCashMovement(
+          companyId,
+          movement.id,
+          {
             amount,
             currency: conversion.currency,
             exchangeRate: conversion.exchangeRate,
             baseAmount: conversion.baseAmount,
             description: `Gasto: ${dto.description ?? expense.description}`,
           },
-        });
+          tx,
+        );
       }
 
-      await tx.expense.updateMany({
-        where: { id, ...tenantWhere(companyId) },
-        data: {
+      await this.repository.update(
+        companyId,
+        id,
+        {
           ...(dto.category !== undefined ? { category: dto.category } : {}),
           ...(dto.description !== undefined
             ? { description: dto.description }
@@ -287,7 +226,8 @@ export class ExpensesService {
             ? { supplierId: normalizeNullableId(dto.supplierId) }
             : {}),
         },
-      });
+        tx,
+      );
 
       return this.findWithInclude(companyId, tx, id);
     });
@@ -306,26 +246,21 @@ export class ExpensesService {
       );
     }
 
-    return this.prisma.$transaction(async (tx) => {
-      await tx.cashMovement.deleteMany({
-        where: {
-          referenceType: 'EXPENSE',
-          referenceId: expense.id,
-          ...tenantWhere(companyId),
-        },
-      });
-      await tx.expense.deleteMany({ where: { id, ...tenantWhere(companyId) } });
+    return this.repository.transaction(async (tx) => {
+      await this.repository.deleteCashMovements(companyId, expense.id, tx);
+      await this.repository.remove(companyId, id, tx);
       return { id, deleted: true };
     });
   }
 
   /** Suma de gastos del rango en USD (usado por estadisticas). */
   async totalForRange(companyId: string, from: Date, to: Date) {
-    const result = await this.prisma.expense.aggregate({
-      where: { date: { gte: from, lte: to }, ...tenantWhere(companyId) },
-      _sum: { baseAmount: true },
-    });
-    return money.add(result._sum.baseAmount ?? 0, 0);
+    const total = await this.repository.sumBaseAmountForRange(
+      companyId,
+      from,
+      to,
+    );
+    return money.add(total, 0);
   }
 
 }

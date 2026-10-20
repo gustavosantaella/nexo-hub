@@ -1,5 +1,6 @@
 import { BadRequestException } from '@nestjs/common';
 import type { PrismaService } from '../../prisma/prisma.service';
+import { CurrenciesRepository } from './currencies.repository';
 import {
   BASE_CURRENCY_KEY,
   CURRENCIES_KEY,
@@ -55,7 +56,9 @@ function buildService(stored?: string | null | StoredConfig): {
   };
 
   return {
-    service: new CurrenciesService(prisma as unknown as PrismaService),
+    service: new CurrenciesService(
+      new CurrenciesRepository(prisma as unknown as PrismaService),
+    ),
     prisma,
   };
 }

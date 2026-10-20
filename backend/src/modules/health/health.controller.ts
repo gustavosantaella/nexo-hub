@@ -1,14 +1,14 @@
 import { Controller, Get } from '@nestjs/common';
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
 import { Public } from '../../common/decorators/public.decorator';
-import { PrismaService } from '../../prisma/prisma.service';
+import { HealthRepository } from './health.repository';
 
 const startedAt = Date.now();
 
 @ApiTags('Sistema')
 @Controller('health')
 export class HealthController {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(private readonly health: HealthRepository) {}
 
   @Public()
   @Get()
@@ -16,7 +16,7 @@ export class HealthController {
   async check() {
     let database = 'up';
     try {
-      await this.prisma.$queryRaw`SELECT 1`;
+      await this.health.ping();
     } catch {
       database = 'down';
     }

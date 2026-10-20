@@ -4,6 +4,7 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import type { PrismaService } from '../../prisma/prisma.service';
+import { CategoriesRepository } from './categories.repository';
 import { CategoriesService } from './categories.service';
 
 const COMPANY_ID = 'company-1';
@@ -124,7 +125,9 @@ function createService(rows: CategoryRow[] = CATEGORIES) {
   };
 
   return {
-    service: new CategoriesService(prisma as unknown as PrismaService),
+    service: new CategoriesService(
+      new CategoriesRepository(prisma as unknown as PrismaService),
+    ),
     delegate,
     created,
     updated,

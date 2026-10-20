@@ -4,7 +4,6 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
-import type { Prisma } from '@prisma/client';
 import {
   BASE_CURRENCY_CODE,
   normalizeCurrencyCode,
@@ -15,94 +14,14 @@ import {
   normalizeImageUrl,
   normalizeNullableId,
 } from '../../common/utils/normalize.util';
-import { buildPaginatedResult, toSkip } from '../../common/utils/pagination.util';
+import { buildPaginatedResult } from '../../common/utils/pagination.util';
 import { toQty, toQtyMilli } from '../../common/utils/quantity.util';
-import { tenantWhere } from '../../common/utils/tenant.util';
-import { PrismaService, type PrismaClientLike } from '../../prisma/prisma.service';
+import type { PrismaClientLike } from '../../prisma/prisma.service';
 import { RatesService } from '../rates/rates.service';
 import { CreateMenuDto, MenuIngredientDto } from './dto/menu.dto';
 import { MenuQueryDto } from './dto/menu-query.dto';
 import { UpdateMenuDto } from './dto/update-menu.dto';
-
-/** Datos del producto que la receta necesita para costear y medir disponibilidad. */
-const INGREDIENT_PRODUCT_SELECT = {
-  id: true,
-  name: true,
-  sku: true,
-  unit: true,
-  price: true,
-  cost: true,
-  stock: true,
-  trackStock: true,
-  // Un producto desactivado despues de armar la receta deja el menu invendible:
-  // la interfaz y el motor de pedidos lo necesitan para avisar.
-  active: true,
-} satisfies Prisma.ProductSelect;
-
-const INGREDIENT_INCLUDE = {
-  product: { select: INGREDIENT_PRODUCT_SELECT },
-} satisfies Prisma.MenuIngredientInclude;
-
-/** Detalle completo de un menu: receta con su producto y la categoria. */
-const MENU_DETAIL_INCLUDE = {
-  category: { select: { id: true, name: true, color: true } },
-  ingredients: {
-    include: INGREDIENT_INCLUDE,
-    orderBy: { sortOrder: 'asc' },
-  },
-} satisfies Prisma.MenuInclude;
-
-/** Listado: receta minima para calcular disponibilidad sin traer todo. */
-const MENU_LIST_INCLUDE = {
-  category: { select: { id: true, name: true, color: true } },
-  ingredients: {
-    select: {
-      // La receta del listado la reusa el formulario de edicion: sin
-      // `productId` (ni la nota/seccion) editar un menu desde la tabla borraba
-      // los ingredientes al abrir el modal.
-      productId: true,
-      quantity: true,
-      section: true,
-      note: true,
-      sortOrder: true,
-      product: {
-        select: { id: true, name: true, stock: true, trackStock: true, active: true },
-      },
-    },
-    orderBy: { sortOrder: 'asc' },
-  },
-} satisfies Prisma.MenuInclude;
-
-/** Opciones para el POS / pedidos: catalogo vendible con su receta. */
-const MENU_OPTION_SELECT = {
-  id: true,
-  code: true,
-  name: true,
-  description: true,
-  imageUrl: true,
-  price: true,
-  cost: true,
-  availability: true,
-  preparationMinutes: true,
-  categoryId: true,
-  category: { select: { id: true, name: true, color: true } },
-  ingredients: {
-    select: {
-      quantity: true,
-      section: true,
-      product: {
-        select: {
-          id: true,
-          name: true,
-          unit: true,
-          stock: true,
-          trackStock: true,
-          active: true,
-        },
-      },
-    },
-  },
-} satisfies Prisma.MenuSelect;
+import { MenusRepository } from './menus.repository';
 
 /** Receta resuelta: lo que necesita el motor de pedidos para vender un menu. */
 export interface MenuRecipe {
@@ -190,7 +109,7 @@ export function inactiveIngredientRefs(
 @Injectable()
 export class MenusService {
   constructor(
-    private readonly prisma: PrismaService,
+    private readonly menus: MenusRepository,
     private readonly rates: RatesService,
   ) {}
 
@@ -210,32 +129,29 @@ export class MenusService {
     const price = await this.priceColumns(companyId, dto.price, dto.priceCurrency);
     const ingredientRows = this.ingredientRows(ingredients);
 
-    const menu = await this.prisma.menu.create({
-      data: {
-        companyId,
-        code,
-        name: dto.name.trim(),
-        description: dto.description,
-        imageUrl: normalizeImageUrl(dto.imageUrl),
-        price: price.base,
-        priceCurrency: price.currency,
-        priceRate: price.rate,
-        priceEntered: price.entered,
-        cost: this.recipeCost(ingredients),
-        availability: dto.availability ?? 'ALL',
-        preparationMinutes: dto.preparationMinutes ?? null,
-        categoryId: normalizeNullableId(dto.categoryId),
-        active: dto.active ?? true,
-        // Un menu sin receta no crea lineas: no descuenta inventario.
-        ...(ingredientRows.length > 0
-          ? {
-              ingredients: {
-                create: ingredientRows.map((row) => ({ companyId, ...row })),
-              },
-            }
-          : {}),
-      },
-      include: MENU_DETAIL_INCLUDE,
+    const menu = await this.menus.create({
+      companyId,
+      code,
+      name: dto.name.trim(),
+      description: dto.description,
+      imageUrl: normalizeImageUrl(dto.imageUrl),
+      price: price.base,
+      priceCurrency: price.currency,
+      priceRate: price.rate,
+      priceEntered: price.entered,
+      cost: this.recipeCost(ingredients),
+      availability: dto.availability ?? 'ALL',
+      preparationMinutes: dto.preparationMinutes ?? null,
+      categoryId: normalizeNullableId(dto.categoryId),
+      active: dto.active ?? true,
+      // Un menu sin receta no crea lineas: no descuenta inventario.
+      ...(ingredientRows.length > 0
+        ? {
+            ingredients: {
+              create: ingredientRows.map((row) => ({ companyId, ...row })),
+            },
+          }
+        : {}),
     });
 
     return this.decorate(menu);
@@ -244,34 +160,14 @@ export class MenusService {
   async findAll(companyId: string, query: MenuQueryDto) {
     // Elegir una categoria principal tambien trae lo agrupado en sus subcategorias.
     const categoryIds = query.categoryId
-      ? await this.categoryScopeIds(companyId, query.categoryId)
+      ? await this.menus.findCategoryScopeIds(companyId, query.categoryId)
       : undefined;
 
-    const where: Prisma.MenuWhereInput = {
-      ...tenantWhere(companyId),
-      ...(query.search
-        ? {
-            OR: [
-              { name: { contains: query.search } },
-              { code: { contains: query.search } },
-              { description: { contains: query.search } },
-            ],
-          }
-        : {}),
-      ...(categoryIds ? { categoryId: { in: categoryIds } } : {}),
-      ...(query.onlyActive ? { active: true } : {}),
-    };
-
-    const [rows, total] = await this.prisma.$transaction([
-      this.prisma.menu.findMany({
-        where,
-        include: MENU_LIST_INCLUDE,
-        orderBy: query.toOrderBy(['name', 'price', 'createdAt'], { name: 'asc' }),
-        skip: toSkip(query.page, query.limit),
-        take: query.limit,
-      }),
-      this.prisma.menu.count({ where }),
-    ]);
+    const { items: rows, total } = await this.menus.findPage(
+      companyId,
+      query,
+      categoryIds,
+    );
 
     const items = rows.map((row) => this.decorate(row));
     const visible = query.onlyAvailable
@@ -283,19 +179,12 @@ export class MenusService {
 
   /** Menus activos listos para vender (grilla del POS y buscador de pedidos). */
   async findOptions(companyId: string) {
-    const menus = await this.prisma.menu.findMany({
-      where: { active: true, ...tenantWhere(companyId) },
-      select: MENU_OPTION_SELECT,
-      orderBy: [{ name: 'asc' }],
-    });
+    const menus = await this.menus.findOptions(companyId);
     return menus.map((menu) => this.decorate(menu));
   }
 
   async findOne(companyId: string, id: string) {
-    const menu = await this.prisma.menu.findFirst({
-      where: { id, ...tenantWhere(companyId) },
-      include: MENU_DETAIL_INCLUDE,
-    });
+    const menu = await this.menus.findDetail(companyId, id);
     if (!menu) throw new NotFoundException('Menu no encontrado');
     return this.decorate(menu);
   }
@@ -305,9 +194,7 @@ export class MenusService {
    * completa (y se recalcula el costo); si se omite, la receta se conserva.
    */
   async update(companyId: string, id: string, dto: UpdateMenuDto) {
-    const current = await this.prisma.menu.findFirst({
-      where: { id, ...tenantWhere(companyId) },
-    });
+    const current = await this.menus.findCurrent(companyId, id);
     if (!current) throw new NotFoundException('Menu no encontrado');
 
     const code = dto.code?.trim();
@@ -331,10 +218,11 @@ export class MenusService {
           )
         : null;
 
-    await this.prisma.$transaction(async (tx) => {
-      await tx.menu.update({
-        where: { id, ...tenantWhere(companyId) },
-        data: {
+    await this.menus.transaction(async (tx) => {
+      await this.menus.updateMenu(
+        companyId,
+        id,
+        {
           ...(code ? { code } : {}),
           ...(dto.name !== undefined ? { name: dto.name.trim() } : {}),
           ...(dto.description !== undefined ? { description: dto.description } : {}),
@@ -361,21 +249,19 @@ export class MenusService {
           ...(dto.active !== undefined ? { active: dto.active } : {}),
           ...(ingredients ? { cost: this.recipeCost(ingredients) } : {}),
         },
-      });
+        tx,
+      );
 
       if (ingredients) {
         // Enviar la receta (aunque venga vacia) la reemplaza: se borran las
         // lineas actuales y, si queda algo, se vuelve a crear. Con `[]` el menu
         // queda sin receta (no descuenta inventario).
-        await tx.menuIngredient.deleteMany({
-          where: { menuId: id, ...tenantWhere(companyId) },
-        });
-        const rows = this.ingredientRows(ingredients);
-        if (rows.length > 0) {
-          await tx.menuIngredient.createMany({
-            data: rows.map((row) => ({ companyId, menuId: id, ...row })),
-          });
-        }
+        await this.menus.replaceIngredients(
+          companyId,
+          id,
+          this.ingredientRows(ingredients),
+          tx,
+        );
       }
     });
 
@@ -388,10 +274,7 @@ export class MenusService {
    */
   async remove(companyId: string, id: string) {
     await this.findOne(companyId, id);
-    return this.prisma.menu.updateMany({
-      where: { id, ...tenantWhere(companyId) },
-      data: { active: false },
-    });
+    return this.menus.deactivate(companyId, id);
   }
 
   // =========================================================================
@@ -410,26 +293,7 @@ export class MenusService {
     const unique = [...new Set(menuIds)];
     if (unique.length === 0) return new Map();
 
-    const client = tx ?? this.prisma;
-    const menus = await client.menu.findMany({
-      where: { id: { in: unique }, ...tenantWhere(companyId) },
-      select: {
-        id: true,
-        code: true,
-        name: true,
-        price: true,
-        active: true,
-        ingredients: {
-          select: {
-            productId: true,
-            quantity: true,
-            // El producto viaja con su estado para que el motor de pedidos pueda
-            // rechazar la venta de un menu con ingredientes desactivados.
-            product: { select: { name: true, active: true } },
-          },
-        },
-      },
-    });
+    const menus = await this.menus.findRecipes(companyId, unique, tx);
 
     return new Map(
       menus.map((menu) => [
@@ -533,10 +397,7 @@ export class MenusService {
       );
     }
 
-    const products = await this.prisma.product.findMany({
-      where: { id: { in: productIds }, ...tenantWhere(companyId) },
-      select: { id: true, name: true, cost: true, active: true },
-    });
+    const products = await this.menus.findRecipeProducts(companyId, productIds);
 
     const byId = new Map(products.map((product) => [product.id, product]));
     const missing = productIds.filter((id) => !byId.has(id));
@@ -602,14 +463,7 @@ export class MenusService {
     code: string,
     excludeId?: string,
   ): Promise<void> {
-    const existing = await this.prisma.menu.findFirst({
-      where: {
-        ...tenantWhere(companyId),
-        code,
-        ...(excludeId ? { id: { not: excludeId } } : {}),
-      },
-      select: { id: true },
-    });
+    const existing = await this.menus.findCodeOwner(companyId, code, excludeId);
     if (existing) {
       throw new ConflictException(
         'Ya existe un menu con ese codigo en esta empresa',
@@ -624,10 +478,7 @@ export class MenusService {
   ): Promise<void> {
     const id = normalizeNullableId(categoryId);
     if (!id) return;
-    const category = await this.prisma.menuCategory.findFirst({
-      where: { id, ...tenantWhere(companyId) },
-      select: { id: true },
-    });
+    const category = await this.menus.findCategoryRef(companyId, id);
     if (!category) {
       throw new BadRequestException('La categoria de menu indicada no existe');
     }
@@ -642,23 +493,16 @@ export class MenusService {
     companyId: string,
     categoryId: string,
   ): Promise<string[]> {
-    const subcategories = await this.prisma.menuCategory.findMany({
-      where: { parentId: categoryId, ...tenantWhere(companyId) },
-      select: { id: true },
-    });
-    return [categoryId, ...subcategories.map((subcategory) => subcategory.id)];
+    return this.menus.findCategoryScopeIds(companyId, categoryId);
   }
 
   /** Codigo legible y unico por empresa: MEN-YYYYMMDD-NNNN. */
   private async generateCode(companyId: string): Promise<string> {
-    const total = await this.prisma.menu.count({ where: tenantWhere(companyId) });
+    const total = await this.menus.countMenus(companyId);
 
     for (let attempt = 0; attempt < 50; attempt += 1) {
       const candidate = buildCode('MEN', total + 1 + attempt);
-      const exists = await this.prisma.menu.findFirst({
-        where: { code: candidate, ...tenantWhere(companyId) },
-        select: { id: true },
-      });
+      const exists = await this.menus.findCodeOwner(companyId, candidate);
       if (!exists) return candidate;
     }
     throw new BadRequestException('No se pudo generar un codigo de menu unico');

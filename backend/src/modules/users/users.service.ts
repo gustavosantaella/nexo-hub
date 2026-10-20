@@ -9,32 +9,24 @@ import type { Role } from '../../common/constants/enums';
 import { PaginationQueryDto } from '../../common/dto/pagination-query.dto';
 import {
   buildPaginatedResult,
-  toSkip,
   type PaginatedResult,
 } from '../../common/utils/pagination.util';
 import { hashPassword } from '../../common/utils/password.util';
-import { PrismaService } from '../../prisma/prisma.service';
 import { CreateUserDto } from './dto/create-user.dto';
 import { UpdateProfileDto } from './dto/update-profile.dto';
 import { UpdateUserDto } from './dto/update-user.dto';
+import {
+  UsersRepository,
+  type MembershipRow,
+  type PublicUser,
+} from './users.repository';
 
-/** Campos publicos de un usuario global (nunca expone passwordHash). */
-const USER_PUBLIC_SELECT = {
-  id: true,
-  email: true,
-  name: true,
-  documentId: true,
-  phone: true,
-  avatarUrl: true,
-  active: true,
-  lastLoginAt: true,
-  createdAt: true,
-  updatedAt: true,
-} satisfies Prisma.UserSelect;
-
-export type PublicUser = Prisma.UserGetPayload<{
-  select: typeof USER_PUBLIC_SELECT;
-}>;
+export type {
+  MembershipCompanyRow,
+  MembershipRow,
+  PublicUser,
+} from './users.repository';
+export { USER_PUBLIC_SELECT } from './users.repository';
 
 /**
  * Miembro de la empresa activa: los datos globales del usuario mas el rol y
@@ -52,31 +44,6 @@ export interface CompanyMember {
   lastLoginAt: Date | null;
   joinedAt: Date;
 }
-
-const MEMBER_SELECT = {
-  role: true,
-  active: true,
-  createdAt: true,
-  user: { select: USER_PUBLIC_SELECT },
-} satisfies Prisma.MembershipSelect;
-
-/** Membresia con la empresa (para armar la sesion). */
-const MEMBERSHIP_COMPANY_SELECT = {
-  id: true,
-  role: true,
-  active: true,
-  company: {
-    select: { id: true, name: true, rif: true, active: true },
-  },
-} satisfies Prisma.MembershipSelect;
-
-type MembershipRow = Prisma.MembershipGetPayload<{
-  select: typeof MEMBER_SELECT;
-}>;
-
-export type MembershipCompanyRow = Prisma.MembershipGetPayload<{
-  select: typeof MEMBERSHIP_COMPANY_SELECT;
-}>;
 
 function toMember(row: MembershipRow): CompanyMember {
   return {
@@ -103,14 +70,14 @@ function toMember(row: MembershipRow): CompanyMember {
  */
 @Injectable()
 export class UsersService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(private readonly users: UsersRepository) {}
 
   // =========================== Usuarios de una empresa ======================
 
   /** Alta de un miembro: reutiliza la cuenta si el correo ya existe. */
   async create(companyId: string, dto: CreateUserDto): Promise<CompanyMember> {
     const email = dto.email.toLowerCase();
-    const existing = await this.prisma.user.findUnique({ where: { email } });
+    const existing = await this.users.findUserByEmail(email);
 
     if (existing) {
       const alreadyMember = await this.membershipOf(existing.id, companyId);
@@ -121,15 +88,12 @@ export class UsersService {
       }
       // La cuenta existe (en otra empresa): solo se agrega la membresia, no
       // se tocan sus datos personales ni su contrasena.
-      const membership = await this.prisma.membership.create({
-        data: {
-          userId: existing.id,
-          companyId,
-          role: dto.role ?? 'CASHIER',
-          active: dto.active ?? true,
-        },
-        select: MEMBER_SELECT,
-      });
+      const membership = await this.users.addMember(
+        companyId,
+        existing.id,
+        dto.role ?? 'CASHIER',
+        dto.active ?? true,
+      );
       return toMember(membership);
     }
 
@@ -140,27 +104,19 @@ export class UsersService {
     }
     const passwordHash = await hashPassword(dto.password);
 
-    return this.prisma.$transaction(async (tx) => {
-      const user = await tx.user.create({
-        data: {
-          email,
-          name: dto.name,
-          documentId: dto.documentId,
-          phone: dto.phone,
-          passwordHash,
-        },
-      });
-      const membership = await tx.membership.create({
-        data: {
-          userId: user.id,
-          companyId,
-          role: dto.role ?? 'CASHIER',
-          active: dto.active ?? true,
-        },
-        select: MEMBER_SELECT,
-      });
-      return toMember(membership);
-    });
+    const membership = await this.users.createMemberWithUser(
+      companyId,
+      {
+        email,
+        name: dto.name,
+        documentId: dto.documentId,
+        phone: dto.phone,
+        passwordHash,
+      },
+      dto.role ?? 'CASHIER',
+      dto.active ?? true,
+    );
+    return toMember(membership);
   }
 
   /** Miembros de la empresa activa (paginado). */
@@ -168,38 +124,7 @@ export class UsersService {
     companyId: string,
     query: PaginationQueryDto,
   ): Promise<PaginatedResult<CompanyMember>> {
-    const search = query.search?.trim();
-    const where: Prisma.MembershipWhereInput = {
-      companyId,
-      ...(search
-        ? {
-            user: {
-              OR: [
-                { name: { contains: search } },
-                { email: { contains: search } },
-                { documentId: { contains: search } },
-                { phone: { contains: search } },
-              ],
-            },
-          }
-        : {}),
-    };
-
-    const orderBy: Prisma.MembershipOrderByWithRelationInput =
-      query.sortBy && ['role', 'createdAt'].includes(query.sortBy)
-        ? { [query.sortBy]: query.sortOrder }
-        : { user: { name: 'asc' } };
-
-    const [rows, total] = await this.prisma.$transaction([
-      this.prisma.membership.findMany({
-        where,
-        select: MEMBER_SELECT,
-        orderBy,
-        skip: toSkip(query.page, query.limit),
-        take: query.limit,
-      }),
-      this.prisma.membership.count({ where }),
-    ]);
+    const { rows, total } = await this.users.findMemberPage(companyId, query);
 
     return buildPaginatedResult(
       rows.map(toMember),
@@ -210,25 +135,20 @@ export class UsersService {
   }
 
   async findOne(companyId: string, userId: string): Promise<CompanyMember> {
-    const row = await this.prisma.membership.findUnique({
-      where: { userId_companyId: { userId, companyId } },
-      select: MEMBER_SELECT,
-    });
+    const row = await this.users.findMember(companyId, userId);
     if (!row) {
       throw new NotFoundException('El usuario no pertenece a esta empresa');
     }
     return toMember(row);
   }
+
   /** Actualiza los datos del usuario y/o su rol dentro de la empresa. */
   async update(
     companyId: string,
     userId: string,
     dto: UpdateUserDto,
   ): Promise<CompanyMember> {
-    const current = await this.prisma.user.findUnique({
-      where: { id: userId },
-      select: { email: true },
-    });
+    const current = await this.users.findUserEmail(userId);
     if (!current) throw new NotFoundException('Usuario no encontrado');
 
     const userData: Prisma.UserUpdateInput = {};
@@ -239,7 +159,7 @@ export class UsersService {
     if (dto.email) {
       const email = dto.email.toLowerCase();
       if (email !== current.email) {
-        const taken = await this.prisma.user.findUnique({ where: { email } });
+        const taken = await this.users.findUserByEmail(email);
         if (taken && taken.id !== userId) {
           throw new ConflictException('El correo ya esta registrado');
         }
@@ -254,77 +174,48 @@ export class UsersService {
       membershipData.active = dto.active;
     }
 
-    await this.prisma.$transaction([
-      this.prisma.user.update({ where: { id: userId }, data: userData }),
-      this.prisma.membership.update({
-        where: { userId_companyId: { userId, companyId } },
-        data: membershipData,
-      }),
-    ]);
+    await this.users.updateMember(companyId, userId, userData, membershipData);
 
     return this.findOne(companyId, userId);
   }
 
   /** Baja logica EN la empresa (la cuenta global sigue existiendo). */
   async remove(companyId: string, userId: string): Promise<CompanyMember> {
-    const row = await this.prisma.membership.findUnique({
-      where: { userId_companyId: { userId, companyId } },
-      select: { role: true },
-    });
+    const row = await this.users.findMemberAccess(companyId, userId);
     if (!row) {
       throw new NotFoundException('El usuario no pertenece a esta empresa');
     }
     await this.assertNotLastAdmin(companyId, userId);
-    await this.prisma.membership.update({
-      where: { userId_companyId: { userId, companyId } },
-      data: { active: false },
-    });
+    await this.users.setMemberActive(companyId, userId, false);
     return this.findOne(companyId, userId);
   }
+
   // ================================ Sesion ==================================
 
   /** Usado por auth: incluye el hash para validar credenciales. */
   findByEmailWithPassword(email: string) {
-    return this.prisma.user.findUnique({
-      where: { email: email.toLowerCase() },
-    });
+    return this.users.findUserByEmail(email);
   }
 
   /** Perfil global del usuario (sin contrasena). */
   async findById(id: string): Promise<PublicUser> {
-    const user = await this.prisma.user.findUnique({
-      where: { id },
-      select: USER_PUBLIC_SELECT,
-    });
+    const user = await this.users.findPublicUser(id);
     if (!user) throw new NotFoundException('Usuario no encontrado');
     return user;
   }
 
   /** Membresia del usuario en una empresa, con el estado de la empresa. */
-  membershipOf(
-    userId: string,
-    companyId: string,
-  ): Promise<MembershipCompanyRow | null> {
-    return this.prisma.membership.findUnique({
-      where: { userId_companyId: { userId, companyId } },
-      select: MEMBERSHIP_COMPANY_SELECT,
-    });
+  membershipOf(userId: string, companyId: string) {
+    return this.users.findMembershipWithCompany(userId, companyId);
   }
 
   /** Todas las empresas a las que pertenece un usuario. */
-  membershipsOf(userId: string): Promise<MembershipCompanyRow[]> {
-    return this.prisma.membership.findMany({
-      where: { userId },
-      select: MEMBERSHIP_COMPANY_SELECT,
-      orderBy: { createdAt: 'asc' },
-    });
+  membershipsOf(userId: string) {
+    return this.users.findMembershipsWithCompany(userId);
   }
 
   async markLogin(id: string): Promise<void> {
-    await this.prisma.user.update({
-      where: { id },
-      data: { lastLoginAt: new Date() },
-    });
+    await this.users.markLogin(id);
   }
 
   /** Datos personales del usuario autenticado (Configuracion > Mis datos). */
@@ -332,8 +223,8 @@ export class UsersService {
     userId: string,
     dto: UpdateProfileDto,
   ): Promise<PublicUser> {
-    const user = await this.prisma.user.findUnique({ where: { id: userId } });
-    if (!user) throw new NotFoundException('Usuario no encontrado');
+    const current = await this.users.findUserEmail(userId);
+    if (!current) throw new NotFoundException('Usuario no encontrado');
 
     const data: Prisma.UserUpdateInput = {};
     if (dto.name !== undefined) data.name = dto.name;
@@ -342,19 +233,15 @@ export class UsersService {
     if (dto.avatarUrl !== undefined) data.avatarUrl = dto.avatarUrl;
     if (dto.email) {
       const email = dto.email.toLowerCase();
-      if (email !== user.email) {
-        const taken = await this.prisma.user.findUnique({ where: { email } });
+      if (email !== current.email) {
+        const taken = await this.users.findUserByEmail(email);
         if (taken) throw new ConflictException('El correo ya esta registrado');
         data.email = email;
       }
     }
     if (dto.password) data.passwordHash = await hashPassword(dto.password);
 
-    return this.prisma.user.update({
-      where: { id: userId },
-      data,
-      select: USER_PUBLIC_SELECT,
-    });
+    return this.users.updateUser(userId, data);
   }
 
   // ---------------------------------------------------------------- interno
@@ -367,20 +254,13 @@ export class UsersService {
     companyId: string,
     userId: string,
   ): Promise<void> {
-    const target = await this.prisma.membership.findUnique({
-      where: { userId_companyId: { userId, companyId } },
-      select: { role: true, active: true },
-    });
+    const target = await this.users.findMemberAccess(companyId, userId);
     if (!target || !target.active || target.role !== 'ADMIN') return;
 
-    const otherAdmins = await this.prisma.membership.count({
-      where: {
-        companyId,
-        role: 'ADMIN',
-        active: true,
-        userId: { not: userId },
-      },
-    });
+    const otherAdmins = await this.users.countOtherActiveAdmins(
+      companyId,
+      userId,
+    );
     if (otherAdmins === 0) {
       throw new BadRequestException(
         'No puedes desactivar al ultimo administrador activo de la empresa',
@@ -388,8 +268,3 @@ export class UsersService {
     }
   }
 }
-
-export { USER_PUBLIC_SELECT };
-
-
-

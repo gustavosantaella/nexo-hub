@@ -16,13 +16,13 @@ import {
   comparePassword,
   hashPassword,
 } from '../../common/utils/password.util';
-import { PrismaService } from '../../prisma/prisma.service';
 import {
   CompaniesService,
   type CompanyProfile,
 } from '../companies/companies.service';
 import { UpdateProfileDto } from '../users/dto/update-profile.dto';
 import { UsersService, type PublicUser } from '../users/users.service';
+import { AuthRepository } from './auth.repository';
 import { LoginDto } from './dto/login.dto';
 import { RegisterDto } from './dto/register.dto';
 import { SwitchCompanyDto } from './dto/switch-company.dto';
@@ -43,16 +43,14 @@ export class AuthService {
   constructor(
     private readonly usersService: UsersService,
     private readonly companiesService: CompaniesService,
-    private readonly prisma: PrismaService,
+    private readonly auth: AuthRepository,
     private readonly jwtService: JwtService,
   ) {}
 
   /** Registro publico: crea la empresa y su primer usuario ADMIN. */
   async register(dto: RegisterDto): Promise<SessionResult> {
     const email = dto.user.email.toLowerCase();
-    const existingUser = await this.prisma.user.findUnique({
-      where: { email },
-    });
+    const existingUser = await this.auth.findUserByEmail(email);
     if (existingUser) {
       throw new ConflictException(
         'Ese correo ya esta registrado. Inicia sesion para unirte a otra empresa.',
@@ -60,9 +58,7 @@ export class AuthService {
     }
 
     const rif = dto.company.rif.trim().toUpperCase();
-    const existingCompany = await this.prisma.company.findUnique({
-      where: { rif },
-    });
+    const existingCompany = await this.auth.findCompanyByRif(rif);
     if (existingCompany) {
       throw new ConflictException(
         'Ya existe una empresa registrada con ese RIF',
@@ -70,34 +66,21 @@ export class AuthService {
     }
 
     const passwordHash = await hashPassword(dto.user.password);
-    const { user, company } = await this.prisma.$transaction(async (tx) => {
-      const createdCompany = await tx.company.create({
-        data: {
-          name: dto.company.name.trim(),
-          rif,
-          phone: dto.company.phone,
-          email: dto.company.email?.toLowerCase(),
-          address: dto.company.address,
-        },
-      });
-      const createdUser = await tx.user.create({
-        data: {
-          email,
-          name: dto.user.name,
-          documentId: dto.user.documentId,
-          phone: dto.user.phone,
-          passwordHash,
-        },
-      });
-      await tx.membership.create({
-        data: {
-          userId: createdUser.id,
-          companyId: createdCompany.id,
-          role: Role.ADMIN,
-          active: true,
-        },
-      });
-      return { user: createdUser, company: createdCompany };
+    const { user, company } = await this.auth.registerWithAdmin({
+      company: {
+        name: dto.company.name.trim(),
+        rif,
+        phone: dto.company.phone,
+        email: dto.company.email?.toLowerCase(),
+        address: dto.company.address,
+      },
+      user: {
+        email,
+        name: dto.user.name,
+        documentId: dto.user.documentId,
+        phone: dto.user.phone,
+        passwordHash,
+      },
     });
 
     await this.usersService.markLogin(user.id);

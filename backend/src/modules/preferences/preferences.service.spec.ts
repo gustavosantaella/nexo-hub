@@ -1,4 +1,5 @@
 import type { PrismaService } from '../../prisma/prisma.service';
+import { PreferencesRepository } from './preferences.repository';
 import { PreferencesService } from './preferences.service';
 
 /** Columnas que el servicio pide a Prisma (las que viajan al cliente). */
@@ -39,7 +40,9 @@ describe('PreferencesService (preferencias de la empresa)', () => {
   beforeEach(() => {
     findUnique = jest.fn(async () => null);
     upsert = jest.fn(async () => ({ ...NO_PREFERENCES }));
-    service = new PreferencesService(prismaWith({ findUnique, upsert }));
+    service = new PreferencesService(
+      new PreferencesRepository(prismaWith({ findUnique, upsert })),
+    );
   });
 
   it('sin nada configurado devuelve las preferencias de fábrica (vacías)', async () => {

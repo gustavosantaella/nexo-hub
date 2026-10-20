@@ -11,28 +11,22 @@ import {
 } from '../../common/constants/currencies';
 import { StockMovementType } from '../../common/constants/enums';
 import { PaginationQueryDto } from '../../common/dto/pagination-query.dto';
-import { buildPaginatedResult, toSkip } from '../../common/utils/pagination.util';
+import { buildPaginatedResult } from '../../common/utils/pagination.util';
 import { money, toMoney } from '../../common/utils/money.util';
 import { normalizeImageUrl, normalizeNullableId } from '../../common/utils/normalize.util';
 import { boxUnitsOf } from '../../common/utils/packaging.util';
 import { toQty } from '../../common/utils/quantity.util';
-import { tenantWhere } from '../../common/utils/tenant.util';
-import { PrismaService } from '../../prisma/prisma.service';
 import { InventoryService } from '../inventory/inventory.service';
 import { RatesService, normalizeRateKey } from '../rates/rates.service';
 import { CreateProductDto } from './dto/create-product.dto';
 import { ProductQueryDto } from './dto/product-query.dto';
 import { UpdateProductDto } from './dto/update-product.dto';
-
-const PRODUCT_INCLUDE = {
-  category: { select: { id: true, name: true } },
-  supplier: { select: { id: true, name: true } },
-} satisfies Prisma.ProductInclude;
+import { ProductsRepository } from './products.repository';
 
 @Injectable()
 export class ProductsService {
   constructor(
-    private readonly prisma: PrismaService,
+    private readonly products: ProductsRepository,
     private readonly inventory: InventoryService,
     private readonly rates: RatesService,
   ) {}
@@ -108,42 +102,39 @@ export class ProductsService {
     await this.assertSkuAvailable(companyId, finalSku);
     await this.assertRelationsInCompany(companyId, categoryId, supplierId);
 
-    const product = await this.prisma.product.create({
-      data: {
-        ...rest,
-        companyId,
-        sku: finalSku,
-        price: priceData.base,
-        priceCurrency: priceData.currency,
-        priceRate: priceData.rate,
-        priceRateKey: priceData.rateKey,
-        priceEntered: priceData.entered,
-        cost: costData.base,
-        costCurrency: costData.currency,
-        costRate: costData.rate,
-        costRateKey: costData.rateKey,
-        costEntered: costData.entered,
-        unitCost: unitCostData.base,
-        unitCostEntered: unitCostData.entered,
-        unitCostCurrency: unitCostData.currency,
-        unitCostRate: unitCostData.rate,
-        unitCostRateKey: unitCostData.rateKey,
-        unitPrice: unitPriceData.base,
-        unitPriceEntered: unitPriceData.entered,
-        unitPriceCurrency: unitPriceData.currency,
-        unitPriceRate: unitPriceData.rate,
-        unitPriceRateKey: unitPriceData.rateKey,
-        stock: 0,
-        minStock: toQty(dto.minStock ?? 0),
-        unit: dto.unit ?? 'UND',
-        unitsPerBox: units,
-        trackStock: dto.trackStock ?? true,
-        active: dto.active ?? true,
-        imageUrl: normalizeImageUrl(imageUrl),
-        categoryId: normalizeNullableId(categoryId),
-        supplierId: normalizeNullableId(supplierId),
-      },
-      include: PRODUCT_INCLUDE,
+    const product = await this.products.create({
+      ...rest,
+      companyId,
+      sku: finalSku,
+      price: priceData.base,
+      priceCurrency: priceData.currency,
+      priceRate: priceData.rate,
+      priceRateKey: priceData.rateKey,
+      priceEntered: priceData.entered,
+      cost: costData.base,
+      costCurrency: costData.currency,
+      costRate: costData.rate,
+      costRateKey: costData.rateKey,
+      costEntered: costData.entered,
+      unitCost: unitCostData.base,
+      unitCostEntered: unitCostData.entered,
+      unitCostCurrency: unitCostData.currency,
+      unitCostRate: unitCostData.rate,
+      unitCostRateKey: unitCostData.rateKey,
+      unitPrice: unitPriceData.base,
+      unitPriceEntered: unitPriceData.entered,
+      unitPriceCurrency: unitPriceData.currency,
+      unitPriceRate: unitPriceData.rate,
+      unitPriceRateKey: unitPriceData.rateKey,
+      stock: 0,
+      minStock: toQty(dto.minStock ?? 0),
+      unit: dto.unit ?? 'UND',
+      unitsPerBox: units,
+      trackStock: dto.trackStock ?? true,
+      active: dto.active ?? true,
+      imageUrl: normalizeImageUrl(imageUrl),
+      categoryId: normalizeNullableId(categoryId),
+      supplierId: normalizeNullableId(supplierId),
     });
 
     // Stock inicial => movimiento de inventario trazable (siempre en la empresa).
@@ -170,34 +161,11 @@ export class ProductsService {
       ? await this.categoryScopeIds(companyId, query.categoryId)
       : undefined;
 
-    const where: Prisma.ProductWhereInput = {
-      ...tenantWhere(companyId),
-      ...(query.search
-        ? {
-            OR: [
-              { name: { contains: query.search } },
-              { sku: { contains: query.search } },
-              { description: { contains: query.search } },
-            ],
-          }
-        : {}),
-      ...(categoryIds ? { categoryId: { in: categoryIds } } : {}),
-      ...(query.supplierId ? { supplierId: query.supplierId } : {}),
-      ...(query.onlyActive ? { active: true } : {}),
-    };
-
-    const [items, total] = await this.prisma.$transaction([
-      this.prisma.product.findMany({
-        where,
-        include: PRODUCT_INCLUDE,
-        orderBy: query.toOrderBy(['name', 'price', 'stock', 'createdAt'], {
-          name: 'asc',
-        }),
-        skip: toSkip(query.page, query.limit),
-        take: query.limit,
-      }),
-      this.prisma.product.count({ where }),
-    ]);
+    const { items, total } = await this.products.findPage(
+      companyId,
+      query,
+      categoryIds,
+    );
 
     return buildPaginatedResult(items, total, query.page, query.limit);
   }
@@ -207,60 +175,20 @@ export class ProductsService {
    * subcategorias (un solo nivel), para que filtrar por "Bebidas" incluya lo que
    * esta agrupado en "Refrescos".
    */
-  private async categoryScopeIds(
+  private categoryScopeIds(
     companyId: string,
     categoryId: string,
   ): Promise<string[]> {
-    const subcategories = await this.prisma.category.findMany({
-      where: { parentId: categoryId, ...tenantWhere(companyId) },
-      select: { id: true },
-    });
-    return [categoryId, ...subcategories.map((subcategory) => subcategory.id)];
+    return this.products.categoryScopeIds(companyId, categoryId);
   }
 
   /** Productos activos para selects y para la grilla del POS (punto de venta). */
   findOptions(companyId: string) {
-    return this.prisma.product.findMany({
-      where: { active: true, ...tenantWhere(companyId) },
-      select: {
-        id: true,
-        sku: true,
-        name: true,
-        // La busqueda del POS tambien mira la descripcion y la categoria.
-        description: true,
-        price: true,
-        // El costo viaja con las opciones para que el formulario de menus pueda
-        // costear la receta en vivo (producto x cantidad).
-        cost: true,
-        stock: true,
-        unit: true,
-        // Precio de venta de UNA unidad suelta (cajas/paquetes): el POS y los
-        // pedidos lo cobran cuando la presentacion se vende por unidades.
-        unitPrice: true,
-        unitsPerBox: true,
-        // Contexto de moneda de los montos (que viajan en USD): la grilla del POS
-        // vuelve a mostrar el monto tal como lo escribio el operador (Bs 350,00) y
-        // no su equivalente en dolares redondeado a centavos.
-        priceCurrency: true,
-        priceRateKey: true,
-        priceEntered: true,
-        unitPriceCurrency: true,
-        unitPriceRateKey: true,
-        unitPriceEntered: true,
-        imageUrl: true,
-        categoryId: true,
-        // Nombre de la categoria para buscarla sin depender de otra peticion.
-        category: { select: { id: true, name: true } },
-      },
-      orderBy: { name: 'asc' },
-    });
+    return this.products.findOptions(companyId);
   }
 
   async findOne(companyId: string, id: string) {
-    const product = await this.prisma.product.findFirst({
-      where: { id, ...tenantWhere(companyId) },
-      include: PRODUCT_INCLUDE,
-    });
+    const product = await this.products.findOne(companyId, id);
     if (!product) throw new NotFoundException('Producto no encontrado');
     return product;
   }
@@ -450,10 +378,7 @@ export class ProductsService {
     // `update` con filtro por empresa: nunca se toca un producto de otra. Se usa
     // `update` (y no `updateMany`) porque los enlaces `category`/`supplier` son
     // escrituras de relacion y `updateMany` solo admite campos escalares.
-    await this.prisma.product.update({
-      where: { id, ...tenantWhere(companyId) },
-      data,
-    });
+    await this.products.update(companyId, id, data);
     return this.findOne(companyId, id);
   }
 
@@ -468,24 +393,16 @@ export class ProductsService {
   async remove(companyId: string, id: string) {
     await this.findOne(companyId, id);
 
-    const affected = await this.prisma.menuIngredient.findMany({
-      where: {
-        productId: id,
-        ...tenantWhere(companyId),
-        menu: { active: true },
-      },
-      select: { menu: { select: { id: true, code: true, name: true } } },
-      orderBy: { menu: { name: 'asc' } },
-    });
+    const affectedMenus = await this.products.findActiveMenusUsing(
+      companyId,
+      id,
+    );
 
-    const result = await this.prisma.product.updateMany({
-      where: { id, ...tenantWhere(companyId) },
-      data: { active: false },
-    });
+    const result = await this.products.deactivate(companyId, id);
 
     return {
       ...result,
-      affectedMenus: affected.map((line) => line.menu),
+      affectedMenus,
     };
   }
 
@@ -568,10 +485,7 @@ export class ProductsService {
 
     for (let attempt = 0; attempt < 20; attempt += 1) {
       const candidate = `${base}-${Math.floor(1000 + Math.random() * 9000)}`;
-      const exists = await this.prisma.product.findFirst({
-        where: { sku: candidate, ...tenantWhere(companyId) },
-        select: { id: true },
-      });
+      const exists = await this.products.findSku(companyId, candidate);
       if (!exists) return candidate;
     }
     throw new BadRequestException('No se pudo generar un SKU unico');
@@ -583,14 +497,7 @@ export class ProductsService {
     sku: string,
     excludeId?: string,
   ): Promise<void> {
-    const existing = await this.prisma.product.findFirst({
-      where: {
-        ...tenantWhere(companyId),
-        sku,
-        ...(excludeId ? { id: { not: excludeId } } : {}),
-      },
-      select: { id: true },
-    });
+    const existing = await this.products.findSku(companyId, sku, excludeId);
     if (existing) {
       throw new ConflictException(
         'Ya existe un producto con ese SKU en esta empresa',
@@ -605,24 +512,16 @@ export class ProductsService {
     supplierId?: string | null,
   ): Promise<void> {
     if (categoryId) {
-      const category = await this.prisma.category.findFirst({
-        where: { id: categoryId, ...tenantWhere(companyId) },
-        select: { id: true },
-      });
+      const category = await this.products.findCategory(companyId, categoryId);
       if (!category) {
         throw new BadRequestException('La categoria indicada no existe');
       }
     }
     if (supplierId) {
-      const supplier = await this.prisma.supplier.findFirst({
-        where: { id: supplierId, ...tenantWhere(companyId) },
-        select: { id: true },
-      });
+      const supplier = await this.products.findSupplier(companyId, supplierId);
       if (!supplier) {
         throw new BadRequestException('El proveedor indicado no existe');
       }
     }
   }
 }
-
-export { PRODUCT_INCLUDE };

@@ -13,19 +13,13 @@ import {
   normalizeCurrencyCode,
 } from '../../common/constants/currencies';
 import { round2 } from '../../common/utils/money.util';
-import { PrismaService } from '../../prisma/prisma.service';
+import {
+  BASE_CURRENCY_KEY,
+  CURRENCIES_KEY,
+  CurrenciesRepository,
+} from './currencies.repository';
 
-/** Clave de `Setting` donde vive la configuracion de monedas (JSON). */
-export const CURRENCIES_KEY = 'currencies.config';
-
-/**
- * Clave de `Setting` donde vive la moneda base elegida por el local.
- *
- * Los montos del sistema SIEMPRE se guardan en dolares (`baseAmount`): esta
- * clave solo decide en que moneda se muestran primero (tarjetas, listados,
- * reportes). Cuando no existe, la moneda base es USD.
- */
-export const BASE_CURRENCY_KEY = 'currencies.base';
+export { BASE_CURRENCY_KEY, CURRENCIES_KEY };
 
 /** Entrada aceptada al guardar una moneda. */
 export interface CurrencyInput {
@@ -47,14 +41,12 @@ export interface CurrencyInput {
  */
 @Injectable()
 export class CurrenciesService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(private readonly currencies: CurrenciesRepository) {}
 
   /** Monedas configuradas en la empresa (la moneda base siempre presente). */
   async list(companyId: string): Promise<CurrencySetting[]> {
-    const row = await this.prisma.setting.findUnique({
-      where: { companyId_key: { companyId, key: CURRENCIES_KEY } },
-    });
-    return this.merge(this.parse(row?.value));
+    const value = await this.currencies.findValue(companyId, CURRENCIES_KEY);
+    return this.merge(this.parse(value));
   }
 
   /** Solo las monedas habilitadas para cobrar/pagar en la empresa. */
@@ -70,10 +62,8 @@ export class CurrenciesService {
    * snapshot de tasas cae de vuelta al USD.
    */
   async baseCurrencyCode(companyId: string): Promise<string> {
-    const row = await this.prisma.setting.findUnique({
-      where: { companyId_key: { companyId, key: BASE_CURRENCY_KEY } },
-    });
-    return normalizeCurrencyCode(row?.value) || BASE_CURRENCY_CODE;
+    const value = await this.currencies.findValue(companyId, BASE_CURRENCY_KEY);
+    return normalizeCurrencyCode(value) || BASE_CURRENCY_CODE;
   }
 
   /**
@@ -142,25 +132,22 @@ export class CurrenciesService {
     base?: string,
   ): Promise<void> {
     const value = JSON.stringify(settings);
-    await this.prisma.setting.upsert({
-      where: { companyId_key: { companyId, key: CURRENCIES_KEY } },
-      update: { value, updatedById: userId },
-      create: { companyId, key: CURRENCIES_KEY, value, updatedById: userId },
-    });
+    await this.currencies.upsertValue(
+      companyId,
+      CURRENCIES_KEY,
+      value,
+      userId,
+    );
 
     if (base === undefined) return;
 
     const baseValue = normalizeCurrencyCode(base) || BASE_CURRENCY_CODE;
-    await this.prisma.setting.upsert({
-      where: { companyId_key: { companyId, key: BASE_CURRENCY_KEY } },
-      update: { value: baseValue, updatedById: userId },
-      create: {
-        companyId,
-        key: BASE_CURRENCY_KEY,
-        value: baseValue,
-        updatedById: userId,
-      },
-    });
+    await this.currencies.upsertValue(
+      companyId,
+      BASE_CURRENCY_KEY,
+      baseValue,
+      userId,
+    );
   }
 
   /**

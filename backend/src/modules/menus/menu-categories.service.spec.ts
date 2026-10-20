@@ -1,5 +1,6 @@
 import { BadRequestException } from '@nestjs/common';
 import type { PrismaService } from '../../prisma/prisma.service';
+import { MenuCategoriesRepository } from './menu-categories.repository';
 import { MenuCategoriesService } from './menu-categories.service';
 
 const COMPANY_ID = 'company-1';
@@ -121,7 +122,9 @@ function createService(rows: MenuCategoryRow[] = CATEGORIES) {
   };
 
   return {
-    service: new MenuCategoriesService(prisma as unknown as PrismaService),
+    service: new MenuCategoriesService(
+      new MenuCategoriesRepository(prisma as unknown as PrismaService),
+    ),
     delegate,
     created,
     updated,

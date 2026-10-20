@@ -6,28 +6,14 @@ import {
 import type { Prisma } from '@prisma/client';
 import { Role } from '../../common/constants/enums';
 import type { UserCompanySummary } from '../../common/interfaces/authenticated-user.interface';
-import { PrismaService } from '../../prisma/prisma.service';
+import {
+  CompaniesRepository,
+  type CompanyProfile,
+} from './companies.repository';
 import { CreateCompanyDto } from './dto/create-company.dto';
 import { UpdateCompanyDto } from './dto/update-company.dto';
 
-/** Datos publicos de una empresa. */
-const COMPANY_SELECT = {
-  id: true,
-  name: true,
-  rif: true,
-  phone: true,
-  email: true,
-  address: true,
-  logoUrl: true,
-  notes: true,
-  active: true,
-  createdAt: true,
-  updatedAt: true,
-} satisfies Prisma.CompanySelect;
-
-export type CompanyProfile = Prisma.CompanyGetPayload<{
-  select: typeof COMPANY_SELECT;
-}>;
+export type { CompanyProfile };
 
 /**
  * Empresas del sistema.
@@ -37,19 +23,11 @@ export type CompanyProfile = Prisma.CompanyGetPayload<{
  */
 @Injectable()
 export class CompaniesService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(private readonly companies: CompaniesRepository) {}
 
   /** Empresas a las que pertenece el usuario (con su rol en cada una). */
   async listMine(userId: string): Promise<UserCompanySummary[]> {
-    const memberships = await this.prisma.membership.findMany({
-      where: { userId },
-      select: {
-        role: true,
-        active: true,
-        company: { select: { id: true, name: true, rif: true, active: true } },
-      },
-      orderBy: { createdAt: 'asc' },
-    });
+    const memberships = await this.companies.findMemberships(userId);
 
     return memberships.map((membership) => ({
       id: membership.company.id,
@@ -66,10 +44,7 @@ export class CompaniesService {
   }
 
   async findOne(companyId: string): Promise<CompanyProfile> {
-    const company = await this.prisma.company.findUnique({
-      where: { id: companyId },
-      select: COMPANY_SELECT,
-    });
+    const company = await this.companies.findOne(companyId);
     if (!company) throw new NotFoundException('Empresa no encontrada');
     return company;
   }
@@ -85,20 +60,18 @@ export class CompaniesService {
     const rif = dto.rif.trim().toUpperCase();
     await this.assertRifAvailable(rif);
 
-    const company = await this.prisma.$transaction(async (tx) => {
-      const created = await tx.company.create({
-        data: {
+    const company = await this.companies.transaction(async (tx) => {
+      const created = await this.companies.create(
+        {
           name: dto.name.trim(),
           rif,
           phone: dto.phone,
           email: dto.email?.toLowerCase(),
           address: dto.address,
         },
-        select: COMPANY_SELECT,
-      });
-      await tx.membership.create({
-        data: { userId, companyId: created.id, role: Role.ADMIN, active: true },
-      });
+        tx,
+      );
+      await this.companies.addMember(userId, created.id, Role.ADMIN, tx);
       return created;
     });
 
@@ -126,11 +99,7 @@ export class CompaniesService {
       data.rif = rif;
     }
 
-    return this.prisma.company.update({
-      where: { id: companyId },
-      data,
-      select: COMPANY_SELECT,
-    });
+    return this.companies.update(companyId, data);
   }
 
   // ---------------------------------------------------------------- interno
@@ -140,10 +109,7 @@ export class CompaniesService {
     rif: string,
     exceptCompanyId?: string,
   ): Promise<void> {
-    const existing = await this.prisma.company.findUnique({
-      where: { rif },
-      select: { id: true },
-    });
+    const existing = await this.companies.findByRif(rif);
     if (existing && existing.id !== exceptCompanyId) {
       throw new ConflictException(
         'Ya existe una empresa registrada con ese RIF',

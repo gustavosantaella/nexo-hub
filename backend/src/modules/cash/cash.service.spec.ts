@@ -3,6 +3,7 @@ import type { ConfigService } from '@nestjs/config';
 import { convertToBase } from '../../common/utils/currency.util';
 import type { PrismaService } from '../../prisma/prisma.service';
 import type { RatesService } from '../rates/rates.service';
+import { CashRepository } from './cash.repository';
 import { CashService, type MovementLike } from './cash.service';
 
 const COMPANY_ID = 'company-1';
@@ -61,7 +62,7 @@ function movement(partial: Partial<MovementLike> = {}): MovementLike {
 describe('CashService (arqueo multimoneda)', () => {
   describe('buildBreakdown', () => {
     it('suma en la moneda base y conserva el desglose por moneda', () => {
-      const service = new CashService({} as PrismaService, config, rates);
+      const service = new CashService(new CashRepository({} as PrismaService), config, rates);
 
       const breakdown = service.buildBreakdown(10, [
         // 900 Bs cobrados como efectivo = 1 USD
@@ -113,7 +114,7 @@ describe('CashService (arqueo multimoneda)', () => {
     });
 
     it('trata los movimientos sin equivalente como montos en dólares', () => {
-      const service = new CashService({} as PrismaService, config, rates);
+      const service = new CashService(new CashRepository({} as PrismaService), config, rates);
 
       const breakdown = service.buildBreakdown(0, [
         // Registro anterior al soporte multimoneda (sin baseAmount).
@@ -125,7 +126,7 @@ describe('CashService (arqueo multimoneda)', () => {
     });
 
     it('separa las propinas de las ventas del turno', () => {
-      const service = new CashService({} as PrismaService, config, rates);
+      const service = new CashService(new CashRepository({} as PrismaService), config, rates);
 
       const breakdown = service.buildBreakdown(0, [
         // Cobro de 110 USD: 100 de consumo + 10 de propina.
@@ -143,7 +144,7 @@ describe('CashService (arqueo multimoneda)', () => {
     });
 
     it('no deja que la propina supere el monto cobrado', () => {
-      const service = new CashService({} as PrismaService, config, rates);
+      const service = new CashService(new CashRepository({} as PrismaService), config, rates);
 
       const breakdown = service.buildBreakdown(0, [
         movement({ amount: 50, baseAmount: 50, tipAmount: 80 }),
@@ -154,7 +155,7 @@ describe('CashService (arqueo multimoneda)', () => {
     });
 
     it('desglosa el fondo inicial contado en varias monedas', () => {
-      const service = new CashService({} as PrismaService, config, rates);
+      const service = new CashService(new CashRepository({} as PrismaService), config, rates);
 
       // Fondo: 100 USD + 5.000 Bs + 50 EUR = 100 + 5.56 + 55 = 160.56 USD.
       // El JSON vive en la base en centavos, como el resto del dinero.
@@ -180,7 +181,7 @@ describe('CashService (arqueo multimoneda)', () => {
     });
 
     it('deja el desglose del fondo vacio en aperturas de una sola moneda', () => {
-      const service = new CashService({} as PrismaService, config, rates);
+      const service = new CashService(new CashRepository({} as PrismaService), config, rates);
 
       const breakdown = service.buildBreakdown(20, [], null);
 
@@ -191,7 +192,7 @@ describe('CashService (arqueo multimoneda)', () => {
 
   describe('propinas del turno', () => {
     it('no adelanta propina en un abono parcial', () => {
-      const service = new CashService({} as PrismaService, config, rates);
+      const service = new CashService(new CashRepository({} as PrismaService), config, rates);
 
       // Pedido de 110 (100 de consumo + 10 de propina) con un abono de 100.
       const portions = service.tipPortionsOfOrder(110, 10, [
@@ -202,7 +203,7 @@ describe('CashService (arqueo multimoneda)', () => {
     });
 
     it('cobra la propina con el pago que completa el consumo', () => {
-      const service = new CashService({} as PrismaService, config, rates);
+      const service = new CashService(new CashRepository({} as PrismaService), config, rates);
 
       const portions = service.tipPortionsOfOrder(110, 10, [
         { id: 'p1', baseAmount: 60 },
@@ -214,7 +215,7 @@ describe('CashService (arqueo multimoneda)', () => {
     });
 
     it('reparte la propina cuando el primer pago ya cubre el consumo', () => {
-      const service = new CashService({} as PrismaService, config, rates);
+      const service = new CashService(new CashRepository({} as PrismaService), config, rates);
 
       // 105 = 100 de consumo + 5 de propina; quedan 5 de propina para el resto.
       const portions = service.tipPortionsOfOrder(110, 10, [
@@ -227,7 +228,7 @@ describe('CashService (arqueo multimoneda)', () => {
     });
 
     it('usa el monto original en cobros sin equivalente en USD', () => {
-      const service = new CashService({} as PrismaService, config, rates);
+      const service = new CashService(new CashRepository({} as PrismaService), config, rates);
 
       const portions = service.tipPortionsOfOrder(110, 10, [
         { id: 'p1', amount: 110, baseAmount: 0 },
@@ -251,7 +252,7 @@ describe('CashService (arqueo multimoneda)', () => {
           ]),
         },
       } as unknown as PrismaService;
-      const service = new CashService(prisma, config, rates);
+      const service = new CashService(new CashRepository(prisma), config, rates);
 
       const movements = await service.withTips(COMPANY_ID, [
         movement({
@@ -281,7 +282,7 @@ describe('CashService (arqueo multimoneda)', () => {
       const prisma = {
         order: { findMany: jest.fn() },
       } as unknown as PrismaService;
-      const service = new CashService(prisma, config, rates);
+      const service = new CashService(new CashRepository(prisma), config, rates);
 
       await service.withTips(COMPANY_ID, [movement({ id: 'm1', amount: 25 })]);
 
@@ -325,7 +326,7 @@ describe('CashService (arqueo multimoneda)', () => {
           ]),
         },
       } as unknown as PrismaService;
-      const service = new CashService(prisma, config, rates);
+      const service = new CashService(new CashRepository(prisma), config, rates);
 
       const { summary } = await service.getCurrentSession(COMPANY_ID);
 
@@ -355,7 +356,7 @@ describe('CashService (arqueo multimoneda)', () => {
       };
 
       return {
-        service: new CashService({} as PrismaService, config, rates),
+        service: new CashService(new CashRepository({} as PrismaService), config, rates),
         tx,
       };
     }
@@ -465,7 +466,7 @@ describe('CashService (arqueo multimoneda)', () => {
         $transaction: (fn: (client: unknown) => unknown) => fn(tx),
       } as unknown as PrismaService;
 
-      return { service: new CashService(prisma, config, rates), created };
+      return { service: new CashService(new CashRepository(prisma), config, rates), created };
     }
 
     it('expresa el fondo en USD y recuerda la moneda contada', async () => {
@@ -489,7 +490,7 @@ describe('CashService (arqueo multimoneda)', () => {
         $transaction: (fn: (client: unknown) => unknown) => fn(tx),
       } as unknown as PrismaService;
 
-      const service = new CashService(prisma, config, rates);
+      const service = new CashService(new CashRepository(prisma), config, rates);
       await service.openSession(
         COMPANY_ID,
         { openingAmount: 1800, openingCurrency: 'VES' },
@@ -616,7 +617,7 @@ describe('CashService (arqueo multimoneda)', () => {
         },
         $transaction: (operations: unknown[]) => Promise.all(operations),
       } as unknown as PrismaService;
-      const service = new CashService(prisma, config, rates);
+      const service = new CashService(new CashRepository(prisma), config, rates);
 
       const result = await service.listSessions(COMPANY_ID, {
         page: 1,
@@ -682,7 +683,7 @@ describe('CashService (arqueo multimoneda)', () => {
         $transaction: (fn: (client: unknown) => unknown) => fn(tx),
       } as unknown as PrismaService;
 
-      const service = new CashService(prisma, config, rates);
+      const service = new CashService(new CashRepository(prisma), config, rates);
       const closed = await service.closeSession(
         COMPANY_ID,
         { countedAmount: 1800, countedCurrency: 'VES' },
