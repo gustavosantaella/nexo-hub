@@ -30,7 +30,7 @@
           <div class="rp-brand">
             @if (data.company.logoUrl) {
               <div class="rp-logo">
-                <img [src]="data.company.logoUrl" [alt]="'Logo de ' + data.company.name" />
+                <img [src]="mediaUrl(data.company.logoUrl)" [alt]="'Logo de ' + data.company.name" />
               </div>
             } @else {
               <div class="rp-logo">

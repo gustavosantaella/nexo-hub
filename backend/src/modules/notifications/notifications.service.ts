@@ -72,7 +72,7 @@ export interface SaleNotification {
   rates?: RateHistory | null;
   /** Referencia bancaria del comprobante (transferencia / pago movil). */
   paymentReference?: string | null;
-  /** Foto del comprobante como data URL. */
+  /** Foto del comprobante (URL local `/media/...`; data URL solo historico). */
   paymentPhotoUrl?: string | null;
   items: { name: string; quantity: number }[];
 }

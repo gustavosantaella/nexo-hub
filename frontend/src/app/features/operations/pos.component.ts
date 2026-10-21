@@ -49,6 +49,7 @@ import {
   ProductsService,
 } from '../../core/services/catalog.service';
 import { LayoutService } from '../../core/services/layout.service';
+import { MediaService } from '../../core/services/media.service';
 import {
   MenuCategoriesService,
   MenusService,
@@ -60,7 +61,8 @@ import {
 import { RatesService } from '../../core/services/rates.service';
 import { ToastService } from '../../core/services/toast.service';
 import { categoryOptionLabel, categoryScopeIds } from '../../core/utils/category-tree';
-import { toPaymentProofDataUrl } from '../../core/utils/image';
+import { toPaymentProofFile } from '../../core/utils/image';
+import { resolveMediaUrl } from '../../core/utils/media-url';
 import {
   apiErrorMessage,
   dateTime,
@@ -276,6 +278,7 @@ export class PosComponent implements OnInit, OnDestroy {
   private readonly customersService = inject(CustomersService);
   private readonly preferences = inject(PreferencesService);
   private readonly layout = inject(LayoutService);
+  private readonly media = inject(MediaService);
   private readonly toast = inject(ToastService);
   private readonly confirm = inject(ConfirmService);
 
@@ -294,6 +297,8 @@ export class PosComponent implements OnInit, OnDestroy {
 
   readonly money = money;
   readonly dateTime = dateTime;
+  /** Base de las imagenes locales `/media/...` (ver `environment.mediaUrl`). */
+  readonly mediaUrl = resolveMediaUrl;
   /** Presentacion del producto: precio por unidad y etiqueta de la unidad vendida. */
   readonly unitPriceOf = unitPriceOf;
   readonly soldUnitLabel = soldUnitLabel;
@@ -477,7 +482,7 @@ export class PosComponent implements OnInit, OnDestroy {
     changeAuto: boolean;
     /** Referencia bancaria del comprobante (4-6 digitos). */
     paymentReference: string;
-    /** Foto opcional del comprobante como data URL. */
+    /** Foto opcional del comprobante: URL local `/media/...` (multipart). */
     paymentPhotoUrl: string | null;
     /** Nombre del archivo elegido (solo se muestra en el POS). */
     paymentPhotoName: string;
@@ -1921,7 +1926,7 @@ export class PosComponent implements OnInit, OnDestroy {
       .slice(0, 6);
   }
 
-  /** Comprime y adjunta la foto del comprobante elegida por el cajero. */
+  /** Comprime y sube la foto del comprobante elegida por el cajero. */
   async onPaymentPhotoSelected(event: Event): Promise<void> {
     const input = event.target as HTMLInputElement;
     const file = input.files?.[0];
@@ -1940,10 +1945,14 @@ export class PosComponent implements OnInit, OnDestroy {
 
     this.paymentPhotoBusy.set(true);
     try {
-      this.charge.paymentPhotoUrl = await toPaymentProofDataUrl(file);
+      const image = await toPaymentProofFile(file);
+      const uploaded = await firstValueFrom(
+        this.media.upload(image, 'payments', file.name),
+      );
+      this.charge.paymentPhotoUrl = uploaded.url;
       this.charge.paymentPhotoName = file.name;
     } catch {
-      this.toast.error('No se pudo procesar la foto del comprobante.');
+      this.toast.error('No se pudo subir la foto del comprobante.');
       this.charge.paymentPhotoUrl = null;
       this.charge.paymentPhotoName = '';
     } finally {

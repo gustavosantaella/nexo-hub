@@ -23,6 +23,7 @@ import {
   StockReferenceType,
   type OrderStatus as OrderStatusT,
 } from '../../common/constants/enums';
+import { ImageStorageService } from '../../common/media/image-storage.service';
 import { buildCode } from '../../common/utils/code.util';
 import {
   blendConsumption,
@@ -396,6 +397,7 @@ export class OrdersService {
     private readonly rates: RatesService,
     private readonly menus: MenusService,
     @Optional() private readonly notifications?: NotificationsService,
+    @Optional() private readonly images?: ImageStorageService,
   ) {}
 
   /** Crea el pedido, descuenta stock y guarda el snapshot de precios. */
@@ -1310,7 +1312,14 @@ export class OrdersService {
           'La referencia del comprobante debe tener entre 4 y 6 digitos',
         );
       }
-      const paymentPhotoUrl = needsProof ? (dto.paymentPhotoUrl ?? null) : null;
+      // El comprobante ya se subio por multipart; la misma URL local se copia al
+      // cobro y a los movimientos de caja (el POS y Telegram la leen).
+      const paymentPhotoUrl =
+        needsProof && this.images
+          ? await this.images.persist(companyId, 'payments', dto.paymentPhotoUrl)
+          : needsProof
+            ? (dto.paymentPhotoUrl ?? null)
+            : null;
 
       // Cada parte se convierte desde SU moneda a la tasa oficial del BCV: en un
       // pago mixto el cliente puede entregar dolares en efectivo y bolivares por

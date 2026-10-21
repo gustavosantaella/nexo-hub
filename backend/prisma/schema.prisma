@@ -39,8 +39,9 @@ model Company {
   email     String?
   address   String?
   notes     String?
-  // Logo que se imprime en los reportes: URL publica o data URL (base64) del
-  // archivo, que el navegador ya reduce antes de guardarlo (ver utils/image.ts).
+  // Logo que se imprime en los reportes: URL local `/media/<rif>/logo/...`
+  // (archivo en `private/img`) o URL publica heredada. La foto nueva se sube
+  // por multipart (`POST /api/media/upload`) y aqui solo queda la URL.
   logoUrl   String?
   active    Boolean  @default(true)
   createdAt DateTime @default(now())
@@ -230,8 +231,8 @@ model Product {
   sku         String
   name        String
   description String?
-  // Foto que el cajero ve en la grilla del POS (punto de venta): URL publica o
-  // data URL (base64) ya reducida por el navegador (ver frontend utils/image.ts).
+  // Foto que el cajero ve en la grilla del POS (punto de venta): URL local
+  // `/media/<rif>/products/...` (archivo en `private/img`) o URL publica.
   imageUrl    String?
   price       Int      @default(0)
   cost        Int      @default(0)
@@ -486,8 +487,9 @@ model OrderPayment {
   // Total del vuelto en USD (moneda base), para consultas y reportes rapidos.
   changeBaseAmount Int      @default(0)
   // COMPROBANTE DE TRANSFERENCIA / PAGO MOVIL: referencia bancaria de 4 a 6
-  // digitos y foto opcional del comprobante (data URL). Solo se guardan cuando
-  // el cobro incluye un metodo que lo exige.
+  // digitos y foto opcional del comprobante. La foto se guarda en
+  // `private/img/<rif>/payments` y aqui queda la URL local `/media/...`. Solo se
+  // guardan cuando el cobro incluye un metodo que lo exige.
   paymentReference String?
   paymentPhotoUrl  String?
   cashMovementId String?  @unique
@@ -807,7 +809,8 @@ model CashMovement {
   referenceType String? // ORDER | EXPENSE | PAYABLE | RECEIVABLE | MANUAL
   referenceId   String?
   // Comprobante que respalda un cobro por transferencia/pago movil. Se copia
-  // al movimiento para poder verlo desde la caja sin cruzar el pedido.
+  // al movimiento para poder verlo desde la caja sin cruzar el pedido. La foto
+  // vive en `private/img/<rif>/payments` y aqui se guarda `/media/...`.
   paymentReference String?
   paymentPhotoUrl  String?
   createdById   String?

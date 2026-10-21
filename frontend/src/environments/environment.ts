@@ -1,16 +1,20 @@
 /**
- * Configuracion del entorno.
+ * Configuracion del entorno de desarrollo.
  *
  * `apiUrl` es relativo a proposito:
- *  - En desarrollo, `ng serve` reenvia /api al backend (:3000) segun
+ *  - En desarrollo, `ng serve` reenvia /api y /media al backend (:3000) segun
  *    `proxy.conf.json`, asi que no hay problemas de CORS ni de puerto.
- *  - En produccion, el front se sirve detras del mismo origen que la API
- *    (o de un gateway) y el prefijo /api sigue siendo valido.
+ *  - En produccion se usa `environment.prod.ts`, donde `mediaUrl` es `/media`
+ *    (el gateway lo enruta al backend igual que /api).
  * Para apuntar a otro host, basta con cambiarlo aqui o anadir
  * un `fileReplacements` por configuracion en angular.json.
+ *
+ * `mediaUrl` es la base con la que se pintan las rutas locales `/media/...`
+ * guardadas en la base de datos (ver `resolveMediaUrl`).
  */
 export const environment = {
   production: false,
+  mediaUrl: 'http://localhost:3000/media',
   apiUrl: '/api',
   appName: 'Nexo Hub',
 };

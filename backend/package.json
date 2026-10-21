@@ -23,6 +23,7 @@
     "prisma:studio": "prisma studio",
     "prisma:seed": "ts-node prisma/seed.ts",
     "audit:money": "ts-node tools/audit-accounting.ts",
+    "images:import": "ts-node tools/import-images.ts",
     "db:clear": "ts-node tools/clear-operational-data.ts",
     "db:reset": "prisma db push --force-reset && npm run prisma:seed",
     "setup": "prisma generate && prisma db push && npm run prisma:seed"

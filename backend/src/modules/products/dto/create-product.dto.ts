@@ -7,11 +7,17 @@ import {
   IsNumber,
   IsOptional,
   IsString,
+  Matches,
   MaxLength,
   Min,
   MinLength,
 } from 'class-validator';
 import { PRODUCT_UNITS, type ProductUnit } from '../../../common/constants/enums';
+import {
+  IMAGE_URL_MESSAGE,
+  IMAGE_URL_PATTERN,
+  MAX_IMAGE_URL_LENGTH,
+} from '../../../common/media/image-url.util';
 import { QTY_DECIMALS } from '../../../common/utils/quantity.util';
 import { RATE_KEYS } from '../../rates/rates.service';
 
@@ -33,11 +39,12 @@ export class CreateProductDto {
 
   @ApiPropertyOptional({
     description:
-      'Foto del producto para el POS: URL publica o data URL (base64) reducida. Cadena vacia la elimina.',
+      'Foto del producto para el POS: URL local `/media/...` devuelta por `POST /api/media/upload` (multipart) o URL publica heredada. Cadena vacia la elimina.',
   })
   @IsOptional()
   @IsString()
-  @MaxLength(400_000, { message: 'La imagen del producto es demasiado grande' })
+  @MaxLength(MAX_IMAGE_URL_LENGTH, { message: 'La URL de la imagen es demasiado larga' })
+  @Matches(IMAGE_URL_PATTERN, { message: IMAGE_URL_MESSAGE })
   imageUrl?: string;
 
   @ApiProperty({

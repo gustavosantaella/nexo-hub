@@ -7,6 +7,7 @@ import {
   signal,
 } from '@angular/core';
 import { FormsModule } from '@angular/forms';
+import { firstValueFrom } from 'rxjs';
 import type {
   Menu,
   MenuAvailability,
@@ -25,13 +26,15 @@ import {
   MenusService,
 } from '../../core/services/menu.service';
 import { ProductsService } from '../../core/services/catalog.service';
+import { MediaService } from '../../core/services/media.service';
 import { RatesService } from '../../core/services/rates.service';
 import { ToastService } from '../../core/services/toast.service';
 import { categoryOptionLabel } from '../../core/utils/category-tree';
 import {
   PRODUCT_IMAGE_MAX_SIZE,
-  toProductImageDataUrl,
+  toProductImageFile,
 } from '../../core/utils/image';
+import { resolveMediaUrl } from '../../core/utils/media-url';
 import {
   apiErrorMessage,
   money,
@@ -128,6 +131,7 @@ export class MenusPage implements OnInit {
   private readonly menus = inject(MenusService);
   private readonly menuCategories = inject(MenuCategoriesService);
   private readonly products = inject(ProductsService);
+  private readonly media = inject(MediaService);
   /** Moneda con la que se abren los formularios (la base del sistema). */
   private readonly rates = inject(RatesService);
   private readonly toast = inject(ToastService);
@@ -136,6 +140,8 @@ export class MenusPage implements OnInit {
   /** Helpers de formato expuestos a la plantilla. */
   readonly money = money;
   readonly quantity = quantity;
+  /** Base de las imagenes locales `/media/...` (ver `environment.mediaUrl`). */
+  readonly mediaUrl = resolveMediaUrl;
   readonly availabilityOptions = MENU_AVAILABILITY_OPTIONS;
   readonly sectionOptions = MENU_SECTION_OPTIONS;
   readonly productImageMaxSize = PRODUCT_IMAGE_MAX_SIZE;
@@ -529,10 +535,14 @@ export class MenusPage implements OnInit {
     this.imageReading.set(true);
     this.imageError.set(null);
     try {
-      this.form.imageUrl = await toProductImageDataUrl(file);
+      const image = await toProductImageFile(file);
+      const uploaded = await firstValueFrom(
+        this.media.upload(image, 'menu', file.name),
+      );
+      this.form.imageUrl = uploaded.url;
     } catch (error) {
       this.imageError.set(
-        error instanceof Error ? error.message : 'No se pudo leer la imagen',
+        error instanceof Error ? error.message : 'No se pudo subir la imagen',
       );
     } finally {
       this.imageReading.set(false);

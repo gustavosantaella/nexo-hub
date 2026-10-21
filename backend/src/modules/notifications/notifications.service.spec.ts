@@ -311,7 +311,7 @@ describe('NotificationsService', () => {
 
   it('envia la foto del comprobante con la referencia en el pie', async () => {
     const { service, telegram } = createService();
-    const photo = 'data:image/png;base64,iVBORw0KGgo=';
+    const photo = '/media/J-1/payments/comprobante.png';
 
     const sent = await service.notifySale(COMPANY_ID, {
       orderCode: 'PED-0003',
@@ -346,7 +346,7 @@ describe('NotificationsService', () => {
       paymentCurrency: 'USD',
       method: 'PLIN',
       paymentReference: '9876',
-      paymentPhotoUrl: 'data:image/png;base64,iVBORw0KGgo=',
+      paymentPhotoUrl: '/media/J-1/payments/comprobante.png',
       items: [],
     });
 

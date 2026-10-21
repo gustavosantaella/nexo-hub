@@ -20,6 +20,7 @@ import { BASE_CURRENCY } from '../../core/constants/currency';
 import type { ReportData } from '../../core/models/report.model';
 import type { SalesPoint } from '../../core/models/stats.model';
 import { bs, dateTime, displayBaseLabel, money, moneyIn, number, quantity, rate, shortDate } from '../../core/utils/format';
+import { resolveMediaUrl } from '../../core/utils/media-url';
 import { AuthService } from '../../core/services/auth.service';
 import { IconComponent } from '../../shared/components/icon.component';
 import { REPORT_CSS, REPORT_PRINT_CSS } from './report.styles';
@@ -67,6 +68,8 @@ export class ReportSheetComponent {
   readonly rate = rate;
   readonly shortDate = shortDate;
   readonly dateTime = dateTime;
+  /** Base de las imagenes locales `/media/...` (ver `environment.mediaUrl`). */
+  readonly mediaUrl = resolveMediaUrl;
 
   /** Suma de ingresos de las categorías (para el total de la sección). */
   readonly revenueOf = (total: number, item: { revenue: number }): number =>

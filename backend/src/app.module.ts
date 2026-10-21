@@ -6,6 +6,7 @@ import { JwtAuthGuard } from './common/guards/jwt-auth.guard';
 import { RolesGuard } from './common/guards/roles.guard';
 import { LoggingInterceptor } from './common/interceptors/logging.interceptor';
 import configuration from './config/configuration';
+import { MediaModule } from './common/media/media.module';
 import { AuthModule } from './modules/auth/auth.module';
 import { CashModule } from './modules/cash/cash.module';
 import { CategoriesModule } from './modules/categories/categories.module';
@@ -43,6 +44,7 @@ import { PrismaModule } from './prisma/prisma.module';
       envFilePath: ['.env'],
     }),
     PrismaModule,
+    MediaModule,
     HealthModule,
     AuthModule,
     UsersModule,

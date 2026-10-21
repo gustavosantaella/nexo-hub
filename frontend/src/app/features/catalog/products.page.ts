@@ -1,5 +1,6 @@
 import { ChangeDetectionStrategy, Component, OnInit, inject, signal } from '@angular/core';
 import { FormsModule } from '@angular/forms';
+import { firstValueFrom } from 'rxjs';
 import { BASE_CURRENCY, DEFAULT_RATE_KEY, RATE_META } from '../../core/constants/currency';
 import { PRODUCT_UNIT_OPTIONS } from '../../core/constants/domain';
 import type {
@@ -17,6 +18,7 @@ import {
   ProductsService,
   SuppliersService,
 } from '../../core/services/catalog.service';
+import { MediaService } from '../../core/services/media.service';
 import { RatesService } from '../../core/services/rates.service';
 import { ToastService } from '../../core/services/toast.service';
 import { categoryOptionLabel } from '../../core/utils/category-tree';
@@ -36,7 +38,8 @@ import {
   unitPriceOf,
 } from '../../core/utils/product-pricing';
 import { isPackUnit, packText } from '../../core/utils/pack-unit';
-import { PRODUCT_IMAGE_MAX_SIZE, toProductImageDataUrl } from '../../core/utils/image';
+import { PRODUCT_IMAGE_MAX_SIZE, toProductImageFile } from '../../core/utils/image';
+import { resolveMediaUrl } from '../../core/utils/media-url';
 import { CurrencyAmountInputComponent } from '../../shared/components/currency-amount-input.component';
 import { EmptyStateComponent, LoaderComponent } from '../../shared/components/feedback.component';
 import { IconComponent } from '../../shared/components/icon.component';
@@ -59,7 +62,7 @@ interface ProductForm {
   sku: string;
   name: string;
   description: string;
-  /** Foto del producto (URL o data URL reducido en el navegador). */
+  /** Foto del producto: URL local `/media/...` subida por multipart. */
   imageUrl: string;
   /** Precio tal como se escribe, en `priceCurrency`. */
   price: number;
@@ -123,6 +126,8 @@ export class ProductsPage implements OnInit {
   readonly moneyIn = moneyIn;
   /** Cantidades/existencias: hasta 3 decimales, sin ceros de relleno. */
   readonly quantity = quantity;
+  /** Base de las imagenes locales `/media/...` (ver `environment.mediaUrl`). */
+  readonly mediaUrl = resolveMediaUrl;
   /** `true` cuando el producto se vende por caja (precio de caja, stock por unidad). */
   readonly isBoxProduct = isBoxProduct;
   readonly boxUnitsOf = boxUnitsOf;
@@ -133,6 +138,7 @@ export class ProductsPage implements OnInit {
   private readonly products = inject(ProductsService);
   private readonly categories = inject(CategoriesService);
   private readonly suppliers = inject(SuppliersService);
+  private readonly media = inject(MediaService);
   private readonly toast = inject(ToastService);
   private readonly confirm = inject(ConfirmService);
 
@@ -533,7 +539,10 @@ export class ProductsPage implements OnInit {
     this.modalOpen.set(false);
   }
 
-  /** Lee la foto elegida y la reduce antes de guardarla en el formulario. */
+  /**
+   * Reduce la foto elegida y la sube por multipart. En el formulario solo queda
+   * la URL local `/media/...` que devuelve el backend.
+   */
   async onImageSelected(event: Event): Promise<void> {
     const input = event.target as HTMLInputElement;
     const file = input.files?.[0];
@@ -544,7 +553,11 @@ export class ProductsPage implements OnInit {
     this.imageError.set(null);
     this.imageReading.set(true);
     try {
-      this.form.imageUrl = await toProductImageDataUrl(file);
+      const image = await toProductImageFile(file);
+      const uploaded = await firstValueFrom(
+        this.media.upload(image, 'products', file.name),
+      );
+      this.form.imageUrl = uploaded.url;
     } catch (error) {
       this.imageError.set(apiErrorMessage(error));
     } finally {

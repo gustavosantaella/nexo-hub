@@ -8,6 +8,8 @@ import {
   IsNumber,
   IsOptional,
   IsString,
+  Matches,
+  MaxLength,
   Min,
   ValidateNested,
 } from 'class-validator';
@@ -18,6 +20,11 @@ import {
   PaymentMethod,
   type CashMovementCategory,
 } from '../../../common/constants/enums';
+import {
+  IMAGE_URL_MESSAGE,
+  IMAGE_URL_PATTERN,
+  MAX_IMAGE_URL_LENGTH,
+} from '../../../common/media/image-url.util';
 
 /** Metodos concretos de una parte: el pago mixto no puede contener otro mixto. */
 const PART_PAYMENT_METHODS = PAYMENT_METHODS.filter(
@@ -58,9 +65,16 @@ export class CashMovementPartDto {
   @IsString()
   paymentReference?: string;
 
-  @ApiPropertyOptional({ description: 'Foto del comprobante como data URL.' })
+  @ApiPropertyOptional({
+    description:
+      'Foto del comprobante: URL local `/media/...` devuelta por `POST /api/media/upload` (multipart).',
+  })
   @IsOptional()
   @IsString()
+  @MaxLength(MAX_IMAGE_URL_LENGTH, {
+    message: 'La URL de la foto del comprobante es demasiado larga',
+  })
+  @Matches(IMAGE_URL_PATTERN, { message: IMAGE_URL_MESSAGE })
   paymentPhotoUrl?: string;
 }
 
@@ -120,9 +134,16 @@ export class CreateCashMovementDto {
   @IsString()
   paymentReference?: string;
 
-  @ApiPropertyOptional({ description: 'Foto del comprobante como data URL.' })
+  @ApiPropertyOptional({
+    description:
+      'Foto del comprobante: URL local `/media/...` devuelta por `POST /api/media/upload` (multipart).',
+  })
   @IsOptional()
   @IsString()
+  @MaxLength(MAX_IMAGE_URL_LENGTH, {
+    message: 'La URL de la foto del comprobante es demasiado larga',
+  })
+  @Matches(IMAGE_URL_PATTERN, { message: IMAGE_URL_MESSAGE })
   paymentPhotoUrl?: string;
 
   @ApiPropertyOptional()

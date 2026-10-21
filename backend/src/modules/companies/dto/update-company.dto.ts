@@ -3,16 +3,15 @@ import {
   IsEmail,
   IsOptional,
   IsString,
+  Matches,
   MaxLength,
   MinLength,
 } from 'class-validator';
-
-/**
- * Limite del logo (caracteres). El logo se guarda como data URL en base64 y el
- * navegador ya lo reduce a 400 px de lado (~200 KB); el tope solo evita que un
- * ADMIN pegue algo gigante en el campo.
- */
-const MAX_LOGO_LENGTH = 400_000;
+import {
+  IMAGE_URL_MESSAGE,
+  IMAGE_URL_PATTERN,
+  MAX_IMAGE_URL_LENGTH,
+} from '../../../common/media/image-url.util';
 
 /** Datos de una empresa (los edita un ADMIN/MANAGER en Configuracion). */
 export class UpdateCompanyDto {
@@ -45,11 +44,12 @@ export class UpdateCompanyDto {
 
   @ApiPropertyOptional({
     description:
-      'Logo de la empresa para los reportes: URL publica o data URL (base64). Cadena vacia lo elimina.',
+      'Logo de la empresa para los reportes: URL local `/media/...` devuelta por `POST /api/media/upload` (multipart) o URL publica heredada. Cadena vacia lo elimina.',
   })
   @IsOptional()
   @IsString()
-  @MaxLength(MAX_LOGO_LENGTH, { message: 'El logo es demasiado grande' })
+  @MaxLength(MAX_IMAGE_URL_LENGTH, { message: 'La URL del logo es demasiado larga' })
+  @Matches(IMAGE_URL_PATTERN, { message: IMAGE_URL_MESSAGE })
   logoUrl?: string;
 
   @ApiPropertyOptional()

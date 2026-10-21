@@ -47,7 +47,7 @@ export interface Company {
   phone?: string | null;
   email?: string | null;
   address?: string | null;
-  /** Logo para los reportes: URL publica o data URL (base64) reducida. */
+  /** Logo para los reportes: URL local `/media/...` o URL publica. */
   logoUrl?: string | null;
   notes?: string | null;
   active: boolean;
@@ -243,7 +243,7 @@ export interface CompanyPayload {
   phone?: string;
   email?: string;
   address?: string;
-  /** Logo para los reportes (URL o data URL). Cadena vacia lo elimina. */
+  /** Logo para los reportes: URL local `/media/...` ya subida por multipart. */
   logoUrl?: string;
   notes?: string;
 }
@@ -260,7 +260,7 @@ export interface Product {
   sku: string;
   name: string;
   description?: string | null;
-  /** Foto para la grilla del POS: URL o data URL. */
+  /** Foto para la grilla del POS: URL local `/media/...`. */
   imageUrl?: string | null;
   price: number;
   /**
@@ -362,7 +362,7 @@ export interface ProductOption {
   unitPriceEntered?: number | null;
   unitPriceCurrency?: string;
   unitPriceRateKey?: string | null;
-  /** Foto para la grilla del POS (URL o data URL); `null` si no tiene. */
+  /** Foto para la grilla del POS (`/media/...`); `null` si no tiene. */
   imageUrl?: string | null;
   categoryId?: string | null;
   /** Categoría resuelta por el API para buscarla y mostrarla sin otra petición. */
@@ -373,7 +373,7 @@ export interface ProductPayload {
   sku?: string;
   name: string;
   description?: string;
-  /** Foto del producto (URL o data URL). Cadena vacia la elimina. */
+  /** Foto del producto: URL local `/media/...` ya subida por multipart. */
   imageUrl?: string;
   /** Precio de venta EN LA MONEDA de `priceCurrency` (USD si se omite). */
   price: number;

@@ -8,12 +8,18 @@ import {
   IsNumber,
   IsOptional,
   IsString,
+  Matches,
   Max,
   MaxLength,
   Min,
   MinLength,
   ValidateNested,
 } from 'class-validator';
+import {
+  IMAGE_URL_MESSAGE,
+  IMAGE_URL_PATTERN,
+  MAX_IMAGE_URL_LENGTH,
+} from '../../../common/media/image-url.util';
 import { QTY_DECIMALS } from '../../../common/utils/quantity.util';
 
 /** Como se ofrece el menu en la carta. */
@@ -90,11 +96,12 @@ export class CreateMenuDto {
 
   @ApiPropertyOptional({
     description:
-      'Foto del menu para el POS: URL publica o data URL (base64) reducida. Cadena vacia la elimina.',
+      'Foto del menu para el POS: URL local `/media/...` devuelta por `POST /api/media/upload` (multipart) o URL publica heredada. Cadena vacia la elimina.',
   })
   @IsOptional()
   @IsString()
-  @MaxLength(400_000, { message: 'La imagen del menu es demasiado grande' })
+  @MaxLength(MAX_IMAGE_URL_LENGTH, { message: 'La URL de la imagen es demasiado larga' })
+  @Matches(IMAGE_URL_PATTERN, { message: IMAGE_URL_MESSAGE })
   imageUrl?: string;
 
   @ApiProperty({

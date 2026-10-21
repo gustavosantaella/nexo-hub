@@ -1,10 +1,9 @@
 /**
  * Utilidades de imagen para el navegador.
  *
- * El logo de la empresa se guarda en la base de datos como *data URL*, así que
- * antes de enviarlo se reduce en el propio navegador (canvas): un logo de
- * 4000 px ocuparía megabytes y ensuciaría la sesión que se guarda en
- * `localStorage`. Con 400 px de lado sobra para imprimirlo en un reporte A4.
+ * El formulario reduce la imagen en el propio navegador (canvas) y la sube como
+ * archivo multipart; el backend la guarda en disco (`private/img/<rif>/...`) y
+ * en la fila queda una URL local `/media/...`. No se genera ni se envía base64.
  */
 
 /** Lado máximo (en píxeles) del logo que se guarda/ imprime. */
@@ -12,9 +11,8 @@ export const LOGO_MAX_SIZE = 400;
 
 /**
  * Lado máximo (en píxeles) de la foto de un producto.
- * Se guarda en la misma fila del producto (data URL), así que se mantiene chica:
- * la grilla del punto de venta pinta la foto a ~120 px y la imagen viaja dentro
- * del JSON de cada producto.
+ * La grilla del punto de venta pinta la foto a ~120 px; se mantiene chica para
+ * que la subida sea rápida aunque el archivo final viva en el servidor.
  */
 export const PRODUCT_IMAGE_MAX_SIZE = 320;
 
@@ -22,8 +20,8 @@ export const PRODUCT_IMAGE_MAX_SIZE = 320;
 export const PRODUCT_IMAGE_QUALITY = 0.82;
 
 /**
- * Lado máximo de la foto del comprobante de pago. Se guarda en la fila del pago
- * y se envía a Telegram, así que se mantiene legible pero liviana.
+ * Lado máximo de la foto del comprobante de pago. Se guarda en disco y se envía
+ * a Telegram, así que se mantiene legible pero liviana.
  */
 export const PAYMENT_PROOF_MAX_SIZE = 1280;
 
@@ -53,17 +51,7 @@ export function fitSize(width: number, height: number, max = LOGO_MAX_SIZE): Siz
   return { width: Math.max(1, Math.round(w * scale)), height: Math.max(1, Math.round(h * scale)) };
 }
 
-/** Lee un archivo como data URL (texto base64 con su tipo MIME). */
-function readAsDataUrl(file: Blob): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => resolve(String(reader.result ?? ''));
-    reader.onerror = () => reject(new Error('No se pudo leer el archivo'));
-    reader.readAsDataURL(file);
-  });
-}
-
-/** Carga una imagen (data URL u objeto URL) y espera a que el navegador la decodifique. */
+/** Carga una imagen desde un objeto URL y espera a que el navegador la decodifique. */
 function loadImage(src: string): Promise<HTMLImageElement> {
   return new Promise((resolve, reject) => {
     const image = new Image();
@@ -73,69 +61,94 @@ function loadImage(src: string): Promise<HTMLImageElement> {
   });
 }
 
+/** Convierte el canvas en un `Blob` (o `null` si el navegador no puede). */
+function canvasToBlob(
+  canvas: HTMLCanvasElement,
+  type: string,
+  quality?: number,
+): Promise<Blob | null> {
+  return new Promise((resolve) => canvas.toBlob(resolve, type, quality));
+}
+
 /**
- * Dibuja la imagen reducida a `max` px de lado y la exporta en el formato pedido.
- * Si no hay canvas (entorno de pruebas) devuelve el data URL original tal cual.
+ * Reduce la imagen a `max` px de lado y la devuelve como archivo listo para
+ * subir. Si el navegador no puede usar canvas/objeto URL (entorno de pruebas),
+ * se devuelve el archivo original.
  */
-async function toCanvasDataUrl(
+async function toUploadBlob(
   file: Blob,
   max: number,
   type: string,
   quality?: number,
-): Promise<string> {
-  const source = await readAsDataUrl(file);
-  const image = await loadImage(source);
-  const size = fitSize(image.naturalWidth || image.width, image.naturalHeight || image.height, max);
-
-  // Sin canvas (entorno de pruebas) o sin reducción: se devuelve el original.
-  if (typeof document === 'undefined' || size.width === 0) return source;
-
-  const canvas = document.createElement('canvas');
-  canvas.width = size.width;
-  canvas.height = size.height;
-  const context = canvas.getContext('2d');
-  if (!context) return source;
-
-  // JPEG no guarda transparencia: el fondo transparente saldría negro.
-  if (type === 'image/jpeg') {
-    context.fillStyle = '#ffffff';
-    context.fillRect(0, 0, size.width, size.height);
+): Promise<Blob> {
+  if (
+    typeof document === 'undefined' ||
+    typeof URL === 'undefined' ||
+    typeof URL.createObjectURL !== 'function'
+  ) {
+    return file;
   }
-  context.drawImage(image, 0, 0, size.width, size.height);
-  return canvas.toDataURL(type, quality);
+
+  const objectUrl = URL.createObjectURL(file);
+  try {
+    const image = await loadImage(objectUrl);
+    const size = fitSize(
+      image.naturalWidth || image.width,
+      image.naturalHeight || image.height,
+      max,
+    );
+    if (size.width === 0) return file;
+
+    const canvas = document.createElement('canvas');
+    canvas.width = size.width;
+    canvas.height = size.height;
+    const context = canvas.getContext('2d');
+    if (!context) return file;
+
+    // JPEG no guarda transparencia: el fondo transparente saldría negro.
+    if (type === 'image/jpeg') {
+      context.fillStyle = '#ffffff';
+      context.fillRect(0, 0, size.width, size.height);
+    }
+    context.drawImage(image, 0, 0, size.width, size.height);
+
+    const blob = await canvasToBlob(canvas, type, quality);
+    return blob ?? file;
+  } finally {
+    URL.revokeObjectURL(objectUrl);
+  }
 }
 
 /**
- * Convierte el archivo elegido en un data URL PNG reducido a `max` px de lado.
+ * Prepara el logo como PNG reducido a `max` px de lado.
  *
  * Se usa PNG (y no JPEG) porque los logos suelen tener fondo transparente y en
  * JPEG ese fondo saldría negro al imprimirlo.
  */
-export function toLogoDataUrl(file: Blob, max = LOGO_MAX_SIZE): Promise<string> {
-  return toCanvasDataUrl(file, max, 'image/png');
+export function toLogoFile(file: Blob, max = LOGO_MAX_SIZE): Promise<Blob> {
+  return toUploadBlob(file, max, 'image/png');
 }
 
 /**
- * Convierte la foto de un producto en un data URL JPEG reducido a `max` px.
+ * Prepara la foto de un producto como JPEG reducido a `max` px.
  *
- * JPEG en vez de PNG: son fotos (sin transparencia) y pesan varias veces menos,
- * y esta imagen viaja dentro del JSON del producto y de la grilla del POS.
+ * JPEG en vez de PNG: son fotos (sin transparencia) y pesan varias veces menos.
  */
-export function toProductImageDataUrl(
+export function toProductImageFile(
   file: Blob,
   max = PRODUCT_IMAGE_MAX_SIZE,
-): Promise<string> {
-  return toCanvasDataUrl(file, max, 'image/jpeg', PRODUCT_IMAGE_QUALITY);
+): Promise<Blob> {
+  return toUploadBlob(file, max, 'image/jpeg', PRODUCT_IMAGE_QUALITY);
 }
 
 /**
- * Convierte la foto del comprobante de pago (transferencia / pago móvil) en un
- * data URL JPEG reducido. Debe quedar legible el número de referencia y el
- * monto, por eso usa más resolución que la foto de un producto.
+ * Prepara la foto del comprobante de pago (transferencia / pago móvil) como
+ * JPEG reducido. Debe quedar legible el número de referencia y el monto, por
+ * eso usa más resolución que la foto de un producto.
  */
-export function toPaymentProofDataUrl(
+export function toPaymentProofFile(
   file: Blob,
   max = PAYMENT_PROOF_MAX_SIZE,
-): Promise<string> {
-  return toCanvasDataUrl(file, max, 'image/jpeg', PAYMENT_PROOF_QUALITY);
+): Promise<Blob> {
+  return toUploadBlob(file, max, 'image/jpeg', PAYMENT_PROOF_QUALITY);
 }

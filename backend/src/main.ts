@@ -8,14 +8,17 @@ import { AppModule } from './app.module';
 import path from 'path';
 import * as express from 'express';
 
-/** Tamano maximo del cuerpo de una peticion (catalogos con fotos incluidas). */
+/**
+ * Tamano maximo del cuerpo JSON. Las imagenes viajan por multipart
+ * (`POST /api/media/upload`), no dentro del JSON.
+ */
 const BODY_LIMIT = '25mb';
 
 async function bootstrap(): Promise<void> {
   const logger = new Logger('Bootstrap');
-  // El parser por defecto se desactiva para poder subirle el limite: el catalogo
-  // exportado viaja en JSON e incluye las fotos (data URL de hasta 400 KB), asi
-  // que los 100 KB por defecto de Express no alcanzan ni para un producto.
+  // El parser por defecto se desactiva para poder ajustar el limite: importar
+  // un catalogo JSON puede superar los 100 KB por defecto de Express. Las fotos
+  // ya no viajan en el JSON: se suben aparte por multipart.
   const app = await NestFactory.create<NestExpressApplication>(AppModule, {
     bodyParser: false,
   });
@@ -36,6 +39,9 @@ async function bootstrap(): Promise<void> {
     helmet({
       contentSecurityPolicy: isProduction ? undefined : false,
       crossOriginEmbedderPolicy: false,
+      // Las fotos se sirven desde `/media`: el front puede estar en otro origen
+      // (por ejemplo `localhost:4200` con el proxy de Angular).
+      crossOriginResourcePolicy: { policy: 'cross-origin' },
     }),
   );
 
@@ -70,6 +76,25 @@ async function bootstrap(): Promise<void> {
     swaggerOptions: { persistAuthorization: true },
   });
   app.use('/public', express.static(path.join(process.cwd(), 'public')));
+
+  // Imagenes locales (productos, menus, logos y comprobantes de pago). Se
+  // guardan en `private/img` y se publican solo por este prefijo estatico; la
+  // base de datos guarda la URL relativa (`/media/<rif>/<carpeta>/<archivo>`).
+  const mediaRoot =
+    config.get<string>('media.root') ?? path.join(process.cwd(), 'private', 'img');
+  app.use(
+    '/media',
+    express.static(mediaRoot, {
+      maxAge: '30d',
+      setHeaders: (res) => {
+        // El front de desarrollo corre en otro puerto; sin esta cabecera el
+        // navegador bloquea la imagen al pintarla desde el POS.
+        res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin');
+        res.setHeader('Cache-Control', 'public, max-age=2592000');
+      },
+    }),
+  );
+
   await app.listen(port);
   logger.log(`API escuchando en http://localhost:${port}/${apiPrefix}`);
   logger.log(`Documentacion en http://localhost:${port}/${apiPrefix}/docs`);

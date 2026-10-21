@@ -3,11 +3,13 @@ import {
   ConflictException,
   Injectable,
   NotFoundException,
+  Optional,
 } from '@nestjs/common';
 import {
   BASE_CURRENCY_CODE,
   normalizeCurrencyCode,
 } from '../../common/constants/currencies';
+import { ImageStorageService } from '../../common/media/image-storage.service';
 import { buildCode } from '../../common/utils/code.util';
 import { money, toMoney } from '../../common/utils/money.util';
 import {
@@ -111,6 +113,7 @@ export class MenusService {
   constructor(
     private readonly menus: MenusRepository,
     private readonly rates: RatesService,
+    @Optional() private readonly images?: ImageStorageService,
   ) {}
 
   // =========================================================================
@@ -134,7 +137,8 @@ export class MenusService {
       code,
       name: dto.name.trim(),
       description: dto.description,
-      imageUrl: normalizeImageUrl(dto.imageUrl),
+      // Foto local en `private/img/<rif>/menu`; en la fila queda `/media/...`.
+      imageUrl: await this.persistImage(companyId, dto.imageUrl),
       price: price.base,
       priceCurrency: price.currency,
       priceRate: price.rate,
@@ -227,7 +231,7 @@ export class MenusService {
           ...(dto.name !== undefined ? { name: dto.name.trim() } : {}),
           ...(dto.description !== undefined ? { description: dto.description } : {}),
           ...(dto.imageUrl !== undefined
-            ? { imageUrl: normalizeImageUrl(dto.imageUrl) }
+            ? { imageUrl: await this.persistImage(companyId, dto.imageUrl) }
             : {}),
           ...(price
             ? {
@@ -318,6 +322,20 @@ export class MenusService {
   // =========================================================================
   //  AYUDAS INTERNAS
   // =========================================================================
+
+  /**
+   * Normaliza la URL de la foto ya subida por multipart. Sin
+   * `ImageStorageService` (pruebas unitarias aisladas) se conserva el valor
+   * normalizado, igual que antes.
+   */
+  private persistImage(
+    companyId: string,
+    value: string | null | undefined,
+  ): Promise<string | null> {
+    return this.images
+      ? this.images.persist(companyId, 'menu', value)
+      : Promise.resolve(normalizeImageUrl(value));
+  }
 
   /**
    * Contexto de moneda del precio del menu: `base` en USD (lo que usan POS y

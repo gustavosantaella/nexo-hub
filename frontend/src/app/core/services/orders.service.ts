@@ -105,7 +105,7 @@ export class OrdersService {
       note?: string;
       /** Referencia bancaria del comprobante (4-6 digitos). */
       paymentReference?: string;
-      /** Foto opcional del comprobante como data URL. */
+      /** Foto opcional del comprobante: URL local `/media/...` (multipart). */
       paymentPhotoUrl?: string;
       /** Desglose del pago cuando el cliente entrega varias formas/monedas. */
       parts?: {

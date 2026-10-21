@@ -1,5 +1,12 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { readFile } from 'fs/promises';
+import {
+  defaultMediaRoot,
+  mediaFilePath,
+  mimeFromExtension,
+  parseImageDataUrl,
+} from '../../common/media/image-storage.util';
 
 /** Mensaje del bot: solo se usa el texto y el chat que lo envio. */
 export interface TelegramChat {
@@ -44,11 +51,13 @@ export class TelegramService {
   private readonly logger = new Logger(TelegramService.name);
   private readonly token: string;
   private readonly apiBase: string;
+  private readonly mediaRoot: string;
   private botInfoCache: TelegramBotInfo | null = null;
 
   constructor(config: ConfigService) {
     this.token = config.get<string>('telegram.botToken')?.trim() ?? '';
     this.apiBase = `https://api.telegram.org/bot${this.token}`;
+    this.mediaRoot = config.get<string>('media.root') || defaultMediaRoot();
   }
 
   /** `true` cuando el despliegue configuro el token del bot. */
@@ -124,17 +133,20 @@ export class TelegramService {
   }
 
   /**
-   * Envia una foto (data URL) con pie de foto HTML. Se usa para el comprobante
-   * de una transferencia/pago movil. Igual que `sendMessage`, nunca lanza: si
-   * Telegram falla la venta ya quedo cobrada y solo se registra el aviso.
+   * Envia una foto con pie de foto HTML. Acepta la URL local `/media/...` con
+   * la que se guardan los comprobantes en disco (y, por compatibilidad, un data
+   * URL historico que la migracion ya deberia haber convertido). Se usa para el
+   * comprobante de una transferencia/pago movil. Igual que
+   * `sendMessage`, nunca lanza: si Telegram falla la venta ya quedo cobrada y
+   * solo se registra el aviso.
    */
   async sendPhoto(
     chatId: string | null | undefined,
-    dataUrl: string,
+    photo: string,
     html: string,
   ): Promise<boolean> {
     if (!this.configured || !chatId) return false;
-    const image = parseImageDataUrl(dataUrl);
+    const image = await this.resolvePhoto(photo);
     if (!image) return false;
 
     try {
@@ -142,11 +154,16 @@ export class TelegramService {
       form.set('chat_id', chatId);
       form.set('caption', html.slice(0, 1024));
       form.set('parse_mode', 'HTML');
-      form.set(
-        'photo',
-        new Blob([image.bytes], { type: image.mime }),
-        image.filename,
-      );
+      if ('bytes' in image) {
+        form.set(
+          'photo',
+          new Blob([image.bytes], { type: image.mime }),
+          image.filename,
+        );
+      } else {
+        // URL publica (por ejemplo, un logo alojado fuera del servidor).
+        form.set('photo', image.url);
+      }
 
       const response = await fetch(`${this.apiBase}/sendPhoto`, {
         method: 'POST',
@@ -169,6 +186,55 @@ export class TelegramService {
       );
       return false;
     }
+  }
+
+  /**
+   * Resuelve el comprobante a enviar:
+   *  - data URL (formularios antiguos): se decodifica;
+   *  - `/media/...` (almacenamiento local): se lee del disco;
+   *  - cualquier otra URL http(s): Telegram la descarga directamente.
+   */
+  private async resolvePhoto(
+    value: string,
+  ): Promise<
+    | { bytes: Uint8Array<ArrayBuffer>; mime: string; filename: string }
+    | { url: string }
+    | null
+  > {
+    const raw = String(value ?? '').trim();
+    if (!raw) return null;
+
+    if (raw.startsWith('data:')) {
+      const parsed = parseImageDataUrl(raw);
+      if (!parsed) return null;
+      return {
+        bytes: Uint8Array.from(parsed.bytes),
+        mime: parsed.mime,
+        filename: `comprobante.${parsed.extension}`,
+      };
+    }
+
+    const localPath = mediaFilePath(this.mediaRoot, raw);
+    if (localPath) {
+      try {
+        const bytes = await readFile(localPath);
+        // Telegram acepta fotos de hasta 10 MB; se deja margen.
+        if (bytes.length === 0 || bytes.length > 8 * 1024 * 1024) return null;
+        const extension = localPath.split('.').pop()?.toLowerCase() ?? 'jpg';
+        return {
+          bytes: Uint8Array.from(bytes),
+          mime: mimeFromExtension(localPath),
+          filename: `comprobante.${extension}`,
+        };
+      } catch (error) {
+        this.logger.warn(
+          `No se pudo leer el comprobante local ${localPath}: ${this.errorText(error)}`,
+        );
+        return null;
+      }
+    }
+
+    return /^https?:\/\//i.test(raw) ? { url: raw } : null;
   }
 
   /** Llama a un metodo de la Bot API y devuelve `result`. */
@@ -210,21 +276,4 @@ export function escapeHtml(value: unknown): string {
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;');
-}
-
-/** Decodifica un data URL de imagen aceptado por el POS. */
-function parseImageDataUrl(
-  value: string,
-): { bytes: Uint8Array<ArrayBuffer>; mime: string; filename: string } | null {
-  const match = /^data:(image\/(?:jpeg|png|webp));base64,([A-Za-z0-9+/=]+)$/.exec(
-    value,
-  );
-  if (!match) return null;
-
-  const bytes = Uint8Array.from(Buffer.from(match[2], 'base64'));
-  // Telegram acepta fotos de hasta 10 MB; se guarda margen para el formulario.
-  if (bytes.byteLength === 0 || bytes.byteLength > 8 * 1024 * 1024) return null;
-
-  const extension = match[1] === 'image/jpeg' ? 'jpg' : match[1].split('/')[1];
-  return { bytes, mime: match[1], filename: `comprobante.${extension}` };
 }

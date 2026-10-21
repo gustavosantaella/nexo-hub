@@ -1172,7 +1172,7 @@ describe('CashPage (fondo inicial multimoneda)', () => {
       { method: 'TRANSFER', currency: 'VES', amount: 9050 },
     ];
     page.onPaymentReferenceChange('1234');
-    page.movForm.paymentPhotoUrl = 'data:image/jpeg;base64,abc';
+    page.movForm.paymentPhotoUrl = '/media/J-1/payments/comprobante.jpg';
 
     page.submitMovement();
 
@@ -1190,7 +1190,7 @@ describe('CashPage (fondo inicial multimoneda)', () => {
     expect(body.category).toBe('SALE');
     expect(body.paymentMethod).toBe('MIXED');
     expect(body.paymentReference).toBe('1234');
-    expect(body.paymentPhotoUrl).toBe('data:image/jpeg;base64,abc');
+    expect(body.paymentPhotoUrl).toBe('/media/J-1/payments/comprobante.jpg');
     expect(body.parts).toEqual([
       { paymentMethod: 'CASH', amount: 10, currency: 'USD' },
       { paymentMethod: 'TRANSFER', amount: 9050, currency: 'VES' },

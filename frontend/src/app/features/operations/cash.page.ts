@@ -1,6 +1,7 @@
 import { ChangeDetectionStrategy, Component, OnInit, inject, signal } from '@angular/core';
 import { FormsModule } from '@angular/forms';
 import { RouterLink } from '@angular/router';
+import { firstValueFrom } from 'rxjs';
 import type { PaginationMeta } from '../../core/models/api.model';
 import type {
   CashCurrentResponse,
@@ -24,6 +25,7 @@ import { CurrencySelectComponent } from '../../shared/components/currency-select
 import { RateConversionsComponent } from '../../shared/components/rate-conversions.component';
 import { RatesService, BCV_USD_RATE_KEY } from '../../core/services/rates.service';
 import { CashService } from '../../core/services/cash.service';
+import { MediaService } from '../../core/services/media.service';
 import { PreferencesService } from '../../core/services/preferences.service';
 import { ToastService } from '../../core/services/toast.service';
 import { ConfirmService } from '../../shared/services/confirm.service';
@@ -37,7 +39,8 @@ import {
   sumMoney,
   truncate,
 } from '../../core/utils/format';
-import { toPaymentProofDataUrl } from '../../core/utils/image';
+import { toPaymentProofFile } from '../../core/utils/image';
+import { resolveMediaUrl } from '../../core/utils/media-url';
 import { EmptyStateComponent, LoaderComponent } from '../../shared/components/feedback.component';
 import { IconComponent } from '../../shared/components/icon.component';
 import { DialogComponent } from '../../shared/components/dialog.component';
@@ -119,6 +122,7 @@ export class CashPage implements OnInit {
   private readonly rates = inject(RatesService);
   private readonly confirm = inject(ConfirmService);
   private readonly preferences = inject(PreferencesService);
+  private readonly media = inject(MediaService);
 
   readonly dateTime = dateTime;
   readonly moneyIn = moneyIn;
@@ -128,6 +132,8 @@ export class CashPage implements OnInit {
   readonly moneyBaseLabel = displayBaseLabel;
   readonly rate = rate;
   readonly baseCurrency = BASE_CURRENCY;
+  /** Base de las imagenes locales `/media/...` (ver `environment.mediaUrl`). */
+  readonly mediaUrl = resolveMediaUrl;
   /**
    * Cómo presenta la caja sus formularios (modal o panel lateral). El usuario lo
    * elige en Configuración → «Formularios de caja y pedidos».
@@ -302,7 +308,7 @@ export class CashPage implements OnInit {
     parts: CashMovementPartDraft[];
     /** Referencia bancaria del comprobante (transferencia / Yape / Plin). */
     paymentReference: string;
-    /** Foto opcional del comprobante como data URL. */
+    /** Foto opcional del comprobante: URL local `/media/...` (multipart). */
     paymentPhotoUrl: string | null;
     /** Nombre del archivo elegido (solo se muestra en el formulario). */
     paymentPhotoName: string;
@@ -1232,7 +1238,7 @@ export class CashPage implements OnInit {
       .slice(0, 6);
   }
 
-  /** Comprime y adjunta la foto del comprobante elegida. */
+  /** Comprime y sube la foto del comprobante elegida. */
   async onPaymentPhotoSelected(event: Event): Promise<void> {
     const input = event.target as HTMLInputElement;
     const file = input.files?.[0];
@@ -1251,10 +1257,14 @@ export class CashPage implements OnInit {
 
     this.paymentPhotoBusy.set(true);
     try {
-      this.movForm.paymentPhotoUrl = await toPaymentProofDataUrl(file);
+      const image = await toPaymentProofFile(file);
+      const uploaded = await firstValueFrom(
+        this.media.upload(image, 'payments', file.name),
+      );
+      this.movForm.paymentPhotoUrl = uploaded.url;
       this.movForm.paymentPhotoName = file.name;
     } catch {
-      this.toast.error('No se pudo procesar la foto del comprobante.');
+      this.toast.error('No se pudo subir la foto del comprobante.');
       this.movForm.paymentPhotoUrl = null;
       this.movForm.paymentPhotoName = '';
     } finally {

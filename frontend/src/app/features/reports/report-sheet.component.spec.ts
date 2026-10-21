@@ -2,13 +2,14 @@ import { ComponentFixture, TestBed } from '@angular/core/testing';
 import type { Expense } from '../../core/models/finance.model';
 import type { CashSession, Order } from '../../core/models/operations.model';
 import type { ReportCompany, ReportData } from '../../core/models/report.model';
+import { environment } from '../../../environments/environment';
 import { AuthService } from '../../core/services/auth.service';
 import { ReportSheetComponent } from './report-sheet.component';
 
 const COMPANY: ReportCompany = {
   name: 'Panadería El Trigal',
   rif: 'J-12345678-9',
-  logoUrl: 'data:image/png;base64,AAAA',
+  logoUrl: '/media/J-1/logo/logo.png',
   address: 'Av. Principal, Caracas',
   phone: '0212-1234567',
   email: 'contacto@trigal.com',
@@ -174,7 +175,7 @@ describe('ReportSheetComponent (documento del reporte)', () => {
     expect(text()).toContain('contacto@trigal.com');
 
     const logo = fixture.nativeElement.querySelector('.rp-logo img') as HTMLImageElement;
-    expect(logo.getAttribute('src')).toBe('data:image/png;base64,AAAA');
+    expect(logo.getAttribute('src')).toBe(`${environment.mediaUrl}/J-1/logo/logo.png`);
   });
 
   it('usa las iniciales cuando la empresa todavía no tiene logo', () => {

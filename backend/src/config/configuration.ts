@@ -1,3 +1,5 @@
+import path from 'path';
+
 /**
  * Configuracion central de la aplicacion.
  * Todas las variables de entorno se leen aqui una sola vez y se exponen
@@ -9,6 +11,10 @@ export interface AppConfig {
   port: number;
   apiPrefix: string;
   corsOrigins: string[];
+  media: {
+    /** Carpeta local donde se guardan las imagenes (`private/img`). */
+    root: string;
+  };
   jwt: {
     secret: string;
     expiresIn: string;
@@ -62,6 +68,13 @@ export default (): AppConfig => {
       .split(',')
       .map((origin) => origin.trim())
       .filter(Boolean),
+    media: {
+      root:
+        process.env.MEDIA_ROOT?.trim() ||
+        // `npm start` corre desde `backend/`, asi que la carpeta queda junto al
+        // proyecto y no dentro de `dist`.
+        path.join(process.cwd(), 'private', 'img'),
+    },
     jwt: {
       secret: process.env.JWT_SECRET ?? 'nexo-hub-dev-secret',
       expiresIn: process.env.JWT_EXPIRES_IN ?? '12h',

@@ -3,6 +3,7 @@ import {
   ConflictException,
   Injectable,
   NotFoundException,
+  Optional,
 } from '@nestjs/common';
 import type { Prisma } from '@prisma/client';
 import {
@@ -14,6 +15,7 @@ import { PaginationQueryDto } from '../../common/dto/pagination-query.dto';
 import { buildPaginatedResult } from '../../common/utils/pagination.util';
 import { money, toMoney } from '../../common/utils/money.util';
 import { normalizeImageUrl, normalizeNullableId } from '../../common/utils/normalize.util';
+import { ImageStorageService } from '../../common/media/image-storage.service';
 import { boxUnitsOf } from '../../common/utils/packaging.util';
 import { toQty } from '../../common/utils/quantity.util';
 import { InventoryService } from '../inventory/inventory.service';
@@ -29,6 +31,7 @@ export class ProductsService {
     private readonly products: ProductsRepository,
     private readonly inventory: InventoryService,
     private readonly rates: RatesService,
+    @Optional() private readonly images?: ImageStorageService,
   ) {}
 
   async create(companyId: string, dto: CreateProductDto, userId?: string) {
@@ -132,7 +135,9 @@ export class ProductsService {
       unitsPerBox: units,
       trackStock: dto.trackStock ?? true,
       active: dto.active ?? true,
-      imageUrl: normalizeImageUrl(imageUrl),
+      // La foto se guarda en `private/img/<rif>/products` y en la fila queda la
+      // URL local (`/media/...`), nunca el base64.
+      imageUrl: await this.persistImage(companyId, imageUrl),
       categoryId: normalizeNullableId(categoryId),
       supplierId: normalizeNullableId(supplierId),
     });
@@ -365,7 +370,9 @@ export class ProductsService {
       // inventario) aunque el campo no sea dinero.
       ...(rest.minStock !== undefined ? { minStock: toQty(rest.minStock) } : {}),
       ...(unitsPerBox !== undefined ? { unitsPerBox: units } : {}),
-      ...(imageUrl !== undefined ? { imageUrl: normalizeImageUrl(imageUrl) } : {}),
+      ...(imageUrl !== undefined
+        ? { imageUrl: await this.persistImage(companyId, imageUrl) }
+        : {}),
       ...(sku !== undefined ? { sku: sku.trim() } : {}),
       ...(categoryId !== undefined
         ? { category: categoryId ? { connect: { id: categoryId } } : { disconnect: true } }
@@ -404,6 +411,20 @@ export class ProductsService {
       ...result,
       affectedMenus,
     };
+  }
+
+  /**
+   * Normaliza la URL de la foto ya subida por multipart. Sin
+   * `ImageStorageService` (pruebas unitarias aisladas) se conserva el valor
+   * normalizado, igual que antes.
+   */
+  private persistImage(
+    companyId: string,
+    value: string | null | undefined,
+  ): Promise<string | null> {
+    return this.images
+      ? this.images.persist(companyId, 'products', value)
+      : Promise.resolve(normalizeImageUrl(value));
   }
 
   /**

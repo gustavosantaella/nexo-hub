@@ -806,7 +806,7 @@
               @if (movForm.paymentPhotoUrl) {
                 <div class="flex items-start gap-2 rounded-lg border border-amber-200 bg-white p-2">
                   <img
-                    [src]="movForm.paymentPhotoUrl"
+                    [src]="mediaUrl(movForm.paymentPhotoUrl)"
                     alt="Comprobante de pago"
                     class="h-20 w-16 rounded object-cover"
                   />
@@ -1421,7 +1421,7 @@
                   (click)="toggleMovementPhoto()"
                 >
                   <img
-                    [src]="movement.paymentPhotoUrl"
+                    [src]="mediaUrl(movement.paymentPhotoUrl)"
                     alt="Comprobante de pago"
                     class="w-full object-contain"
                     [class.max-h-72]="!movementPhotoExpanded()"

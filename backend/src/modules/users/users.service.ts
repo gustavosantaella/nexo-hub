@@ -3,9 +3,11 @@ import {
   ConflictException,
   Injectable,
   NotFoundException,
+  Optional,
 } from '@nestjs/common';
 import type { Prisma } from '@prisma/client';
 import type { Role } from '../../common/constants/enums';
+import { ImageStorageService } from '../../common/media/image-storage.service';
 import { PaginationQueryDto } from '../../common/dto/pagination-query.dto';
 import {
   buildPaginatedResult,
@@ -70,7 +72,10 @@ function toMember(row: MembershipRow): CompanyMember {
  */
 @Injectable()
 export class UsersService {
-  constructor(private readonly users: UsersRepository) {}
+  constructor(
+    private readonly users: UsersRepository,
+    @Optional() private readonly images?: ImageStorageService,
+  ) {}
 
   // =========================== Usuarios de una empresa ======================
 
@@ -230,7 +235,13 @@ export class UsersService {
     if (dto.name !== undefined) data.name = dto.name;
     if (dto.documentId !== undefined) data.documentId = dto.documentId;
     if (dto.phone !== undefined) data.phone = dto.phone;
-    if (dto.avatarUrl !== undefined) data.avatarUrl = dto.avatarUrl;
+    // El avatar es global (no depende de la empresa): la subida multipart lo
+    // agrupa en `private/img/_users/<id>/avatars` y la fila guarda `/media/...`.
+    if (dto.avatarUrl !== undefined) {
+      data.avatarUrl = this.images
+        ? await this.images.persistForOwner(userId, 'avatars', dto.avatarUrl)
+        : dto.avatarUrl;
+    }
     if (dto.email) {
       const email = dto.email.toLowerCase();
       if (email !== current.email) {

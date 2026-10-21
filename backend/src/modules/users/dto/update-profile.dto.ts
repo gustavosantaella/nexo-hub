@@ -1,5 +1,17 @@
 import { ApiPropertyOptional } from '@nestjs/swagger';
-import { IsEmail, IsOptional, IsString, MinLength } from 'class-validator';
+import {
+  IsEmail,
+  IsOptional,
+  IsString,
+  Matches,
+  MaxLength,
+  MinLength,
+} from 'class-validator';
+import {
+  IMAGE_URL_MESSAGE,
+  IMAGE_URL_PATTERN,
+  MAX_IMAGE_URL_LENGTH,
+} from '../../../common/media/image-url.util';
 
 /**
  * Datos personales del usuario autenticado (Configuracion > Mis datos).
@@ -29,9 +41,14 @@ export class UpdateProfileDto {
   @IsString()
   phone?: string;
 
-  @ApiPropertyOptional()
+  @ApiPropertyOptional({
+    description:
+      'Avatar del usuario: URL local `/media/...` devuelta por `POST /api/media/upload` (multipart).',
+  })
   @IsOptional()
   @IsString()
+  @MaxLength(MAX_IMAGE_URL_LENGTH, { message: 'La URL del avatar es demasiado larga' })
+  @Matches(IMAGE_URL_PATTERN, { message: IMAGE_URL_MESSAGE })
   avatarUrl?: string;
 
   @ApiPropertyOptional({ minLength: 6, description: 'Nueva contrasena' })

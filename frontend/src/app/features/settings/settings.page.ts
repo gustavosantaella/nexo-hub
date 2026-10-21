@@ -9,6 +9,7 @@ import {
   signal,
 } from '@angular/core';
 import { FormsModule } from '@angular/forms';
+import { firstValueFrom } from 'rxjs';
 import {
   BASE_CURRENCY,
   BASE_CURRENCY_CODE,
@@ -39,6 +40,7 @@ import { AuthService } from '../../core/services/auth.service';
 import { CompaniesService } from '../../core/services/companies.service';
 import { CurrenciesService } from '../../core/services/currencies.service';
 import { DataTransferService } from '../../core/services/data-transfer.service';
+import { MediaService } from '../../core/services/media.service';
 import { NotificationsService } from '../../core/services/notifications.service';
 import {
   catalogFileName,
@@ -59,7 +61,8 @@ import { ThemeService, type Theme } from '../../core/services/theme.service';
 import { RatesService } from '../../core/services/rates.service';
 import { ToastService } from '../../core/services/toast.service';
 import { bs, dateTime, money, moneyIn, rate, signedPercent, apiErrorMessage } from '../../core/utils/format';
-import { toLogoDataUrl } from '../../core/utils/image';
+import { toLogoFile } from '../../core/utils/image';
+import { resolveMediaUrl } from '../../core/utils/media-url';
 import { EmptyStateComponent, LoaderComponent } from '../../shared/components/feedback.component';
 import { IconComponent } from '../../shared/components/icon.component';
 import { ModalComponent } from '../../shared/components/modal.component';
@@ -151,6 +154,8 @@ export class SettingsPage implements OnInit, OnDestroy {
   readonly money = money;
   readonly dateTime = dateTime;
   readonly signedPercent = signedPercent;
+  /** Base de las imagenes locales `/media/...` (ver `environment.mediaUrl`). */
+  readonly mediaUrl = resolveMediaUrl;
   readonly canManage = this.auth.canManage;
 
   /** Moneda con la que el sistema muestra los montos ahora mismo. */
@@ -631,7 +636,8 @@ export class SettingsPage implements OnInit, OnDestroy {
   readonly companySaving = signal(false);
   readonly companyCreating = signal(false);
   readonly companyModalOpen = signal(false);
-  /** Lectura del archivo del logo en curso y error del último intento. */
+  private readonly media = inject(MediaService);
+  /** Lectura/subida del archivo del logo en curso y error del último intento. */
   readonly logoReading = signal(false);
   readonly logoError = signal<string | null>(null);
   /** Borrador para crear otra empresa. */
@@ -693,8 +699,8 @@ export class SettingsPage implements OnInit, OnDestroy {
   }
 
   /**
-   * Lee el archivo elegido y lo deja en el formulario como data URL ya reducido
-   * (así no viaja un archivo de varios megabytes en cada petición de sesión).
+   * Reduce el logo y lo sube por multipart. En el formulario solo queda la URL
+   * local `/media/...` que devuelve el backend.
    */
   async onLogoSelected(event: Event): Promise<void> {
     const input = event.target as HTMLInputElement;
@@ -706,7 +712,11 @@ export class SettingsPage implements OnInit, OnDestroy {
     this.logoError.set(null);
     this.logoReading.set(true);
     try {
-      this.companyForm.logoUrl = await toLogoDataUrl(file);
+      const image = await toLogoFile(file);
+      const uploaded = await firstValueFrom(
+        this.media.upload(image, 'logo', file.name),
+      );
+      this.companyForm.logoUrl = uploaded.url;
     } catch (error) {
       this.logoError.set(apiErrorMessage(error));
     } finally {

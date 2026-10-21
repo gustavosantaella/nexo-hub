@@ -106,7 +106,7 @@
                       <div class="flex items-center gap-3">
                         <span class="flex h-10 w-10 flex-none items-center justify-center overflow-hidden rounded-lg bg-slate-100">
                           @if (item.imageUrl) {
-                            <img [src]="item.imageUrl" alt="" class="h-full w-full object-cover" />
+                            <img [src]="mediaUrl(item.imageUrl)" alt="" class="h-full w-full object-cover" />
                           } @else {
                             <app-icon name="menu" size="h-5 w-5" class="text-slate-300" />
                           }
@@ -334,7 +334,7 @@
             <div class="flex flex-wrap items-center gap-3">
               <div class="flex h-20 w-20 shrink-0 items-center justify-center overflow-hidden rounded-xl border border-dashed border-slate-300 bg-slate-50">
                 @if (form.imageUrl) {
-                  <img [src]="form.imageUrl" alt="Foto del menú" class="h-full w-full object-cover" />
+                  <img [src]="mediaUrl(form.imageUrl)" alt="Foto del menú" class="h-full w-full object-cover" />
                 } @else {
                   <app-icon name="image" size="h-7 w-7" class="text-slate-400" />
                 }
@@ -359,17 +359,11 @@
                     </button>
                   }
                 </div>
-                <input
-                  name="imageUrl"
-                  class="input w-72"
-                  placeholder="…o pega la URL de la imagen"
-                  [(ngModel)]="form.imageUrl"
-                />
               </div>
             </div>
             <p class="mt-1 text-xs text-slate-400">
-              Sube un archivo (se reduce a {{ productImageMaxSize }} px para que la carta cargue
-              rápido) o pega la URL de una imagen ya publicada.
+              La foto se reduce a {{ productImageMaxSize }} px y se sube al servidor. La carta y
+              el POS usan la URL local guardada.
             </p>
             @if (imageError(); as error) {
               <p class="field-error">{{ error }}</p>

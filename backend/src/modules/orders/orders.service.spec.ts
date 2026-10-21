@@ -1126,7 +1126,7 @@ describe('OrdersService.addPayment (tasa de cobro del cajero)', () => {
 
   it('guarda la referencia y la foto del comprobante en el cobro y en la caja', async () => {
     const { service, tx } = createService(order(), rates, cash);
-    const photo = 'data:image/png;base64,iVBORw0KGgo=';
+    const photo = '/media/J-1/payments/comprobante.png';
 
     await service.addPayment(
       COMPANY_ID,
@@ -1183,7 +1183,7 @@ describe('OrdersService.addPayment (tasa de cobro del cajero)', () => {
         method: PaymentMethod.CASH,
         currency: 'VES',
         paymentReference: '123456',
-        paymentPhotoUrl: 'data:image/png;base64,iVBORw0KGgo=',
+        paymentPhotoUrl: '/media/J-1/payments/comprobante.png',
       },
       'u1',
     );

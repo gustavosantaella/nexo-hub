@@ -100,7 +100,7 @@ const ACCOUNTS: AccountSummary = {
 const COMPANY: ReportCompany = {
   name: 'Panaderia El Trigal',
   rif: 'J-12345678-9',
-  logoUrl: 'data:image/png;base64,AAAA',
+  logoUrl: '/media/J-1/logo/logo.png',
 };
 
 /** Todas las respuestas crudas del API con las que se arma un reporte. */

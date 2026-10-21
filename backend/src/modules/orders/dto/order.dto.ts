@@ -19,6 +19,11 @@ import {
   type OrderType,
   type PaymentMethod,
 } from '../../../common/constants/enums';
+import {
+  IMAGE_URL_MESSAGE,
+  IMAGE_URL_PATTERN,
+  MAX_IMAGE_URL_LENGTH,
+} from '../../../common/media/image-url.util';
 import { RATE_KEYS } from '../../rates/rates.service';
 
 export class OrderItemDto {
@@ -320,14 +325,14 @@ export class AddOrderPaymentDto {
 
   @ApiPropertyOptional({
     description:
-      'Foto opcional del comprobante como data URL (JPEG, PNG o WebP). Se envia al administrador por Telegram.',
+      'Foto opcional del comprobante: URL local `/media/...` devuelta por `POST /api/media/upload` (multipart). Se envia al administrador por Telegram.',
   })
   @IsOptional()
   @IsString()
-  @MaxLength(2_000_000, { message: 'La foto del comprobante es demasiado grande' })
-  @Matches(/^data:image\/(?:jpeg|png|webp);base64,[A-Za-z0-9+/=]+$/, {
-    message: 'La foto del comprobante no es una imagen valida',
+  @MaxLength(MAX_IMAGE_URL_LENGTH, {
+    message: 'La URL de la foto del comprobante es demasiado larga',
   })
+  @Matches(IMAGE_URL_PATTERN, { message: IMAGE_URL_MESSAGE })
   paymentPhotoUrl?: string;
 
   @ApiPropertyOptional({

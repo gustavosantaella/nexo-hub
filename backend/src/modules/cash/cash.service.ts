@@ -19,6 +19,7 @@ import {
   MIXED_CURRENCY_CODE,
   normalizeCurrencyCode,
 } from '../../common/constants/currencies';
+import { ImageStorageService } from '../../common/media/image-storage.service';
 import { buildPaginatedResult } from '../../common/utils/pagination.util';
 import { buildCode } from '../../common/utils/code.util';
 import {
@@ -258,7 +259,7 @@ export interface RegisterMovementInput {
   referenceId?: string;
   /** Referencia bancaria del comprobante (transferencia / pago movil). */
   paymentReference?: string | null;
-  /** Foto del comprobante como data URL. */
+  /** Foto del comprobante: URL local `/media/...` subida por multipart. */
   paymentPhotoUrl?: string | null;
   createdById?: string;
 }
@@ -270,6 +271,7 @@ export class CashService {
     private readonly config: ConfigService,
     private readonly rates: RatesService,
     @Optional() private readonly notifications?: NotificationsService,
+    @Optional() private readonly images?: ImageStorageService,
   ) {}
 
   // =========================================================================
@@ -1063,6 +1065,12 @@ export class CashService {
       throw new BadRequestException('El monto del movimiento debe ser mayor a 0');
     }
 
+    // El comprobante ya se subio a `private/img/<rif>/payments` por multipart;
+    // aqui solo se normaliza la URL local que queda en la fila.
+    const paymentPhotoUrl = this.images
+      ? await this.images.persist(companyId, 'payments', input.paymentPhotoUrl)
+      : (input.paymentPhotoUrl ?? null);
+
     // El monto se registra en la moneda del pago; el equivalente en USD
     // (`baseAmount`) es lo que se suma en los arqueos y reportes.
     const conversion = await this.rates.resolvePayment(
@@ -1117,7 +1125,7 @@ export class CashService {
         referenceType: input.referenceType,
         referenceId: input.referenceId,
         paymentReference: input.paymentReference ?? undefined,
-        paymentPhotoUrl: input.paymentPhotoUrl ?? undefined,
+        paymentPhotoUrl: paymentPhotoUrl ?? undefined,
         createdById: input.createdById,
       },
       tx,

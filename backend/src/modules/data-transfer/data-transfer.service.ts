@@ -910,7 +910,8 @@ export class DataTransferService {
     const fields: CreateProductDto = {
       name,
       description: optionalFieldText(entry, 'description'),
-      // La foto viaja como data URL o URL; `null` en el archivo la elimina.
+      // La foto viaja como URL local `/media/...` (subida por multipart) o URL
+      // publica heredada; `null` en el archivo la elimina.
       imageUrl: optionalFieldText(entry, 'imageUrl'),
       price,
       priceCurrency: optionalText(entry.priceCurrency),

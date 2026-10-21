@@ -1240,7 +1240,7 @@
                     @if (companyForm.logoUrl) {
                       <img
                         class="h-full w-full object-contain"
-                        [src]="companyForm.logoUrl"
+                        [src]="mediaUrl(companyForm.logoUrl)"
                         alt="Logo de la empresa"
                       />
                     } @else {
@@ -1258,7 +1258,7 @@
                         <input
                           id="company-logo"
                           type="file"
-                          accept="image/png,image/jpeg,image/webp,image/svg+xml"
+                          accept="image/png,image/jpeg,image/webp"
                           class="hidden"
                           (change)="onLogoSelected($event)"
                         />
@@ -1273,16 +1273,10 @@
                           </button>
                         }
                       </div>
-                      <input
-                        name="companyLogo"
-                        class="input"
-                        placeholder="…o pega la URL del logo"
-                        [(ngModel)]="companyForm.logoUrl"
-                      />
                     }
                     <p class="text-xs text-slate-500">
                       Aparece en la esquina superior izquierda de los reportes. La imagen
-                      se reduce sola a 400 px para guardarla en el sistema.
+                      se reduce a 400 px y se sube al servidor como archivo.
                     </p>
                     @if (logoError(); as error) {
                       <p class="text-xs font-medium text-rose-600">{{ error }}</p>

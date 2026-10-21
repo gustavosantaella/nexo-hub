@@ -186,7 +186,7 @@ export interface OrderPayment {
   method: PaymentMethod;
   /** Referencia bancaria del comprobante (transferencia / pago movil). */
   paymentReference?: string | null;
-  /** Foto del comprobante como data URL. */
+  /** Foto del comprobante: URL local `/media/...` subida por multipart. */
   paymentPhotoUrl?: string | null;
   /** Moneda en la que pago el cliente (USD, VES, ...). */
   currency: string;
@@ -311,7 +311,7 @@ export interface CashMovement {
   referenceId?: string | null;
   /** Referencia bancaria del comprobante (transferencia / pago movil). */
   paymentReference?: string | null;
-  /** Foto del comprobante como data URL. */
+  /** Foto del comprobante: URL local `/media/...`. */
   paymentPhotoUrl?: string | null;
   createdAt: string;
   createdBy?: { id: string; name: string } | null;
@@ -463,7 +463,7 @@ export interface CashMovementPayload {
   parts?: CashMovementPartPayload[];
   /** Referencia bancaria del comprobante (transferencia / Yape / Plin). */
   paymentReference?: string;
-  /** Foto del comprobante como data URL. */
+  /** Foto del comprobante: URL local `/media/...` ya subida por multipart. */
   paymentPhotoUrl?: string;
 }
 

@@ -427,38 +427,17 @@ describe('MenusPage (receta y costos)', () => {
   });
 
 
-  it('permite pegar la URL de la imagen en vez de subir un archivo', async () => {
-    const { fixture, page } = mount();
+  it('no ofrece pegar URLs: la foto se sube como archivo', async () => {
+    const { fixture } = mount();
+    const page = fixture.componentInstance;
     page.openCreate();
     fixture.detectChanges();
-    // `NgForm` registra sus controles en un microtask (`addControl`): sin ceder
-    // el turno, el input todavia no esta enlazado al modelo.
     await fixture.whenStable();
     fixture.detectChanges();
 
     const input = (fixture.nativeElement as HTMLElement).querySelector<HTMLInputElement>(
       'input[name="imageUrl"]',
     );
-    expect(input).toBeTruthy();
-
-    input!.value = 'https://cdn.ejemplo.com/parrilla.jpg';
-    input!.dispatchEvent(new Event('input'));
-    fixture.detectChanges();
-
-    expect(page.form.imageUrl).toBe('https://cdn.ejemplo.com/parrilla.jpg');
-
-    page.form.name = 'Parrilla mixta';
-    page.form.price = 18;
-    page.save();
-
-    const request = http.expectOne(
-      (candidate) => candidate.method === 'POST' && candidate.url === `${API}/menus`,
-    );
-    expect(request.request.body.imageUrl).toBe('https://cdn.ejemplo.com/parrilla.jpg');
-    request.flush({});
-    // Al guardar, la pagina recarga el listado.
-    http
-      .expectOne((candidate) => candidate.method === 'GET' && candidate.url === `${API}/menus`)
-      .flush({ items: [], meta: META });
+    expect(input).toBeNull();
   });
 });

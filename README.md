@@ -53,6 +53,34 @@ npm run start:dev           # http://localhost:3000/api
 - Documentación Swagger: <http://localhost:3000/api/docs>
 - Health check: <http://localhost:3000/api/health>
 
+### Imágenes locales
+
+Las fotos **no se guardan en la base de datos**. El navegador reduce la imagen y
+la sube como archivo multipart a `POST /api/media/upload` (campo `file` y
+`folder`); el backend la valida, la escribe en disco y devuelve la URL relativa
+`/media/...` que se guarda en la fila. No se usa base64 en el JSON.
+
+```text
+backend/private/img/
+  J-40123456-7/            # RIF de la empresa, sin espacios
+    logo/
+    products/
+    menu/
+    payments/              # comprobantes de transferencia / Yape / Plin
+  _users/
+    <id>/avatars/          # avatar global de la cuenta
+```
+
+- La carpeta se publica como `GET /media/...` (no se expone `private/`).
+- Se aceptan JPEG, PNG y WebP de hasta 8 MB; se valida la firma real del archivo.
+- `MEDIA_ROOT` permite cambiar la carpeta; vacío = `backend/private/img`.
+- `backend/private` está ignorado por git (las imágenes no se versionan).
+- Para migrar imágenes base64 antiguas y descargar fotos que aún apunten a una
+  URL externa: `npm run images:import` (idempotente).
+
+En desarrollo Angular reenvía `/media` al backend (`frontend/proxy.conf.json`).
+En producción, el gateway debe enrutar `/media` al backend igual que `/api`.
+
 ### Notificaciones por Telegram
 
 El bot es único para todo el sistema y se configura en `backend/.env`:
@@ -426,8 +454,12 @@ npm start                   # http://localhost:4200 (proxy /api → localhost:30
 npm run build               # bundle de producción en dist/frontend
 ```
 
-El desarrollo usa `proxy.conf.json`, por lo que las peticiones van a `/api` sin CORS.
-La URL base de la API se configura en `src/environments/environment.ts`.
+El desarrollo usa `proxy.conf.json`, por lo que las peticiones van a `/api` y
+`/media` sin CORS. La URL base de la API (`apiUrl`) y la base con la que se
+pintan las imágenes guardadas como `/media/...` (`mediaUrl`) se configuran en
+`src/environments/environment.ts`. El build de producción usa
+`environment.prod.ts`, donde ambas son relativas (`/api` y `/media`) para que
+el gateway las enrute al backend.
 
 ### Módulos de la interfaz
 

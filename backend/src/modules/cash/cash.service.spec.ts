@@ -603,7 +603,7 @@ describe('CashService (arqueo multimoneda)', () => {
     it('guarda la referencia y la foto del comprobante bancario', async () => {
       const created: unknown[] = [];
       const { service, tx } = build(created);
-      const photo = 'data:image/jpeg;base64,/9j/4AAQSkZJRg==';
+      const photo = '/media/J-1/payments/comprobante.jpg';
 
       await service.registerMovement(
         COMPANY_ID,
@@ -745,7 +745,7 @@ describe('CashService (arqueo multimoneda)', () => {
           amount: 1000,
           currency: 'VES',
           paymentReference: '123456',
-          paymentPhotoUrl: 'data:image/jpeg;base64,abc',
+          paymentPhotoUrl: '/media/J-1/payments/comprobante.jpg',
         },
         'u1',
       );
@@ -753,7 +753,7 @@ describe('CashService (arqueo multimoneda)', () => {
       expect(created[0]).toMatchObject({
         paymentMethod: 'TRANSFER',
         paymentReference: '123456',
-        paymentPhotoUrl: 'data:image/jpeg;base64,abc',
+        paymentPhotoUrl: '/media/J-1/payments/comprobante.jpg',
       });
     });
   });
