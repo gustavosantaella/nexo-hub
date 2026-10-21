@@ -882,4 +882,201 @@ describe('CashPage (fondo inicial multimoneda)', () => {
     // Y el equivalente contable en la moneda de visualización (20 USD * 905).
     expect(table.textContent).toContain('Bs 18,100.00');
   });
+
+  it('deduce la dirección de la categoría y pide el tipo solo en movimientos manuales', () => {
+    const page = mount();
+    page.openMovement();
+
+    // Las categorías de entrada y salida no dejan elegir la dirección.
+    page.selectCategory('SALE');
+    expect(page.movementType).toBe('IN');
+    expect(page.needsManualType).toBe(false);
+    expect(page.movementSubmitLabel).toBe('Registrar entrada');
+
+    page.selectCategory('EXPENSE');
+    expect(page.movementType).toBe('OUT');
+    expect(page.needsManualType).toBe(false);
+    expect(page.movementSubmitLabel).toBe('Registrar salida');
+
+    // Ajustes y "otro" sí la piden: el usuario decide si entra o sale.
+    page.selectCategory('ADJUSTMENT');
+    expect(page.needsManualType).toBe(true);
+
+    // En los manuales la dirección la elige el usuario.
+    page.setMovementType('IN');
+    expect(page.movementType).toBe('IN');
+
+    page.setMovementType('OUT');
+    expect(page.movementType).toBe('OUT');
+    expect(page.movementSubmitLabel).toBe('Registrar salida');
+  });
+
+  it('bloquea el registro hasta que el monto sea mayor a 0', () => {
+    const page = mount();
+    page.openMovement();
+
+    page.movForm.amount = 0;
+    expect(page.movementError).toBe('Indica un monto mayor a 0.');
+    expect(page.canSubmitMovement).toBe(false);
+
+    page.movForm.amount = 0.01;
+    expect(page.movementError).toBe(null);
+    expect(page.canSubmitMovement).toBe(true);
+  });
+
+  it('no permite sacar más efectivo del esperado con método CASH', () => {
+    const page = mount();
+    const summary: CashSummary = {
+      cashIn: 10,
+      cashOut: 0,
+      expectedCash: 10,
+      totalIn: 10,
+      totalOut: 0,
+      net: 10,
+      salesTotal: 10,
+      tipsTotal: 0,
+      movementCount: 0,
+      byMethod: [],
+      byCategory: [],
+      byCurrency: [],
+    };
+    page.summary.set(summary);
+    page.openMovement();
+    page.selectCategory('EXPENSE');
+    page.setPaymentMethod('CASH');
+
+    page.movForm.amount = 10.01;
+    expect(page.movementError).toContain('supera el efectivo esperado');
+    expect(page.canSubmitMovement).toBe(false);
+
+    page.movForm.amount = 10;
+    expect(page.movementError).toBe(null);
+    expect(page.canSubmitMovement).toBe(true);
+  });
+
+  it('con método que no es efectivo no altera la caja esperada', () => {
+    const page = mount();
+    const summary: CashSummary = {
+      cashIn: 40,
+      cashOut: 0,
+      expectedCash: 40,
+      totalIn: 40,
+      totalOut: 0,
+      net: 40,
+      salesTotal: 40,
+      tipsTotal: 0,
+      movementCount: 0,
+      byMethod: [],
+      byCategory: [],
+      byCurrency: [],
+    };
+    page.summary.set(summary);
+    page.openMovement();
+    page.selectCategory('EXPENSE');
+    page.setPaymentMethod('CARD');
+    page.movForm.amount = 500;
+
+    expect(page.movementAffectsCash).toBe(false);
+    expect(page.movementError).toBe(null);
+    expect(page.expectedAfterBase).toBe(40);
+    expect(page.paymentMethodHint).toContain('no mueve el efectivo');
+    expect(page.movementFooterHint).toContain('no cambia');
+  });
+
+  it('ofrece motivos sugeridos y alterna el texto de la descripción', () => {
+    const page = mount();
+    page.openMovement();
+    page.selectCategory('EXPENSE');
+
+    expect(page.descriptionSuggestions).toContain('Compra de insumos');
+
+    page.toggleDescription('Compra de insumos');
+    expect(page.movForm.description).toBe('Compra de insumos');
+
+    // Volver a pulsar el mismo chip limpia el campo.
+    page.toggleDescription('Compra de insumos');
+    expect(page.movForm.description).toBe('');
+  });
+
+  it('muestra el resumen en vivo con el efecto firmado del movimiento', () => {
+    const page = mount();
+    page.summary.set({
+      cashIn: 100,
+      cashOut: 0,
+      expectedCash: 100,
+      totalIn: 100,
+      totalOut: 0,
+      net: 100,
+      salesTotal: 100,
+      tipsTotal: 0,
+      movementCount: 0,
+      byMethod: [],
+      byCategory: [],
+      byCurrency: [],
+    });
+    page.openMovement();
+    page.selectCategory('EXPENSE');
+    page.setPaymentMethod('CASH');
+    page.movForm.amount = 25;
+
+    expect(page.movementAmountText).toBe('− $ 25.00');
+    expect(page.movementBaseText).toBe('− $ 25.00');
+    expect(page.expectedAfterBase).toBe(75);
+    expect(page.expectedAfterDisplay).toBe(75);
+    expect(page.movementFooterHint).toContain('$ 75.00');
+
+    page.selectCategory('DEPOSIT');
+    expect(page.movementAmountText).toBe('+ $ 25.00');
+    expect(page.expectedAfterBase).toBe(125);
+  });
+
+  it('renderiza las tarjetas, el resumen y el botón según la dirección', () => {
+    const page = mount();
+    page.summary.set({
+      cashIn: 100,
+      cashOut: 0,
+      expectedCash: 100,
+      totalIn: 100,
+      totalOut: 0,
+      net: 100,
+      salesTotal: 100,
+      tipsTotal: 0,
+      movementCount: 0,
+      byMethod: [],
+      byCategory: [],
+      byCurrency: [],
+    });
+    page.openMovement();
+    fixture.detectChanges();
+
+    let text = fixture.nativeElement.textContent as string;
+    expect(text).toContain('Categoría del movimiento');
+    expect(text).toContain('Entradas');
+    expect(text).toContain('Salidas');
+    expect(text).toContain('Efectivo en caja');
+    expect(text).toContain('Registrar entrada');
+
+    page.selectCategory('EXPENSE');
+    page.movForm.amount = 25;
+    fixture.detectChanges();
+
+    // Los eventos reales marcan la vista: pulsar la tarjeta y escribir el monto.
+    const expense = Array.from(
+      fixture.nativeElement.querySelectorAll('button') as NodeListOf<HTMLButtonElement>,
+    ).find((button) => button.textContent?.includes('Gasto'));
+    expect(expense).toBeTruthy();
+    expense!.click();
+
+    const amount = fixture.nativeElement.querySelector(
+      '#movement-amount',
+    ) as HTMLInputElement;
+    amount.value = '25';
+    amount.dispatchEvent(new Event('input'));
+    fixture.detectChanges();
+
+    text = fixture.nativeElement.textContent as string;
+    expect(text).toContain('Registrar salida');
+    expect(text).toContain('Caja después');
+    expect(text).toContain('− $ 25.00');
+  });
 });

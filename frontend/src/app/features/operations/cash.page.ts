@@ -13,11 +13,9 @@ import type {
 } from '../../core/models/operations.model';
 import {
   CASH_CATEGORY_LABELS,
-  CASH_CATEGORY_OPTIONS,
   CASH_IN_CATEGORIES,
   CASH_OUT_CATEGORIES,
   PAYMENT_METHOD_LABELS,
-  PAYMENT_METHOD_OPTIONS,
 } from '../../core/constants/domain';
 import { BASE_CURRENCY, MIXED_CURRENCY_CODE } from '../../core/constants/currency';
 import { CurrencySelectComponent } from '../../shared/components/currency-select.component';
@@ -46,6 +44,31 @@ import { PaginationComponent } from '../../shared/components/pagination.componen
 import { StatCardComponent } from '../../shared/components/stat-card.component';
 
 type CashCategory = CashMovementPayload['category'];
+type CashDirection = 'IN' | 'OUT';
+
+/** Tarjeta de categoria del movimiento manual con su efecto en la caja. */
+interface CashCategoryCard {
+  value: CashCategory;
+  label: string;
+  hint: string;
+  icon: string;
+  group: 'IN' | 'OUT' | 'MANUAL';
+}
+
+/** Grupo visual de categorias (entradas, salidas o movimientos manuales). */
+interface CashCategoryGroup {
+  key: 'IN' | 'OUT' | 'MANUAL';
+  title: string;
+  hint: string;
+  items: CashCategoryCard[];
+}
+
+/** Metodo de pago con su efecto sobre el efectivo del cajon. */
+interface CashMethodCard {
+  value: string;
+  label: string;
+  icon: string;
+}
 
 const EMPTY_META: PaginationMeta = {
   total: 0,
@@ -105,18 +128,137 @@ export class CashPage implements OnInit {
 
   readonly categoryLabels = CASH_CATEGORY_LABELS;
   /**
-   * Categorias del movimiento manual. `CHANGE` (vuelto) lo genera el cobro de un
-   * pedido con su metodo y moneda; no se captura a mano.
+   * Categorias presentadas como tarjetas: la descripcion explica que implica
+   * cada una y el grupo deja claro si el dinero entra o sale del cajon.
    */
-  readonly categoryOptions = CASH_CATEGORY_OPTIONS.filter(
-    (option) => option.value !== 'CHANGE',
-  );
-  readonly methodLabels = PAYMENT_METHOD_LABELS;
-  readonly methodOptions = PAYMENT_METHOD_OPTIONS;
-  readonly movementTypeOptions = [
-    { value: 'IN', label: 'Entrada' },
-    { value: 'OUT', label: 'Salida' },
+  readonly categoryCards: CashCategoryCard[] = [
+    {
+      value: 'SALE',
+      label: CASH_CATEGORY_LABELS['SALE'],
+      hint: 'Cobro de una venta o pedido',
+      icon: 'shopping-cart',
+      group: 'IN',
+    },
+    {
+      value: 'DEPOSIT',
+      label: CASH_CATEGORY_LABELS['DEPOSIT'],
+      hint: 'Efectivo que ingresa al cajón',
+      icon: 'download',
+      group: 'IN',
+    },
+    {
+      value: 'EXPENSE',
+      label: CASH_CATEGORY_LABELS['EXPENSE'],
+      hint: 'Compra o gasto operativo',
+      icon: 'receipt',
+      group: 'OUT',
+    },
+    {
+      value: 'WITHDRAWAL',
+      label: CASH_CATEGORY_LABELS['WITHDRAWAL'],
+      hint: 'Efectivo que sale del cajón',
+      icon: 'upload',
+      group: 'OUT',
+    },
+    {
+      value: 'REFUND',
+      label: CASH_CATEGORY_LABELS['REFUND'],
+      hint: 'Reembolso a un cliente',
+      icon: 'exchange',
+      group: 'OUT',
+    },
+    {
+      value: 'PAYMENT',
+      label: CASH_CATEGORY_LABELS['PAYMENT'],
+      hint: 'Abono a una cuenta por pagar',
+      icon: 'building',
+      group: 'OUT',
+    },
+    {
+      value: 'ADJUSTMENT',
+      label: CASH_CATEGORY_LABELS['ADJUSTMENT'],
+      hint: 'Corrige el saldo de la caja',
+      icon: 'settings',
+      group: 'MANUAL',
+    },
+    {
+      value: 'OTHER',
+      label: CASH_CATEGORY_LABELS['OTHER'],
+      hint: 'Otro ingreso o egreso manual',
+      icon: 'info',
+      group: 'MANUAL',
+    },
   ];
+  /** Categorias agrupadas por el efecto que tienen en el arqueo. */
+  readonly categoryGroups: CashCategoryGroup[] = [
+    {
+      key: 'IN',
+      title: 'Entradas',
+      hint: 'El efectivo esperado sube.',
+      items: this.categoryCards.filter((card) => card.group === 'IN'),
+    },
+    {
+      key: 'OUT',
+      title: 'Salidas',
+      hint: 'El efectivo esperado baja.',
+      items: this.categoryCards.filter((card) => card.group === 'OUT'),
+    },
+    {
+      key: 'MANUAL',
+      title: 'Movimientos manuales',
+      hint: 'Elige tú si entra o sale dinero.',
+      items: this.categoryCards.filter((card) => card.group === 'MANUAL'),
+    },
+  ];
+  readonly methodLabels = PAYMENT_METHOD_LABELS;
+  /**
+   * Solo el efectivo mueve el cajón. Los demas metodos quedan registrados en el
+   * arqueo por metodo, pero no cambian el efectivo esperado.
+   */
+  readonly methodCards: CashMethodCard[] = [
+    { value: 'CASH', label: PAYMENT_METHOD_LABELS['CASH'], icon: 'money' },
+    { value: 'CARD', label: PAYMENT_METHOD_LABELS['CARD'], icon: 'receipt' },
+    {
+      value: 'TRANSFER',
+      label: PAYMENT_METHOD_LABELS['TRANSFER'],
+      icon: 'exchange',
+    },
+    { value: 'YAPE', label: PAYMENT_METHOD_LABELS['YAPE'], icon: 'keypad' },
+    { value: 'PLIN', label: PAYMENT_METHOD_LABELS['PLIN'], icon: 'keypad' },
+    { value: 'CREDIT', label: PAYMENT_METHOD_LABELS['CREDIT'], icon: 'clock' },
+    { value: 'MIXED', label: PAYMENT_METHOD_LABELS['MIXED'], icon: 'table' },
+  ];
+  readonly movementTypeOptions: { value: CashDirection; label: string; icon: string }[] = [
+    { value: 'IN', label: 'Entrada', icon: 'trend-up' },
+    { value: 'OUT', label: 'Salida', icon: 'trend-down' },
+  ];
+  /** Motivos sugeridos por categoria: aceleran la captura sin limitar el texto. */
+  private readonly descriptionSuggestionsByCategory: Record<
+    string,
+    readonly string[]
+  > = {
+    SALE: ['Venta de mostrador', 'Cobro de pedido', 'Venta adicional'],
+    DEPOSIT: ['Depósito de ventas', 'Fondo adicional', 'Reposición de cambio'],
+    EXPENSE: [
+      'Compra de insumos',
+      'Servicios del local',
+      'Mantenimiento',
+      'Transporte',
+    ],
+    WITHDRAWAL: [
+      'Retiro a banco',
+      'Entrega a administración',
+      'Pago a proveedor',
+    ],
+    REFUND: ['Devolución a cliente', 'Anulación de venta'],
+    PAYMENT: ['Abono a proveedor', 'Pago de cuenta por pagar'],
+    ADJUSTMENT: [
+      'Corrección de arqueo',
+      'Diferencia de cambio',
+      'Error de registro',
+    ],
+    OTHER: ['Movimiento manual', 'Otro ingreso', 'Otro egreso'],
+  };
 
   readonly loading = signal(false);
   readonly session = signal<CashSession | null>(null);
@@ -651,6 +793,196 @@ export class CashPage implements OnInit {
     );
   }
 
+  /** Dirección real del movimiento: la deduce la categoría salvo en los manuales. */
+  get movementType(): CashDirection {
+    if (this.needsManualType) return this.movForm.type;
+    return CASH_IN_CATEGORIES.includes(this.movForm.category) ? 'IN' : 'OUT';
+  }
+
+  get movementAmount(): number {
+    const amount = Number(this.movForm.amount);
+    return Number.isFinite(amount) && amount > 0 ? amount : 0;
+  }
+
+  /** Equivalente del monto en la moneda base contable (USD). */
+  get movementBase(): number | null {
+    if (this.movementAmount <= 0) return 0;
+    return this.rates.toBase(
+      this.movementAmount,
+      this.movForm.currency,
+      BCV_USD_RATE_KEY,
+    );
+  }
+
+  /** Efecto del movimiento sobre el arqueo, en la moneda base. */
+  get movementSignedBase(): number | null {
+    if (!this.movementAffectsCash) return 0;
+    const base = this.movementBase;
+    if (base == null) return null;
+    return this.movementType === 'IN' ? base : -base;
+  }
+
+  /** Efectivo esperado después de registrar el movimiento, en moneda base. */
+  get expectedAfterBase(): number {
+    const signed = this.movementSignedBase;
+    return signed == null ? this.expectedCash : this.expectedCash + signed;
+  }
+
+  /** Efectivo esperado después del movimiento, en la moneda de visualización. */
+  get expectedAfterDisplay(): number | null {
+    return this.aggregateDisplay(this.expectedAfterBase);
+  }
+
+  /** Efecto del movimiento en la moneda de visualización. */
+  get movementAmountDisplay(): number | null {
+    const signed =
+      this.movementType === 'IN' ? this.movementAmount : -this.movementAmount;
+    return this.toDisplay(signed, this.movForm.currency);
+  }
+
+  /** Monto original con signo, listo para el resumen. */
+  get movementAmountText(): string {
+    if (this.movementAmount <= 0) return '—';
+    return `${this.movementType === 'IN' ? '+' : '−'} ${this.moneyIn(
+      this.movementAmount,
+      this.movForm.currency,
+    )}`;
+  }
+
+  /** Equivalente del movimiento en la moneda de visualización. */
+  get movementBaseText(): string {
+    const display = this.movementAmountDisplay;
+    if (display == null) return 'Sin tasa disponible';
+    return `${this.movementType === 'IN' ? '+' : '−'} ${this.moneyIn(
+      Math.abs(display),
+      displayBaseCode(),
+    )}`;
+  }
+
+  /** `true` si el método elegido mueve el efectivo del cajón. */
+  get movementAffectsCash(): boolean {
+    return this.movForm.paymentMethod === 'CASH';
+  }
+
+  get movementStatus(): { label: string; classes: string } {
+    return this.movementType === 'IN'
+      ? { label: 'Entrada', classes: 'bg-emerald-100 text-emerald-700' }
+      : { label: 'Salida', classes: 'bg-rose-100 text-rose-700' };
+  }
+
+  get movementSubmitLabel(): string {
+    return this.movementType === 'IN' ? 'Registrar entrada' : 'Registrar salida';
+  }
+
+  /** Motivos frecuentes de la categoría elegida. */
+  get descriptionSuggestions(): readonly string[] {
+    return this.descriptionSuggestionsByCategory[this.movForm.category] ?? [];
+  }
+
+  get paymentMethodHint(): string {
+    if (this.movementAffectsCash) {
+      return 'El efectivo del cajón se actualiza al registrar el movimiento.';
+    }
+    const label =
+      PAYMENT_METHOD_LABELS[this.movForm.paymentMethod] ??
+      this.movForm.paymentMethod;
+    return `${label} no mueve el efectivo del cajón: queda registrado en el arqueo por método.`;
+  }
+
+  /** Error que impide registrar el movimiento; `null` si todo está correcto. */
+  get movementError(): string | null {
+    if (!(this.movementAmount > 0)) {
+      return 'Indica un monto mayor a 0.';
+    }
+    if (this.movementBase == null) {
+      return `No hay tasa configurada para ${this.movForm.currency}. Configúrala en Configuración → Monedas.`;
+    }
+    if (
+      this.movementAffectsCash &&
+      this.movementType === 'OUT' &&
+      this.movementBase > Math.max(this.expectedCash, 0) + 0.005
+    ) {
+      const available = this.aggregateDisplay(Math.max(this.expectedCash, 0));
+      const amount =
+        available == null ? '0' : this.moneyIn(available, displayBaseCode());
+      return `La salida supera el efectivo esperado en caja (${amount}). Ajusta el monto o registra el movimiento con otro método.`;
+    }
+    return null;
+  }
+
+  get canSubmitMovement(): boolean {
+    return !this.saving() && this.movementError === null;
+  }
+
+  /** Texto de apoyo del pie del formulario. */
+  get movementFooterHint(): string {
+    if (this.saving()) return 'Registrando movimiento…';
+    if (this.movementError) return this.movementError;
+    if (!this.movementAffectsCash) {
+      return 'Se guardará como referencia; el efectivo del cajón no cambia.';
+    }
+    const after = this.expectedAfterDisplay;
+    return after == null
+      ? 'Se actualizará el efectivo esperado del cajón.'
+      : `Caja después del movimiento: ${this.moneyIn(
+          after,
+          displayBaseCode(),
+        )}.`;
+  }
+
+  categoryCardClass(card: CashCategoryCard): string {
+    const base =
+      'flex w-full items-start gap-2 rounded-xl border p-2.5 text-left transition focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-400';
+    if (this.movForm.category !== card.value) {
+      return `${base} border-slate-200 bg-white hover:border-slate-300 hover:bg-slate-50`;
+    }
+    if (card.group === 'IN') {
+      return `${base} border-emerald-300 bg-emerald-50 text-emerald-800 ring-1 ring-emerald-200`;
+    }
+    if (card.group === 'OUT') {
+      return `${base} border-rose-300 bg-rose-50 text-rose-800 ring-1 ring-rose-200`;
+    }
+    return `${base} border-sky-300 bg-sky-50 text-sky-800 ring-1 ring-sky-200`;
+  }
+
+  typeCardClass(type: CashDirection): string {
+    const base =
+      'flex items-center justify-center gap-2 rounded-xl border px-3 py-2.5 text-sm font-semibold transition focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-400';
+    if (this.movForm.type !== type) {
+      return `${base} border-slate-200 bg-white text-slate-600 hover:border-slate-300 hover:bg-slate-50`;
+    }
+    return type === 'IN'
+      ? `${base} border-emerald-300 bg-emerald-50 text-emerald-700 ring-1 ring-emerald-200`
+      : `${base} border-rose-300 bg-rose-50 text-rose-700 ring-1 ring-rose-200`;
+  }
+
+  methodCardClass(method: string): string {
+    const base =
+      'flex items-center justify-center gap-1.5 rounded-lg border px-2 py-2 text-xs font-medium transition focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-400';
+    return this.movForm.paymentMethod === method
+      ? `${base} border-brand-300 bg-brand-50 text-brand-700 ring-1 ring-brand-200`
+      : `${base} border-slate-200 bg-white text-slate-600 hover:border-slate-300 hover:bg-slate-50`;
+  }
+
+  selectCategory(category: CashCategory): void {
+    this.movForm.category = category;
+    this.onCategoryChange();
+  }
+
+  setMovementType(type: CashDirection): void {
+    this.movForm.type = type;
+  }
+
+  setPaymentMethod(method: string): void {
+    this.movForm.paymentMethod = method;
+  }
+
+  /** Marca o desmarca un motivo sugerido sin pisar un texto libre. */
+  toggleDescription(suggestion: string): void {
+    this.movForm.description =
+      this.movForm.description === suggestion ? '' : suggestion;
+  }
+
   onCategoryChange(): void {
     if (CASH_IN_CATEGORIES.includes(this.movForm.category)) {
       this.movForm.type = 'IN';
@@ -677,16 +1009,16 @@ export class CashPage implements OnInit {
 
   submitMovement(): void {
     if (this.saving()) return;
-    const amount = Number(this.movForm.amount);
-    if (!(amount > 0)) {
-      this.toast.error('El monto debe ser mayor a 0');
+    const error = this.movementError;
+    if (error) {
+      this.toast.error(error);
       return;
     }
     this.saving.set(true);
     const payload: CashMovementPayload = {
       category: this.movForm.category,
       paymentMethod: this.movForm.paymentMethod as CashMovementPayload['paymentMethod'],
-      amount,
+      amount: this.movementAmount,
       currency: this.movForm.currency || undefined,
       description: this.movForm.description || undefined,
     };
