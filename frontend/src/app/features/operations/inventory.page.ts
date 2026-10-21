@@ -20,6 +20,7 @@ import {
   apiErrorMessage,
   dateTime,
   money,
+  moneyIn,
   moneyLoaded,
   number,
   quantity,
@@ -52,6 +53,43 @@ const EMPTY_META: PaginationMeta = {
   totalPages: 0,
   hasNextPage: false,
   hasPreviousPage: false,
+};
+
+/** Opcion del selector de tipo del formulario de movimiento. */
+interface MovementTypeOption {
+  value: StockMovementType;
+  label: string;
+  hint: string;
+  icon: string;
+}
+
+/** Los tres tipos de movimiento, con el lenguaje de la operacion. */
+const MOVEMENT_TYPES: MovementTypeOption[] = [
+  {
+    value: 'IN',
+    label: 'Entrada',
+    hint: 'Suma al stock',
+    icon: 'trend-up',
+  },
+  {
+    value: 'OUT',
+    label: 'Salida',
+    hint: 'Resta del stock',
+    icon: 'trend-down',
+  },
+  {
+    value: 'ADJUSTMENT',
+    label: 'Ajuste',
+    hint: 'Fija el stock final',
+    icon: 'refresh',
+  },
+];
+
+/** Motivos sugeridos por tipo (el operador puede escribir otro). */
+const MOVEMENT_REASONS: Record<StockMovementType, string[]> = {
+  IN: ['Compra a proveedor', 'Devolución de cliente', 'Carga inicial', 'Otro ingreso'],
+  OUT: ['Merma', 'Vencimiento', 'Consumo interno', 'Devolución a proveedor'],
+  ADJUSTMENT: ['Conteo físico', 'Corrección de error', 'Merma'],
 };
 
 /** Formulario del movimiento de inventario. */
@@ -106,6 +144,8 @@ export class InventoryPage implements OnInit {
 
   readonly dateTime = dateTime;
   readonly number = number;
+  /** Montos del producto en la ficha del formulario. */
+  readonly money = money;
   /** Cantidades/existencias: hasta 3 decimales, sin ceros de relleno. */
   readonly quantity = quantity;
   readonly movementOptions = STOCK_MOVEMENT_OPTIONS;
@@ -134,6 +174,11 @@ export class InventoryPage implements OnInit {
 
   readonly movOpen = signal(false);
   readonly movSaving = signal(false);
+  readonly movementTypes = MOVEMENT_TYPES;
+  /** Desplegable del buscador de productos. */
+  readonly productOpen = signal(false);
+  /** Texto del buscador (independiente del producto elegido). */
+  readonly productQuery = signal('');
   movForm: MovementForm = {
     productId: '',
     type: 'IN' as StockMovementType,
@@ -188,6 +233,64 @@ export class InventoryPage implements OnInit {
   /** Producto elegido en el formulario de movimiento. */
   get selectedProduct(): StockLevel | undefined {
     return this.stockItems().find((item) => item.id === this.movForm.productId);
+  }
+
+  /**
+   * Productos que ofrece el buscador: filtra por nombre o SKU mientras se
+   * escribe. Con el campo vacio (o mostrando el producto ya elegido) lista las
+   * existencias cargadas, para poder cambiar de producto sin borrar el texto.
+   */
+  get productMatches(): StockLevel[] {
+    const term = this.productQuery().trim().toLowerCase();
+    const selected = this.selectedProduct?.name.toLowerCase();
+    const items =
+      !term || term === selected
+        ? this.stockItems()
+        : this.stockItems().filter(
+            (item) =>
+              item.name.toLowerCase().includes(term) ||
+              (item.sku ?? '').toLowerCase().includes(term),
+          );
+    return items.slice(0, 40);
+  }
+
+  /** Escribe en el buscador; seguir escribiendo invalida el producto elegido. */
+  onProductQuery(value: string): void {
+    this.productQuery.set(value);
+    this.productOpen.set(true);
+    const selected = this.selectedProduct;
+    if (!selected || selected.name !== value) {
+      this.movForm.productId = '';
+    }
+  }
+
+  /** Elige el producto desde el desplegable. */
+  selectProduct(product: StockLevel): void {
+    this.productQuery.set(product.name);
+    this.productOpen.set(false);
+    this.onProductChange(product.id);
+  }
+
+  /** Quita el producto elegido y deja el buscador listo para otro. */
+  clearProduct(): void {
+    this.movForm.productId = '';
+    this.productQuery.set('');
+    this.productOpen.set(true);
+  }
+
+  /** Cierra el desplegable al salir del buscador (salvo hacia una opcion). */
+  onProductFocusOut(event: FocusEvent): void {
+    const host = event.currentTarget as HTMLElement | null;
+    const next = event.relatedTarget as Node | null;
+    if (!host || !next || !host.contains(next)) {
+      this.productOpen.set(false);
+    }
+  }
+
+  /** Enter en el buscador: elige la primera coincidencia. */
+  selectFirstProductMatch(): void {
+    const first = this.productMatches[0];
+    if (first) this.selectProduct(first);
   }
 
   /** Unidades con las que se puede escribir el movimiento (cajas, g, ml...). */
@@ -250,6 +353,189 @@ export class InventoryPage implements OnInit {
       );
     }
     return alerts;
+  }
+
+  /** Stock resultante del movimiento en curso, en la unidad de stock. */
+  get movementStockAfter(): number | null {
+    const product = this.selectedProduct;
+    if (!product) return null;
+    const moved = this.movementStockQuantity(product);
+    if (this.movForm.type === 'IN') return product.stock + moved;
+    if (this.movForm.type === 'OUT') return product.stock - moved;
+    return moved;
+  }
+
+  /**
+   * Primer problema del formulario. Mientras exista, no se envia nada: el
+   * operador ve el motivo al lado del campo y el boton queda deshabilitado.
+   */
+  get movementError(): string | null {
+    const product = this.selectedProduct;
+    if (!product) return 'Selecciona un producto para continuar.';
+    const typed = Number(this.movForm.quantity);
+    if (!Number.isFinite(typed) || typed < 0) {
+      return 'La cantidad no puede ser negativa.';
+    }
+    const moved = this.movementStockQuantity(product);
+    if (this.movForm.type !== 'ADJUSTMENT' && moved <= 0) {
+      return 'Indica una cantidad mayor que cero.';
+    }
+    if (this.movForm.type === 'OUT' && moved > product.stock) {
+      return 'La salida supera el stock disponible.';
+    }
+    return null;
+  }
+
+  /** `true` cuando el movimiento se puede registrar. */
+  get canSubmitMovement(): boolean {
+    return !this.movementError && !this.movSaving();
+  }
+
+  /** Posicion de la barra de stock (resultante sobre la escala del producto). */
+  get movementBarPercent(): number {
+    const product = this.selectedProduct;
+    const after = this.movementStockAfter;
+    if (!product || after === null) return 0;
+    const scale = Math.max(product.stock, after, product.minStock * 2, 1);
+    return Math.max(0, Math.min(100, (after / scale) * 100));
+  }
+
+  /** Marca del minimo dentro de la barra de stock. */
+  get movementMinPercent(): number {
+    const product = this.selectedProduct;
+    if (!product) return 0;
+    const scale = Math.max(
+      product.stock,
+      this.movementStockAfter ?? 0,
+      product.minStock * 2,
+      1,
+    );
+    return Math.max(0, Math.min(100, (product.minStock / scale) * 100));
+  }
+
+  /** Semáforo del stock resultante. */
+  get movementStatus(): { label: string; classes: string } | null {
+    const product = this.selectedProduct;
+    const after = this.movementStockAfter;
+    if (!product || after === null) return null;
+    if (after <= 0) {
+      return { label: 'Sin stock', classes: 'bg-rose-100 text-rose-700' };
+    }
+    if (after <= product.minStock) {
+      return { label: 'Bajo mínimo', classes: 'bg-amber-100 text-amber-700' };
+    }
+    return { label: 'Disponible', classes: 'bg-emerald-100 text-emerald-700' };
+  }
+
+  /** Color de la barra de stock segun el resultado. */
+  get movementBarClass(): string {
+    const product = this.selectedProduct;
+    const after = this.movementStockAfter;
+    if (!product || after === null || after <= 0) return 'bg-rose-500';
+    return after <= product.minStock ? 'bg-amber-500' : 'bg-emerald-500';
+  }
+
+  /** Valor del ingreso (cantidad × costo unitario) en la moneda escrita. */
+  get movementTotalCost(): string | null {
+    if (!this.showUnitCost) return null;
+    const product = this.selectedProduct;
+    const unitCost = Number(this.movForm.unitCost) || 0;
+    if (!product || unitCost <= 0) return null;
+    const moved = this.movementStockQuantity(product);
+    if (moved <= 0) return null;
+    return moneyIn(moved * unitCost, this.movForm.unitCostCurrency);
+  }
+
+  /** Etiqueta de la unidad con la que se esta escribiendo la cantidad. */
+  get movementInputUnitLabel(): string {
+    const option = this.movementUnits.find(
+      (item) => item.value === this.movForm.inputUnit,
+    );
+    return option?.label ?? this.movForm.inputUnit;
+  }
+
+  /** Stock final en el idioma del negocio ("3 cajas · 72 UND"). */
+  get movementStockAfterLabel(): string | null {
+    const product = this.selectedProduct;
+    const after = this.movementStockAfter;
+    if (!product || after === null) return null;
+    const detail = packDetail(after, product);
+    return `${packText(after, product)}${detail ? ` · ${detail}` : ''}`;
+  }
+
+  /** Titulo del modal segun el tipo elegido. */
+  get movementTitle(): string {
+    if (this.movForm.type === 'OUT') return 'Registrar salida';
+    if (this.movForm.type === 'ADJUSTMENT') return 'Ajustar stock';
+    return 'Registrar entrada';
+  }
+
+  /** Subtitulo del modal: explica el efecto del movimiento. */
+  get movementSubtitle(): string {
+    if (this.movForm.type === 'OUT') {
+      return 'La cantidad se descuenta del stock y queda en la trazabilidad';
+    }
+    if (this.movForm.type === 'ADJUSTMENT') {
+      return 'Escribe el stock final contado: reemplaza las existencias actuales';
+    }
+    return 'La cantidad se suma al stock y queda en la trazabilidad';
+  }
+
+  /** Texto del boton principal del modal. */
+  get movementSubmitLabel(): string {
+    if (this.movForm.type === 'OUT') return 'Registrar salida';
+    if (this.movForm.type === 'ADJUSTMENT') return 'Fijar stock final';
+    return 'Registrar entrada';
+  }
+
+  /** Motivos sugeridos para el tipo elegido. */
+  get reasonSuggestions(): string[] {
+    return MOVEMENT_REASONS[this.movForm.type] ?? [];
+  }
+
+  /** Estilo de la tarjeta de tipo (activa con el color de su efecto). */
+  typeCardClass(type: StockMovementType): string {
+    const base =
+      'flex flex-col items-start gap-0.5 rounded-xl border px-3 py-2.5 text-left transition focus:outline-none focus:ring-2';
+    if (this.movForm.type !== type) {
+      return `${base} border-slate-200 bg-white text-slate-600 hover:border-slate-300 hover:bg-slate-50 focus:ring-slate-300`;
+    }
+    if (type === 'IN') {
+      return `${base} border-emerald-500 bg-emerald-50 text-emerald-700 ring-1 ring-emerald-500 focus:ring-emerald-300`;
+    }
+    if (type === 'OUT') {
+      return `${base} border-rose-500 bg-rose-50 text-rose-700 ring-1 ring-rose-500 focus:ring-rose-300`;
+    }
+    return `${base} border-sky-500 bg-sky-50 text-sky-700 ring-1 ring-sky-500 focus:ring-sky-300`;
+  }
+
+  /** Cambia el tipo y ajusta la cantidad al nuevo significado. */
+  setMovementType(type: StockMovementType): void {
+    if (this.movForm.type === type) return;
+    this.movForm.type = type;
+    const product = this.selectedProduct;
+    if (!product) return;
+    if (type === 'ADJUSTMENT') {
+      // "Stock final" arranca en lo que hay hoy: el operador corrige el conteo.
+      this.movForm.quantity = inputQuantity(
+        product.stock,
+        this.movForm.inputUnit,
+        product,
+      );
+    } else if (!(Number(this.movForm.quantity) > 0)) {
+      this.movForm.quantity = 1;
+    }
+  }
+
+  /** Marca/desmarca un motivo sugerido. */
+  toggleReason(reason: string): void {
+    this.movForm.reason = this.movForm.reason === reason ? '' : reason;
+  }
+
+  /** Botones − / + de la cantidad (respetando 3 decimales). */
+  stepQuantity(delta: number): void {
+    const current = Number(this.movForm.quantity) || 0;
+    this.movForm.quantity = Math.max(0, Math.round((current + delta) * 1000) / 1000);
   }
 
   /** Resumen del stock final del ajuste. */
@@ -389,20 +675,28 @@ export class InventoryPage implements OnInit {
       unitPriceCurrency: BASE_CURRENCY_CODE,
       reason: '',
     };
+    // El buscador abre con el producto de la fila (si se abrio desde la tabla).
+    this.productQuery.set(product?.name ?? '');
+    this.productOpen.set(!product);
     this.movOpen.set(true);
   }
 
   closeMovement(): void {
     this.movOpen.set(false);
+    this.productOpen.set(false);
   }
 
   submitMovement(): void {
     if (this.movSaving()) return;
-    const product = this.selectedProduct;
-    if (!product) {
-      this.toast.error('Selecciona un producto');
+    // Una sola fuente de verdad para el formulario: el modal deshabilita el
+    // boton con `canSubmitMovement`, y aqui se vuelve a comprobar el motivo.
+    const error = this.movementError;
+    if (error) {
+      this.toast.error(error);
       return;
     }
+    const product = this.selectedProduct;
+    if (!product) return;
     const inputQuantity = Number(this.movForm.quantity) || 0;
     this.movSaving.set(true);
     // La cantidad viaja tal como se escribio, con su unidad (`inputUnit`): el

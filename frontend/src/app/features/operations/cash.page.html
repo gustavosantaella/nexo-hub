@@ -605,7 +605,122 @@
             </div>
           }
 
+          <!-- Pago mixto: cada parte con su método, moneda y monto -->
+          @if (isMixedMovement) {
+            <div class="space-y-3 rounded-xl border border-slate-200 bg-slate-50/60 p-4">
+              <div class="flex items-start justify-between gap-2">
+                <div>
+                  <span class="label mb-0">Pagos del cliente</span>
+                  <p class="text-[11px] text-slate-400">
+                    Agrega cada forma y moneda con la que entra o sale el dinero.
+                  </p>
+                </div>
+                <span class="badge" [class]="movementStatus.classes">
+                  {{ movementStatus.label }}
+                </span>
+              </div>
+
+              <div class="space-y-2">
+                @for (part of movForm.parts; track part; let i = $index) {
+                  <div class="space-y-2 rounded-lg border border-slate-200 bg-white p-2.5">
+                    <div class="flex items-center justify-between gap-2">
+                      <p class="text-[10px] font-semibold uppercase tracking-wide text-slate-400">
+                        Pago {{ i + 1 }}
+                      </p>
+                      @if (movForm.parts.length > 1) {
+                        <button
+                          type="button"
+                          class="btn-ghost btn-sm px-2 text-rose-600"
+                          title="Quitar pago"
+                          (click)="removeMovementPart(i)"
+                        >
+                          <app-icon name="trash" size="h-3.5 w-3.5" />
+                        </button>
+                      }
+                    </div>
+
+                    <div class="grid grid-cols-2 gap-2">
+                      <label class="block">
+                        <span class="mb-1 block text-[11px] font-medium text-slate-500">
+                          Método
+                        </span>
+                        <select class="input px-2 py-1" [(ngModel)]="part.method">
+                          @for (method of methodCards; track method.value) {
+                            @if (method.value !== 'MIXED') {
+                              <option [value]="method.value">{{ method.label }}</option>
+                            }
+                          }
+                        </select>
+                      </label>
+                      <label class="block">
+                        <span class="mb-1 block text-[11px] font-medium text-slate-500">
+                          Moneda
+                        </span>
+                        <select class="input px-2 py-1" [(ngModel)]="part.currency">
+                          @for (currency of enabledCurrencies(); track currency.code) {
+                            <option [value]="currency.code">{{ currency.code }}</option>
+                          }
+                        </select>
+                      </label>
+                    </div>
+
+                    <label class="block">
+                      <span class="mb-1 block text-[11px] font-medium text-slate-500">
+                        Monto
+                      </span>
+                      <input
+                        type="number"
+                        class="input px-2 py-1 text-right font-semibold"
+                        min="0"
+                        step="0.01"
+                        inputmode="decimal"
+                        placeholder="0.00"
+                        [(ngModel)]="part.amount"
+                      />
+                    </label>
+
+                    @if (part.amount > 0) {
+                      <p class="text-right text-[11px] text-slate-400">
+                        ≈ {{ movementPartBaseText(part) }}
+                      </p>
+                    }
+                  </div>
+                }
+              </div>
+
+              <button
+                type="button"
+                class="btn-secondary btn-sm w-full"
+                [disabled]="movForm.parts.length >= maxMovementParts"
+                (click)="addMovementPart()"
+              >
+                <app-icon name="plus" size="h-3.5 w-3.5" />
+                Agregar pago
+              </button>
+
+              <div class="flex items-center justify-between gap-2 border-t border-slate-200 pt-2">
+                <span class="text-xs font-medium text-slate-600">Total del movimiento</span>
+                <span class="text-right">
+                  <span class="block text-sm font-semibold text-slate-900">
+                    {{ movementAmountText }}
+                  </span>
+                  <span class="block text-[10px] text-slate-400">
+                    {{ movementBaseText }}
+                  </span>
+                </span>
+              </div>
+
+              @if (movementMissingRates.length > 0) {
+                <p class="rounded-lg bg-amber-50 px-2 py-1.5 text-[11px] text-amber-800">
+                  Falta la tasa de {{ movementMissingRates.join(', ') }}. Configúrala en
+                  Configuración → Monedas.
+                </p>
+              }
+            </div>
+          }
+
           <!-- Monto y moneda -->
+          @if (!isMixedMovement) {
           <div class="space-y-3 rounded-xl border border-slate-200 bg-slate-50/60 p-4">
             <div class="flex items-center justify-between gap-2">
               <label class="label mb-0" for="movement-amount">Monto</label>
@@ -638,6 +753,7 @@
               efectivo conserva la moneda en la que entra o sale.
             </p>
           </div>
+          }
 
           <!-- Método de pago -->
           <div>
@@ -666,6 +782,69 @@
               {{ paymentMethodHint }}
             </p>
           </div>
+
+          <!-- Comprobante: solo transferencia, Yape o Plin -->
+          @if (movementNeedsProof) {
+            <div class="space-y-2 rounded-xl border border-amber-200 bg-amber-50 p-4">
+              <p class="text-xs font-semibold uppercase tracking-wide text-amber-800">
+                Comprobante de transferencia / pago móvil
+              </p>
+              <div>
+                <label class="label" for="movement-reference">Referencia bancaria</label>
+                <input
+                  id="movement-reference"
+                  class="input font-mono tracking-wider"
+                  type="text"
+                  inputmode="numeric"
+                  maxlength="6"
+                  placeholder="4 a 6 dígitos"
+                  [ngModel]="movForm.paymentReference"
+                  (ngModelChange)="onPaymentReferenceChange($event)"
+                />
+              </div>
+
+              @if (movForm.paymentPhotoUrl) {
+                <div class="flex items-start gap-2 rounded-lg border border-amber-200 bg-white p-2">
+                  <img
+                    [src]="movForm.paymentPhotoUrl"
+                    alt="Comprobante de pago"
+                    class="h-20 w-16 rounded object-cover"
+                  />
+                  <div class="min-w-0 flex-1">
+                    <p class="truncate text-xs font-medium text-slate-700">
+                      {{ movForm.paymentPhotoName || 'Comprobante adjunto' }}
+                    </p>
+                    <p class="text-xs text-emerald-700">Se guardará con el movimiento.</p>
+                    <button
+                      type="button"
+                      class="btn-ghost btn-sm mt-1 px-2 text-rose-600"
+                      (click)="removePaymentPhoto()"
+                    >
+                      <app-icon name="trash" size="h-3.5 w-3.5" />
+                      Quitar foto
+                    </button>
+                  </div>
+                </div>
+              } @else {
+                <label class="btn-secondary btn-sm inline-flex cursor-pointer items-center gap-1">
+                  <app-icon name="image" size="h-4 w-4" />
+                  {{ paymentPhotoBusy() ? 'Procesando…' : 'Adjuntar foto (opcional)' }}
+                  <input
+                    type="file"
+                    class="hidden"
+                    accept="image/jpeg,image/png,image/webp"
+                    [disabled]="paymentPhotoBusy()"
+                    (change)="onPaymentPhotoSelected($event)"
+                  />
+                </label>
+              }
+
+              <p class="text-xs text-slate-500">
+                La foto es opcional; la referencia es obligatoria para validar el
+                comprobante.
+              </p>
+            </div>
+          }
 
           <!-- Descripción / motivo -->
           <div>
@@ -738,6 +917,31 @@
                 </span>
               </dd>
             </div>
+            @if (isMixedMovement) {
+              <div class="space-y-1 rounded-lg border border-slate-200 bg-white p-2">
+                @for (part of movementParts; track part) {
+                  <div class="flex items-start justify-between gap-2 text-[11px]">
+                    <span class="min-w-0 text-slate-500">
+                      <span class="block truncate font-medium text-slate-700">
+                        {{ methodLabels[part.method] || part.method }}
+                        <span class="font-normal text-slate-400">· {{ part.currency }}</span>
+                      </span>
+                      @if (part.method === 'CASH') {
+                        <span class="badge bg-emerald-100 text-emerald-700">Efectivo</span>
+                      }
+                    </span>
+                    <span class="shrink-0 text-right">
+                      <span class="block font-medium text-slate-700">
+                        {{ moneyIn(part.amount, part.currency) }}
+                      </span>
+                      <span class="block text-[10px] text-slate-400">
+                        ≈ {{ movementPartBaseText(part) }}
+                      </span>
+                    </span>
+                  </div>
+                }
+              </div>
+            }
             @if (movementAffectsCash) {
               <div
                 class="flex items-center justify-between gap-2 border-t border-slate-200 pt-2"
@@ -764,7 +968,7 @@
             </p>
           }
 
-          @if (movementAmount > 0 && movementError) {
+          @if (movementHasAmount && movementError) {
             <p class="rounded-lg bg-rose-50 px-2 py-1.5 text-[11px] leading-snug text-rose-700">
               {{ movementError }}
             </p>
@@ -783,7 +987,7 @@
         <p
           class="min-w-0 flex-1 text-[11px] leading-snug"
           [class]="
-            movementAmount > 0 && movementError
+            movementHasAmount && movementError
               ? 'text-rose-600'
               : 'text-slate-400'
           "

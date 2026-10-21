@@ -635,6 +635,129 @@ describe('CashService (arqueo multimoneda)', () => {
     });
   });
 
+  describe('addMovement (pago mixto y comprobante)', () => {
+    /** Repositorio real con una transaccion simulada que comparte el mismo cliente. */
+    function build(created: Record<string, unknown>[]) {
+      const prisma: {
+        $transaction: (
+          work: (tx: unknown) => Promise<unknown>,
+        ) => Promise<unknown>;
+        cashSession: { findFirst: jest.Mock };
+        cashMovement: { create: jest.Mock };
+      } = {
+        $transaction: jest.fn(async (work: (tx: unknown) => Promise<unknown>) =>
+          work(prisma),
+        ),
+        cashSession: {
+          findFirst: jest
+            .fn()
+            .mockResolvedValue({ id: 's1', code: 'CAJ-1', status: 'OPEN' }),
+        },
+        cashMovement: {
+          create: jest.fn(async (input: { data: Record<string, unknown> }) => {
+            created.push(input.data);
+            return { id: `m${created.length}`, ...input.data };
+          }),
+        },
+      };
+      return new CashService(new CashRepository(prisma as never), config, rates);
+    }
+
+    it('registra cada parte del pago mixto como un movimiento propio', async () => {
+      const created: Record<string, unknown>[] = [];
+      const service = build(created);
+
+      const result = await service.addMovement(
+        COMPANY_ID,
+        {
+          category: 'SALE',
+          paymentMethod: 'MIXED',
+          paymentReference: '1234',
+          parts: [
+            { paymentMethod: 'CASH', amount: 10, currency: 'USD' },
+            { paymentMethod: 'TRANSFER', amount: 9050, currency: 'VES' },
+          ],
+        },
+        'u1',
+      );
+
+      expect(created).toHaveLength(2);
+      expect(created[0]).toMatchObject({
+        type: 'IN',
+        category: 'SALE',
+        paymentMethod: 'CASH',
+        amount: 10,
+        currency: 'USD',
+        baseAmount: 10,
+        createdById: 'u1',
+      });
+      // El comprobante solo se adjunta a la parte bancaria.
+      expect(created[0].paymentReference).toBeUndefined();
+      expect(created[1]).toMatchObject({
+        paymentMethod: 'TRANSFER',
+        amount: 9050,
+        currency: 'VES',
+        // 9.050 Bs a la tasa del fixture (900 Bs por USD) = 10,05 USD.
+        baseAmount: 10.05,
+        paymentReference: '1234',
+        createdById: 'u1',
+      });
+      expect(result).toMatchObject({ count: 2 });
+    });
+
+    it('exige el desglose cuando el metodo es MIXTO', async () => {
+      const service = build([]);
+
+      await expect(
+        service.addMovement(
+          COMPANY_ID,
+          { category: 'SALE', paymentMethod: 'MIXED', amount: 10 },
+          'u1',
+        ),
+      ).rejects.toThrow('desglose');
+    });
+
+    it('exige referencia de comprobante en las partes bancarias', async () => {
+      const service = build([]);
+
+      await expect(
+        service.addMovement(
+          COMPANY_ID,
+          {
+            category: 'SALE',
+            paymentMethod: 'MIXED',
+            parts: [{ paymentMethod: 'TRANSFER', amount: 1000, currency: 'VES' }],
+          },
+          'u1',
+        ),
+      ).rejects.toThrow('referencia del comprobante');
+    });
+
+    it('guarda el comprobante del movimiento simple', async () => {
+      const created: Record<string, unknown>[] = [];
+      const service = build(created);
+
+      await service.addMovement(
+        COMPANY_ID,
+        {
+          category: 'SALE',
+          paymentMethod: 'TRANSFER',
+          amount: 1000,
+          currency: 'VES',
+          paymentReference: '123456',
+          paymentPhotoUrl: 'data:image/jpeg;base64,abc',
+        },
+        'u1',
+      );
+
+      expect(created[0]).toMatchObject({
+        paymentMethod: 'TRANSFER',
+        paymentReference: '123456',
+        paymentPhotoUrl: 'data:image/jpeg;base64,abc',
+      });
+    });
+  });
+
   describe('openSession', () => {
     /**
      * Servicio con la transaccion simulada de Prisma: guarda los datos del

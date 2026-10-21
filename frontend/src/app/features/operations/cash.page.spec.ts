@@ -946,7 +946,7 @@ describe('CashPage (fondo inicial multimoneda)', () => {
     page.setPaymentMethod('CASH');
 
     page.movForm.amount = 10.01;
-    expect(page.movementError).toContain('supera el efectivo esperado');
+    expect(page.movementError).toContain('supera lo disponible');
     expect(page.canSubmitMovement).toBe(false);
 
     page.movForm.amount = 10;
@@ -1028,6 +1028,182 @@ describe('CashPage (fondo inicial multimoneda)', () => {
     page.selectCategory('DEPOSIT');
     expect(page.movementAmountText).toBe('+ $ 25.00');
     expect(page.expectedAfterBase).toBe(125);
+  });
+
+  it('suma las partes del pago mixto y solo el efectivo mueve la caja', () => {
+    const page = mount();
+    page.summary.set({
+      cashIn: 100,
+      cashOut: 0,
+      expectedCash: 100,
+      totalIn: 100,
+      totalOut: 0,
+      net: 100,
+      salesTotal: 100,
+      tipsTotal: 0,
+      movementCount: 0,
+      byMethod: [],
+      byCategory: [],
+      byCurrency: [],
+    });
+    page.openMovement();
+    page.setPaymentMethod('MIXED');
+    page.movForm.parts = [
+      { method: 'CASH', currency: 'USD', amount: 10 },
+      { method: 'TRANSFER', currency: 'VES', amount: 9050 },
+    ];
+    page.onPaymentReferenceChange('1234');
+
+    // 10 USD + 9.050 Bs al BCV (905) = 20 USD de movimiento.
+    expect(page.movementBase).toBeCloseTo(20, 8);
+    expect(page.movementAffectsCash).toBe(true);
+    expect(page.movementCashBase).toBeCloseTo(10, 8);
+    expect(page.expectedAfterBase).toBeCloseTo(110, 8);
+    expect(page.movementBaseText).toContain('2 pagos');
+    expect(page.movementError).toBe(null);
+  });
+
+  it('un pago mixto sin efectivo no altera el cajón', () => {
+    const page = mount();
+    page.summary.set({
+      cashIn: 100,
+      cashOut: 0,
+      expectedCash: 100,
+      totalIn: 100,
+      totalOut: 0,
+      net: 100,
+      salesTotal: 100,
+      tipsTotal: 0,
+      movementCount: 0,
+      byMethod: [],
+      byCategory: [],
+      byCurrency: [],
+    });
+    page.openMovement();
+    page.selectCategory('EXPENSE');
+    page.setPaymentMethod('MIXED');
+    page.movForm.parts = [
+      { method: 'TRANSFER', currency: 'VES', amount: 9050 },
+      { method: 'CARD', currency: 'USD', amount: 10 },
+    ];
+    page.onPaymentReferenceChange('1234');
+
+    expect(page.movementAffectsCash).toBe(false);
+    expect(page.expectedAfterBase).toBe(100);
+    expect(page.movementError).toBe(null);
+    expect(page.paymentMethodHint).toContain('Ninguna parte es en efectivo');
+  });
+
+  it('limita la salida mixta al efectivo realmente disponible', () => {
+    const page = mount();
+    page.summary.set({
+      cashIn: 10,
+      cashOut: 0,
+      expectedCash: 10,
+      totalIn: 10,
+      totalOut: 0,
+      net: 10,
+      salesTotal: 10,
+      tipsTotal: 0,
+      movementCount: 0,
+      byMethod: [],
+      byCategory: [],
+      byCurrency: [],
+    });
+    page.openMovement();
+    page.selectCategory('EXPENSE');
+    page.setPaymentMethod('MIXED');
+    page.movForm.parts = [
+      { method: 'CASH', currency: 'USD', amount: 15 },
+      { method: 'TRANSFER', currency: 'VES', amount: 9050 },
+    ];
+    page.onPaymentReferenceChange('1234');
+
+    expect(page.movementCashBase).toBe(15);
+    expect(page.movementError).toContain('supera lo disponible');
+    expect(page.canSubmitMovement).toBe(false);
+  });
+
+  it('pide referencia de comprobante solo en transferencia, Yape o Plin', () => {
+    const page = mount();
+    page.openMovement();
+    page.setPaymentMethod('TRANSFER');
+    page.movForm.amount = 10;
+
+    expect(page.movementNeedsProof).toBe(true);
+    expect(page.movementError).toContain('referencia del comprobante');
+
+    // Solo se conservan digitos y hasta 6.
+    page.onPaymentReferenceChange('12ab34567');
+    expect(page.movForm.paymentReference).toBe('123456');
+    expect(page.movementError).toBe(null);
+
+    // Un pago mixto con una parte bancaria también exige la referencia.
+    page.setPaymentMethod('MIXED');
+    page.movForm.parts = [
+      { method: 'CASH', currency: 'USD', amount: 10 },
+      { method: 'TRANSFER', currency: 'VES', amount: 9050 },
+    ];
+    page.movForm.paymentReference = '';
+    expect(page.movementNeedsProof).toBe(true);
+    expect(page.movementError).toContain('referencia del comprobante');
+  });
+
+  it('envía el desglose mixto y el comprobante al registrar el movimiento', () => {
+    const page = mount();
+    page.summary.set({
+      cashIn: 100,
+      cashOut: 0,
+      expectedCash: 100,
+      totalIn: 100,
+      totalOut: 0,
+      net: 100,
+      salesTotal: 100,
+      tipsTotal: 0,
+      movementCount: 0,
+      byMethod: [],
+      byCategory: [],
+      byCurrency: [],
+    });
+    page.openMovement();
+    page.setPaymentMethod('MIXED');
+    page.movForm.parts = [
+      { method: 'CASH', currency: 'USD', amount: 10 },
+      { method: 'TRANSFER', currency: 'VES', amount: 9050 },
+    ];
+    page.onPaymentReferenceChange('1234');
+    page.movForm.paymentPhotoUrl = 'data:image/jpeg;base64,abc';
+
+    page.submitMovement();
+
+    const request = http.expectOne(
+      (candidate) =>
+        candidate.method === 'POST' && candidate.url === `${API}/cash/movements`,
+    );
+    const body = request.request.body as {
+      category: string;
+      paymentMethod: string;
+      paymentReference: string;
+      paymentPhotoUrl: string;
+      parts: { paymentMethod: string; amount: number; currency: string }[];
+    };
+    expect(body.category).toBe('SALE');
+    expect(body.paymentMethod).toBe('MIXED');
+    expect(body.paymentReference).toBe('1234');
+    expect(body.paymentPhotoUrl).toBe('data:image/jpeg;base64,abc');
+    expect(body.parts).toEqual([
+      { paymentMethod: 'CASH', amount: 10, currency: 'USD' },
+      { paymentMethod: 'TRANSFER', amount: 9050, currency: 'VES' },
+    ]);
+    request.flush({ movements: [], count: 2 });
+
+    // El registro recarga el arqueo y el historial.
+    http
+      .expectOne((candidate) => candidate.url === `${API}/cash/current`)
+      .flush({ session: null, summary: null, reconciliation: null });
+    http
+      .match((candidate) => candidate.url === `${API}/cash/movements`)
+      .forEach((pending) => pending.flush({ items: [], meta: META }));
   });
 
   it('renderiza las tarjetas, el resumen y el botón según la dirección', () => {

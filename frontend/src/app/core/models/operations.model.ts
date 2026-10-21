@@ -453,6 +453,25 @@ export interface CashMovementPayload {
     | 'ADJUSTMENT'
     | 'OTHER';
   paymentMethod?: PaymentMethod;
-  amount: number;
+  /** Monto del movimiento simple. En un pago mixto viaja el desglose en `parts`. */
+  amount?: number;
   description?: string;
+  /**
+   * Desglose de un pago mixto: cada parte (metodo + moneda + monto) se guarda
+   * como un movimiento de caja propio.
+   */
+  parts?: CashMovementPartPayload[];
+  /** Referencia bancaria del comprobante (transferencia / Yape / Plin). */
+  paymentReference?: string;
+  /** Foto del comprobante como data URL. */
+  paymentPhotoUrl?: string;
+}
+
+/** Parte de un pago mixto registrado desde la caja. */
+export interface CashMovementPartPayload {
+  paymentMethod: Exclude<PaymentMethod, 'MIXED'>;
+  amount: number;
+  currency?: string;
+  paymentReference?: string;
+  paymentPhotoUrl?: string;
 }

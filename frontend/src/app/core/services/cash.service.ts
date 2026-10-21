@@ -52,7 +52,9 @@ export class CashService {
   }
 
   addMovement(payload: CashMovementPayload) {
-    return this.http.post<CashMovement>(`${this.baseUrl}/movements`, payload);
+    return this.http.post<
+      CashMovement | { movements: CashMovement[]; count: number }
+    >(`${this.baseUrl}/movements`, payload);
   }
 
   movements(query: Record<string, unknown> = {}) {

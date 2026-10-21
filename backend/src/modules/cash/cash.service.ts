@@ -11,6 +11,7 @@ import {
   CashMovementCategory,
   CashMovementType,
   CashSessionStatus,
+  PAYMENT_PROOF_METHODS,
   PaymentMethod,
 } from '../../common/constants/enums';
 import {
@@ -1123,6 +1124,35 @@ export class CashService {
     );
   }
 
+  /**
+   * Comprobante que se guarda en un movimiento. Solo los metodos bancarios
+   * (transferencia / Yape / Plin) lo exigen: la referencia debe tener de 4 a 6
+   * digitos y la foto es opcional. En los demas metodos el comprobante se ignora.
+   */
+  private proofFor(
+    method: PaymentMethod | undefined,
+    input: {
+      paymentReference?: string | null;
+      paymentPhotoUrl?: string | null;
+    },
+  ): { paymentReference?: string; paymentPhotoUrl?: string } {
+    if (!method || !PAYMENT_PROOF_METHODS.includes(method)) return {};
+
+    const reference = String(input.paymentReference ?? '').trim();
+    if (!/^\d{4,6}$/.test(reference)) {
+      throw new BadRequestException(
+        `Escribe la referencia del comprobante de ${method}: de 4 a 6 digitos.`,
+      );
+    }
+
+    return {
+      paymentReference: reference,
+      ...(input.paymentPhotoUrl
+        ? { paymentPhotoUrl: input.paymentPhotoUrl }
+        : {}),
+    };
+  }
+
   /** Endpoint manual: ingreso/egreso de caja. */
   async addMovement(
     companyId: string,
@@ -1137,7 +1167,76 @@ export class CashService {
         'El vuelto se registra automaticamente al cobrar un pedido.',
       );
     }
-    return this.registerMovement(companyId, { ...dto, createdById: userId });
+
+    const parts = dto.parts ?? [];
+
+    // Movimiento simple: una sola forma de pago. MIXTO siempre exige el desglose
+    // para que el arqueo sepa cuanto entro por cada metodo y moneda.
+    if (parts.length === 0) {
+      if (dto.paymentMethod === PaymentMethod.MIXED) {
+        throw new BadRequestException(
+          'El pago mixto requiere el desglose de las partes (parts)',
+        );
+      }
+      const amount = dto.amount;
+      if (amount === null || amount === undefined || toMoney(amount) <= 0) {
+        throw new BadRequestException('El monto del movimiento debe ser mayor a 0');
+      }
+
+      return this.registerMovement(companyId, {
+        type: dto.type,
+        category: dto.category,
+        paymentMethod: dto.paymentMethod,
+        amount,
+        currency: dto.currency,
+        description: dto.description,
+        ...this.proofFor(dto.paymentMethod ?? PaymentMethod.CASH, dto),
+        createdById: userId,
+      });
+    }
+
+    if (parts.length > 8) {
+      throw new BadRequestException('El pago mixto admite hasta 8 partes');
+    }
+    if (parts.some((part) => toMoney(part.amount) <= 0)) {
+      throw new BadRequestException(
+        'El monto de cada parte del pago debe ser mayor a 0',
+      );
+    }
+
+    // Cada parte queda como un movimiento propio y todas se guardan en la misma
+    // transaccion: si una falla (por ejemplo, sin tasa) no queda un cobro a
+    // medias en la caja.
+    return this.cash.transaction(async (tx) => {
+      const session = await this.getOpenSessionOrThrow(companyId, tx);
+      const movements = [];
+
+      for (const part of parts) {
+        movements.push(
+          await this.registerMovement(
+            companyId,
+            {
+              sessionId: session.id,
+              type: dto.type,
+              category: dto.category,
+              paymentMethod: part.paymentMethod,
+              amount: part.amount,
+              currency: part.currency,
+              description: dto.description,
+              ...this.proofFor(part.paymentMethod, {
+                paymentReference:
+                  part.paymentReference ?? dto.paymentReference,
+                paymentPhotoUrl: part.paymentPhotoUrl ?? dto.paymentPhotoUrl,
+              }),
+              createdById: userId,
+            },
+            tx,
+          ),
+        );
+      }
+
+      return { movements, count: movements.length };
+    });
   }
 
 }

@@ -250,40 +250,199 @@
       </div>
     }
 
-    <app-modal [open]="movOpen()" title="Registrar movimiento" (closed)="closeMovement()">
-      <div class="space-y-3">
-        <div>
-          <label class="label">Producto</label>
-          <select class="input" [(ngModel)]="movForm.productId" (ngModelChange)="onProductChange($event)">
-            <option value="">Selecciona un producto</option>
-            @for (item of stockItems(); track item.id) {
-              <option [value]="item.id">
-                {{ item.name }} · stock {{ quantity(item.stock) }}
-              </option>
+    <app-modal
+      [open]="movOpen()"
+      [title]="movementTitle"
+      [subtitle]="movementSubtitle"
+      size="lg"
+      (closed)="closeMovement()"
+    >
+      <div class="grid gap-5 md:grid-cols-[minmax(0,1fr)_15rem]">
+        <!-- ================= Formulario ================= -->
+        <div class="space-y-5">
+          <!-- Tipo: tarjetas con el efecto de cada movimiento -->
+          <div>
+            <span class="label">Tipo de movimiento</span>
+            <div class="grid grid-cols-3 gap-2">
+              @for (option of movementTypes; track option.value) {
+                <button
+                  type="button"
+                  [class]="typeCardClass(option.value)"
+                  [attr.aria-pressed]="movForm.type === option.value"
+                  (click)="setMovementType(option.value)"
+                >
+                  <app-icon [name]="option.icon" size="h-4 w-4" />
+                  <span class="text-sm font-semibold">{{ option.label }}</span>
+                  <span class="text-[11px] font-normal opacity-80">{{ option.hint }}</span>
+                </button>
+              }
+            </div>
+          </div>
+
+          <!-- Producto: buscador por nombre o SKU -->
+          <div class="relative" (focusout)="onProductFocusOut($event)">
+            <label class="label" for="mov-product">Producto</label>
+            <div class="relative">
+              <span class="pointer-events-none absolute left-3 top-2.5 text-slate-400">
+                <app-icon name="search" size="h-4 w-4" />
+              </span>
+              <input
+                id="mov-product"
+                class="input pl-9 pr-9"
+                role="combobox"
+                aria-controls="mov-product-options"
+                aria-autocomplete="list"
+                [attr.aria-expanded]="productOpen()"
+                [ngModel]="productQuery()"
+                (ngModelChange)="onProductQuery($event)"
+                (focus)="productOpen.set(true)"
+                (keydown.enter)="selectFirstProductMatch()"
+                (keydown.escape)="productOpen.set(false)"
+                placeholder="Busca por nombre o SKU…"
+                autocomplete="off"
+              />
+              @if (movForm.productId) {
+                <button
+                  type="button"
+                  class="absolute right-1.5 top-1.5 rounded-lg p-1 text-slate-400 transition hover:bg-slate-100 hover:text-slate-600"
+                  aria-label="Quitar producto"
+                  (click)="clearProduct()"
+                >
+                  <app-icon name="close" size="h-4 w-4" />
+                </button>
+              }
+            </div>
+
+            @if (productOpen()) {
+              <div
+                id="mov-product-options"
+                role="listbox"
+                class="absolute z-20 mt-1 max-h-64 w-full overflow-y-auto rounded-xl border border-slate-200 bg-white py-1 shadow-lg"
+              >
+                @for (item of productMatches; track item.id) {
+                  <button
+                    type="button"
+                    role="option"
+                    [attr.aria-selected]="item.id === movForm.productId"
+                    class="flex w-full items-center justify-between gap-3 px-3 py-2 text-left transition hover:bg-slate-100"
+                    [class]="item.id === movForm.productId ? 'bg-brand-50' : ''"
+                    (mousedown)="$event.preventDefault()"
+                    (click)="selectProduct(item)"
+                  >
+                    <span class="min-w-0">
+                      <span class="block truncate text-sm font-medium text-slate-900">
+                        {{ item.name }}
+                      </span>
+                      <span class="block truncate text-[11px] text-slate-400">
+                        {{ item.sku }} · {{ item.category?.name || 'Sin categoría' }}
+                      </span>
+                    </span>
+                    <span class="shrink-0 text-right">
+                      <span
+                        class="block text-xs font-semibold"
+                        [class]="item.isLowStock ? 'text-rose-600' : 'text-slate-600'"
+                      >
+                        {{ stockLabel(item) }}
+                      </span>
+                      <span class="block text-[11px] text-slate-400">
+                        mín. {{ quantity(item.minStock) }}
+                      </span>
+                    </span>
+                  </button>
+                } @empty {
+                  <p class="px-3 py-6 text-center text-sm text-slate-500">
+                    Sin productos que coincidan con “{{ productQuery() }}”.
+                  </p>
+                }
+              </div>
             }
-          </select>
-        </div>
-        <div>
-          <label class="label">Tipo</label>
-          <select class="input" [(ngModel)]="movForm.type">
-            @for (option of movementOptions; track option.value) {
-              <option [value]="option.value">{{ option.label }}</option>
-            }
-          </select>
-        </div>
-        <div>
-          <label class="label">{{ quantityLabel }}</label>
-          <div class="flex gap-2">
-            <input
-              type="number"
-              class="input"
-              min="0"
-              step="0.001"
-              [(ngModel)]="movForm.quantity"
-            />
-            @if (movementUnits.length > 1) {
+          </div>
+
+
+          <!-- Ficha del producto elegido -->
+          @if (selectedProduct; as product) {
+            <div class="rounded-xl border border-slate-200 bg-slate-50 p-3">
+              <div class="flex items-start justify-between gap-3">
+                <div class="min-w-0">
+                  <p class="truncate text-sm font-semibold text-slate-900">{{ product.name }}</p>
+                  <p class="text-[11px] text-slate-500">
+                    {{ product.sku }} · {{ unitLabels[product.unit] || product.unit }}
+                  </p>
+                </div>
+                @if (product.isLowStock) {
+                  <span class="badge bg-rose-100 text-rose-700">Bajo mínimo</span>
+                }
+              </div>
+              <dl class="mt-3 grid grid-cols-2 gap-x-4 gap-y-2 text-xs">
+                <div>
+                  <dt class="text-slate-500">Existencias</dt>
+                  <dd class="font-semibold text-slate-900">{{ stockLabel(product) }}</dd>
+                  <dd class="text-[10px] text-slate-400">
+                    {{ quantity(product.stock) }} {{ unitLabels[product.unit] || product.unit }}
+                  </dd>
+                </div>
+                <div>
+                  <dt class="text-slate-500">Mínimo</dt>
+                  <dd class="font-semibold text-slate-900">
+                    {{ quantity(product.minStock) }} {{ unitLabels[product.unit] || product.unit }}
+                  </dd>
+                </div>
+                <div>
+                  <dt class="text-slate-500">Costo</dt>
+                  <dd class="font-medium text-slate-700">{{ money(product.cost) }}</dd>
+                </div>
+                <div>
+                  <dt class="text-slate-500">Precio de venta</dt>
+                  <dd class="font-medium text-slate-700">{{ money(product.price) }}</dd>
+                </div>
+              </dl>
+            </div>
+          }
+
+          <!-- Cantidad + unidad -->
+          <div class="grid gap-3 sm:grid-cols-[minmax(0,1fr)_10rem]">
+            <div>
+              <label class="label" for="mov-qty">{{ quantityLabel }}</label>
+              <div class="flex items-stretch gap-2">
+                <button
+                  type="button"
+                  class="btn-secondary px-3"
+                  aria-label="Restar una unidad"
+                  (click)="stepQuantity(-1)"
+                >
+                  <app-icon name="minus" size="h-4 w-4" />
+                </button>
+                <input
+                  id="mov-qty"
+                  type="number"
+                  class="input text-center text-base font-semibold"
+                  min="0"
+                  step="0.001"
+                  [(ngModel)]="movForm.quantity"
+                />
+                <button
+                  type="button"
+                  class="btn-secondary px-3"
+                  aria-label="Sumar una unidad"
+                  (click)="stepQuantity(1)"
+                >
+                  <app-icon name="plus" size="h-4 w-4" />
+                </button>
+              </div>
+              <p class="mt-1 text-[11px] text-slate-400">
+                @if (movForm.type === 'ADJUSTMENT') {
+                  Escribe el conteo final en {{ movementInputUnitLabel }}; reemplaza el stock actual.
+                } @else {
+                  Se registra en {{ movementInputUnitLabel }} y el sistema lo convierte a la unidad de stock.
+                }
+              </p>
+            </div>
+            <div>
+              <label class="label" for="mov-unit">Unidad</label>
               <select
-                class="input w-40 shrink-0"
+                id="mov-unit"
+                class="input"
+                [disabled]="movementUnits.length <= 1"
                 [(ngModel)]="movForm.inputUnit"
                 (ngModelChange)="onUnitChange($event)"
               >
@@ -291,56 +450,195 @@
                   <option [value]="option.value">{{ option.label }}</option>
                 }
               </select>
+            </div>
+          </div>
+
+          <!-- Valorización de la entrada -->
+          @if (showUnitCost || showUnitPrice) {
+            <div class="space-y-3 rounded-xl border border-slate-200 p-3">
+              <div>
+                <p class="text-sm font-semibold text-slate-800">Valorización</p>
+                <p class="text-[11px] text-slate-500">
+                  Opcional: actualiza el costo y el precio de venta del producto.
+                </p>
+              </div>
+              @if (showUnitCost) {
+                <app-currency-amount-input
+                  id="mov-unit-cost"
+                  label="Costo por unidad de stock"
+                  [amount]="movForm.unitCost"
+                  [currency]="movForm.unitCostCurrency"
+                  hint="Valoriza el ingreso y actualiza el costo del producto; el de la presentación se calcula por sus unidades."
+                  (amountChange)="movForm.unitCost = $event"
+                  (currencyChange)="movForm.unitCostCurrency = $event"
+                />
+              }
+              @if (showUnitPrice) {
+                <app-currency-amount-input
+                  id="mov-unit-price"
+                  label="Precio de venta unitario (por unidad suelta)"
+                  [amount]="movForm.unitPrice"
+                  [currency]="movForm.unitPriceCurrency"
+                  hint="Ajusta a cómo se vende una unidad suelta al abrir la presentación. Déjalo en 0 para no cambiarlo."
+                  (amountChange)="movForm.unitPrice = $event"
+                  (currencyChange)="movForm.unitPriceCurrency = $event"
+                />
+                @if (unitPriceReference; as reference) {
+                  <p class="text-[11px] text-slate-400">{{ reference }}</p>
+                }
+              }
+            </div>
+          }
+
+          <!-- Motivo -->
+          <div>
+            <label class="label" for="mov-reason">Motivo</label>
+            <div class="flex flex-wrap gap-1.5">
+              @for (suggestion of reasonSuggestions; track suggestion) {
+                <button
+                  type="button"
+                  class="badge border transition"
+                  [class]="
+                    movForm.reason === suggestion
+                      ? 'border-brand-300 bg-brand-50 text-brand-700'
+                      : 'border-slate-200 bg-white text-slate-600 hover:bg-slate-50'
+                  "
+                  (click)="toggleReason(suggestion)"
+                >
+                  {{ suggestion }}
+                </button>
+              }
+            </div>
+            <input
+              id="mov-reason"
+              class="input mt-2"
+              [(ngModel)]="movForm.reason"
+              placeholder="Detalle u observación (opcional)"
+            />
+          </div>
+        </div>
+
+
+        <!-- ================= Resumen en vivo ================= -->
+        <aside class="space-y-3 self-start rounded-xl border border-slate-200 bg-slate-50 p-4">
+          <div class="flex items-center justify-between gap-2">
+            <p class="text-xs font-semibold uppercase tracking-wide text-slate-500">Resumen</p>
+            @if (movementStatus; as status) {
+              <span class="badge" [class]="status.classes">{{ status.label }}</span>
             }
           </div>
-          @if (movementPreview; as preview) {
-            <p class="mt-1 rounded-lg bg-slate-50 px-2 py-1 text-xs text-slate-600">
-              {{ preview.text }}
+
+          @if (selectedProduct; as product) {
+            <dl class="space-y-2 text-sm">
+              <div class="flex items-center justify-between gap-2">
+                <dt class="text-slate-500">Stock actual</dt>
+                <dd class="font-medium text-slate-900">
+                  {{ quantity(product.stock) }} {{ unitLabels[product.unit] || product.unit }}
+                </dd>
+              </div>
+              <div class="flex items-center justify-between gap-2">
+                <dt class="text-slate-500">Movimiento</dt>
+                <dd
+                  class="font-semibold"
+                  [class]="
+                    movForm.type === 'IN'
+                      ? 'text-emerald-600'
+                      : movForm.type === 'OUT'
+                        ? 'text-rose-600'
+                        : 'text-sky-600'
+                  "
+                >
+                  {{ movForm.type === 'IN' ? '+' : movForm.type === 'OUT' ? '−' : '=' }}
+                  {{ quantity(movForm.quantity) }} {{ movementInputUnitLabel }}
+                </dd>
+              </div>
+              <div class="flex items-center justify-between gap-2 border-t border-slate-200 pt-2">
+                <dt class="font-medium text-slate-700">Stock final</dt>
+                <dd class="text-right font-semibold text-slate-900">
+                  {{ movementStockAfterLabel }}
+                </dd>
+              </div>
+            </dl>
+
+            <div>
+              <div class="relative h-2 overflow-hidden rounded-full bg-slate-200">
+                <div
+                  class="h-full rounded-full transition-all"
+                  [class]="movementBarClass"
+                  [style.width.%]="movementBarPercent"
+                ></div>
+                <span
+                  class="absolute top-0 h-full w-px bg-slate-400"
+                  [style.left.%]="movementMinPercent"
+                  title="Stock mínimo"
+                ></span>
+              </div>
+              <p class="mt-1 flex justify-between text-[10px] text-slate-400">
+                <span>0</span>
+                <span>Mínimo {{ quantity(product.minStock) }}</span>
+              </p>
+            </div>
+
+            @if (movementTotalCost; as total) {
+              <div class="flex items-center justify-between gap-2 rounded-lg bg-white px-2 py-1.5 text-sm">
+                <span class="text-slate-500">Valor del ingreso</span>
+                <span class="font-semibold text-slate-900">{{ total }}</span>
+              </div>
+            }
+          } @else {
+            <p class="text-sm text-slate-500">
+              Elige un producto para ver cómo queda el stock antes de registrar.
             </p>
           }
+
           @for (alert of movementAlerts; track alert) {
-            <p class="mt-1 flex items-center gap-1 text-xs text-rose-600">
+            <p class="flex items-start gap-1 text-xs text-rose-600">
               <app-icon name="alert" size="h-3.5 w-3.5" />
               {{ alert }}
             </p>
           }
-        </div>
-        @if (showUnitCost) {
-          <app-currency-amount-input
-            id="mov-unit-cost"
-            label="Costo unitario (de la unidad que moviste)"
-            [amount]="movForm.unitCost"
-            [currency]="movForm.unitCostCurrency"
-            hint="Se usa para valorizar el ingreso y actualizar el costo del producto."
-            (amountChange)="movForm.unitCost = $event"
-            (currencyChange)="movForm.unitCostCurrency = $event"
-          />
-        }
-        @if (showUnitPrice) {
-          <app-currency-amount-input
-            id="mov-unit-price"
-            label="Precio de venta unitario (por unidad suelta)"
-            [amount]="movForm.unitPrice"
-            [currency]="movForm.unitPriceCurrency"
-            hint="Ajusta a cómo se vende una unidad suelta al abrir la presentación. Déjalo en 0 para no cambiarlo."
-            (amountChange)="movForm.unitPrice = $event"
-            (currencyChange)="movForm.unitPriceCurrency = $event"
-          />
-          @if (unitPriceReference; as reference) {
-            <p class="mt-1 text-[11px] text-slate-400">{{ reference }}</p>
+
+          @if (selectedProduct && movementError; as error) {
+            <p class="flex items-start gap-1 rounded-lg bg-rose-50 px-2 py-1.5 text-xs font-medium text-rose-700">
+              <app-icon name="alert" size="h-3.5 w-3.5" />
+              {{ error }}
+            </p>
           }
-        }
-        <div>
-          <label class="label">Motivo</label>
-          <input class="input" [(ngModel)]="movForm.reason" placeholder="Opcional" />
-        </div>
+
+          <p class="text-[11px] leading-relaxed text-slate-400">
+            El movimiento queda en la trazabilidad y no se edita: una corrección se
+            registra como un movimiento nuevo.
+          </p>
+        </aside>
       </div>
 
-      <div modalFooter class="flex w-full justify-end gap-2">
-        <button type="button" class="btn-secondary" (click)="closeMovement()">Cancelar</button>
-        <button type="button" class="btn-primary" [disabled]="movSaving()" (click)="submitMovement()">
-          {{ movSaving() ? 'Guardando…' : 'Registrar' }}
-        </button>
+      <div modalFooter class="flex w-full flex-wrap items-center justify-between gap-2">
+        <p class="text-[11px] text-slate-400">
+          @if (selectedProduct) {
+            {{ movSaving() ? 'Guardando movimiento…' : 'Se guardará en el historial de inventario.' }}
+          } @else {
+            Selecciona un producto para continuar.
+          }
+        </p>
+        <div class="flex gap-2">
+          <button type="button" class="btn-secondary" (click)="closeMovement()">Cancelar</button>
+          <button
+            type="button"
+            class="btn-primary"
+            [disabled]="!canSubmitMovement"
+            (click)="submitMovement()"
+          >
+            @if (movSaving()) {
+              Guardando…
+            } @else {
+              <app-icon
+                [name]="movForm.type === 'IN' ? 'trend-up' : movForm.type === 'OUT' ? 'trend-down' : 'refresh'"
+                size="h-4 w-4"
+              />
+              {{ movementSubmitLabel }}
+            }
+          </button>
+        </div>
       </div>
     </app-modal>
 

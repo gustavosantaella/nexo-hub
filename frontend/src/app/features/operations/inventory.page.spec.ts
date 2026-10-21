@@ -261,4 +261,67 @@ describe('InventoryPage (registrar movimiento)', () => {
       'Actual: Bs 350.00 por unidad suelta · la presentación (24 unidades) se cobra en el catálogo a Bs 970.00',
     );
   });
+
+  it('busca el producto por nombre o SKU y elige la primera coincidencia', () => {
+    const { page } = mount();
+
+    page.openMovement();
+    expect(page.productOpen()).toBe(true);
+    expect(page.productMatches.length).toBe(2);
+
+    page.onProductQuery('REFR');
+    expect(page.productMatches.map((item) => item.id)).toEqual(['p-suelto']);
+
+    page.selectFirstProductMatch();
+    expect(page.movForm.productId).toBe('p-suelto');
+    expect(page.productQuery()).toBe('Refresco');
+    expect(page.productOpen()).toBe(false);
+  });
+
+  it('bloquea el registro sin producto o con una salida mayor al stock', () => {
+    const { page } = mount();
+
+    page.openMovement();
+    expect(page.movementError).toBe('Selecciona un producto para continuar.');
+    expect(page.canSubmitMovement).toBe(false);
+    page.submitMovement();
+    http.expectNone(
+      (request) =>
+        request.method === 'POST' && request.url === `${API}/inventory/movements`,
+    );
+
+    page.selectProduct(CAJA);
+    page.setMovementType('OUT');
+    page.movForm.quantity = 3;
+
+    expect(page.movementError).toBe('La salida supera el stock disponible.');
+    expect(page.canSubmitMovement).toBe(false);
+  });
+
+  it('al pasar a ajuste precarga el stock actual como stock final', () => {
+    const { page } = mount();
+
+    page.openMovement(CAJA);
+    page.setMovementType('ADJUSTMENT');
+
+    // 48 unidades de stock son 2 cajas de 24.
+    expect(page.movForm.quantity).toBe(2);
+    expect(page.quantityLabel).toBe('Stock final');
+    expect(page.movementStockAfter).toBe(48);
+    expect(page.movementSubmitLabel).toBe('Fijar stock final');
+  });
+
+  it('el modal abierto muestra la ficha del producto y el resumen del stock', () => {
+    const { fixture, page } = mount();
+
+    page.openMovement(CAJA);
+    fixture.detectChanges();
+
+    const text = fixture.nativeElement.textContent as string;
+    expect(text).toContain('Registrar entrada');
+    expect(text).toContain('Malta (caja 24)');
+    expect(text).toContain('Stock final');
+    expect(text).toContain('3 cajas · 72 UND');
+    expect(text).toContain('Disponible');
+  });
 });

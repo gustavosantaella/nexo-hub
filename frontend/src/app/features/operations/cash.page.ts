@@ -5,6 +5,7 @@ import type { PaginationMeta } from '../../core/models/api.model';
 import type {
   CashCurrentResponse,
   CashMovement,
+  CashMovementPartPayload,
   CashMovementPayload,
   CashOpeningLine,
   CashSession,
@@ -16,6 +17,7 @@ import {
   CASH_IN_CATEGORIES,
   CASH_OUT_CATEGORIES,
   PAYMENT_METHOD_LABELS,
+  needsPaymentProof,
 } from '../../core/constants/domain';
 import { BASE_CURRENCY, MIXED_CURRENCY_CODE } from '../../core/constants/currency';
 import { CurrencySelectComponent } from '../../shared/components/currency-select.component';
@@ -35,6 +37,7 @@ import {
   sumMoney,
   truncate,
 } from '../../core/utils/format';
+import { toPaymentProofDataUrl } from '../../core/utils/image';
 import { EmptyStateComponent, LoaderComponent } from '../../shared/components/feedback.component';
 import { IconComponent } from '../../shared/components/icon.component';
 import { DialogComponent } from '../../shared/components/dialog.component';
@@ -68,6 +71,13 @@ interface CashMethodCard {
   value: string;
   label: string;
   icon: string;
+}
+
+/** Parte de un pago mixto tal como se captura en el formulario. */
+interface CashMovementPartDraft {
+  method: string;
+  currency: string;
+  amount: number;
 }
 
 const EMPTY_META: PaginationMeta = {
@@ -125,6 +135,8 @@ export class CashPage implements OnInit {
   readonly dialogView = this.preferences.dialogView;
   /** Monedas configuradas (para el filtro del historial). */
   readonly currencies = this.rates.currencies;
+  /** Monedas habilitadas para cobrar/pagar (incluye la base). */
+  readonly enabledCurrencies = this.rates.enabledCurrencies;
 
   readonly categoryLabels = CASH_CATEGORY_LABELS;
   /**
@@ -275,13 +287,36 @@ export class CashPage implements OnInit {
 
   readonly movOpen = signal(false);
   readonly saving = signal(false);
-  movForm = {
-    category: 'SALE' as CashCategory,
-    type: 'IN' as 'IN' | 'OUT',
+  /** `true` mientras se comprime la foto del comprobante elegida. */
+  readonly paymentPhotoBusy = signal(false);
+  /** Maximo de partes de un pago mixto (igual que el limite del backend). */
+  readonly maxMovementParts = 8;
+  movForm: {
+    category: CashCategory;
+    type: 'IN' | 'OUT';
+    paymentMethod: string;
+    amount: number;
+    currency: string;
+    description: string;
+    /** Partes del pago cuando el metodo es MIXED. */
+    parts: CashMovementPartDraft[];
+    /** Referencia bancaria del comprobante (transferencia / Yape / Plin). */
+    paymentReference: string;
+    /** Foto opcional del comprobante como data URL. */
+    paymentPhotoUrl: string | null;
+    /** Nombre del archivo elegido (solo se muestra en el formulario). */
+    paymentPhotoName: string;
+  } = {
+    category: 'SALE',
+    type: 'IN',
     paymentMethod: 'CASH',
     amount: 0,
     currency: BASE_CURRENCY.code as string,
     description: '',
+    parts: [],
+    paymentReference: '',
+    paymentPhotoUrl: null,
+    paymentPhotoName: '',
   };
 
   readonly closeOpen = signal(false);
@@ -799,13 +834,40 @@ export class CashPage implements OnInit {
     return CASH_IN_CATEGORIES.includes(this.movForm.category) ? 'IN' : 'OUT';
   }
 
+  /** `true` cuando el movimiento se cobra con varias formas de pago. */
+  get isMixedMovement(): boolean {
+    return this.movForm.paymentMethod === 'MIXED';
+  }
+
+  /** Partes del pago mixto que realmente tienen monto. */
+  get movementParts(): CashMovementPartDraft[] {
+    return this.movForm.parts.filter((part) => (Number(part.amount) || 0) > 0);
+  }
+
+  /** Partes del pago mixto que se entregan en efectivo. */
+  get movementCashPartCount(): number {
+    return this.movementParts.filter((part) => part.method === 'CASH').length;
+  }
+
   get movementAmount(): number {
     const amount = Number(this.movForm.amount);
     return Number.isFinite(amount) && amount > 0 ? amount : 0;
   }
 
-  /** Equivalente del monto en la moneda base contable (USD). */
+  /** `true` si hay algo que registrar (monto simple o alguna parte del mixto). */
+  get movementHasAmount(): boolean {
+    return this.isMixedMovement
+      ? this.movementParts.length > 0
+      : this.movementAmount > 0;
+  }
+
+  /**
+   * Equivalente del movimiento en la moneda base contable (USD).
+   * En un pago mixto es la suma de todas las partes, cada una convertida desde
+   * su propia moneda.
+   */
   get movementBase(): number | null {
+    if (this.isMixedMovement) return this.movementPartsBase;
     if (this.movementAmount <= 0) return 0;
     return this.rates.toBase(
       this.movementAmount,
@@ -814,10 +876,60 @@ export class CashPage implements OnInit {
     );
   }
 
-  /** Efecto del movimiento sobre el arqueo, en la moneda base. */
+  /** Total del pago mixto en la moneda base (USD). */
+  get movementPartsBase(): number | null {
+    const parts = this.movementParts;
+    if (parts.length === 0) return 0;
+
+    let total = 0;
+    for (const part of parts) {
+      const base = this.movementPartBase(part);
+      if (base == null) return null;
+      total = sumMoney([total, base]);
+    }
+    return total;
+  }
+
+  /** Equivalente en USD de una parte del pago mixto. */
+  movementPartBase(part: CashMovementPartDraft): number | null {
+    const amount = Number(part.amount) || 0;
+    if (amount <= 0) return 0;
+    return this.rates.toBase(amount, part.currency, BCV_USD_RATE_KEY);
+  }
+
+  /** Equivalente de una parte en la moneda de visualización. */
+  movementPartBaseText(part: CashMovementPartDraft): string {
+    const base = this.movementPartBase(part);
+    if (base == null) return 'Sin tasa disponible';
+    const display = this.aggregateDisplay(base);
+    return this.moneyIn(display == null ? base : display, displayBaseCode());
+  }
+
+  /**
+   * Efecto del movimiento sobre el efectivo del cajón, en moneda base.
+   * En un pago mixto solo cuentan las partes cobradas en efectivo.
+   */
+  get movementCashBase(): number | null {
+    if (!this.isMixedMovement) {
+      return this.movementAffectsCash ? this.movementBase : 0;
+    }
+
+    const cashParts = this.movementParts.filter((part) => part.method === 'CASH');
+    if (cashParts.length === 0) return 0;
+
+    let total = 0;
+    for (const part of cashParts) {
+      const base = this.movementPartBase(part);
+      if (base == null) return null;
+      total = sumMoney([total, base]);
+    }
+    return total;
+  }
+
+  /** Efecto firmado del movimiento sobre el arqueo, en la moneda base. */
   get movementSignedBase(): number | null {
     if (!this.movementAffectsCash) return 0;
-    const base = this.movementBase;
+    const base = this.movementCashBase;
     if (base == null) return null;
     return this.movementType === 'IN' ? base : -base;
   }
@@ -835,13 +947,31 @@ export class CashPage implements OnInit {
 
   /** Efecto del movimiento en la moneda de visualización. */
   get movementAmountDisplay(): number | null {
+    if (this.isMixedMovement) {
+      const base = this.movementBase;
+      if (base == null) return null;
+      const display = this.aggregateDisplay(base);
+      if (display == null) return null;
+      return this.movementType === 'IN' ? display : -display;
+    }
+
     const signed =
       this.movementType === 'IN' ? this.movementAmount : -this.movementAmount;
     return this.toDisplay(signed, this.movForm.currency);
   }
 
-  /** Monto original con signo, listo para el resumen. */
+  /** Monto con signo, listo para el resumen. */
   get movementAmountText(): string {
+    if (this.isMixedMovement) {
+      if (this.movementParts.length === 0) return '—';
+      const display = this.movementAmountDisplay;
+      if (display == null) return '—';
+      return `${this.movementType === 'IN' ? '+' : '−'} ${this.moneyIn(
+        Math.abs(display),
+        displayBaseCode(),
+      )}`;
+    }
+
     if (this.movementAmount <= 0) return '—';
     return `${this.movementType === 'IN' ? '+' : '−'} ${this.moneyIn(
       this.movementAmount,
@@ -849,8 +979,17 @@ export class CashPage implements OnInit {
     )}`;
   }
 
-  /** Equivalente del movimiento en la moneda de visualización. */
+  /** Detalle del monto (equivalente, pagos o moneda original). */
   get movementBaseText(): string {
+    if (this.isMixedMovement) {
+      const count = this.movementParts.length;
+      if (count === 0) return 'Agrega al menos un pago';
+      const cash = this.movementCashPartCount;
+      return `${count} ${count === 1 ? 'pago' : 'pagos'} · ${
+        cash > 0 ? `${cash} en efectivo` : 'sin efectivo'
+      }`;
+    }
+
     const display = this.movementAmountDisplay;
     if (display == null) return 'Sin tasa disponible';
     return `${this.movementType === 'IN' ? '+' : '−'} ${this.moneyIn(
@@ -859,9 +998,32 @@ export class CashPage implements OnInit {
     )}`;
   }
 
-  /** `true` si el método elegido mueve el efectivo del cajón. */
+  /** `true` si alguna parte del movimiento mueve el efectivo del cajón. */
   get movementAffectsCash(): boolean {
+    if (this.isMixedMovement) {
+      return this.movementParts.some((part) => part.method === 'CASH');
+    }
     return this.movForm.paymentMethod === 'CASH';
+  }
+
+  /** `true` si el movimiento exige referencia bancaria (transferencia/Yape/Plin). */
+  get movementNeedsProof(): boolean {
+    if (this.isMixedMovement) {
+      return this.movementParts.some((part) => needsPaymentProof(part.method));
+    }
+    return needsPaymentProof(this.movForm.paymentMethod);
+  }
+
+  /** Monedas del movimiento que no tienen tasa configurada. */
+  get movementMissingRates(): string[] {
+    const codes = this.isMixedMovement
+      ? this.movementParts.map((part) => part.currency)
+      : this.movementAmount > 0
+        ? [this.movForm.currency]
+        : [];
+    return Array.from(new Set(codes)).filter(
+      (code) => this.rates.toBase(1, code, BCV_USD_RATE_KEY) === null,
+    );
   }
 
   get movementStatus(): { label: string; classes: string } {
@@ -880,6 +1042,11 @@ export class CashPage implements OnInit {
   }
 
   get paymentMethodHint(): string {
+    if (this.isMixedMovement) {
+      return this.movementAffectsCash
+        ? 'Solo la parte en efectivo actualiza el cajón; el resto queda en el arqueo por método.'
+        : 'Ninguna parte es en efectivo: el cajón no cambia y todo queda en el arqueo por método.';
+    }
     if (this.movementAffectsCash) {
       return 'El efectivo del cajón se actualiza al registrar el movimiento.';
     }
@@ -891,21 +1058,49 @@ export class CashPage implements OnInit {
 
   /** Error que impide registrar el movimiento; `null` si todo está correcto. */
   get movementError(): string | null {
-    if (!(this.movementAmount > 0)) {
-      return 'Indica un monto mayor a 0.';
+    if (this.paymentPhotoBusy()) {
+      return 'Espera a que termine de procesarse la foto del comprobante.';
     }
-    if (this.movementBase == null) {
-      return `No hay tasa configurada para ${this.movForm.currency}. Configúrala en Configuración → Monedas.`;
+
+    if (this.isMixedMovement) {
+      if (this.movForm.parts.some((part) => Number(part.amount) < 0)) {
+        return 'Los montos de las partes no pueden ser negativos.';
+      }
+      if (this.movementParts.length === 0) {
+        return 'Agrega al menos una forma de pago con monto.';
+      }
+      if (this.movementMissingRates.length > 0) {
+        return `No hay tasa configurada para ${this.movementMissingRates.join(
+          ', ',
+        )}. Configúrala en Configuración → Monedas.`;
+      }
+    } else {
+      if (!(this.movementAmount > 0)) {
+        return 'Indica un monto mayor a 0.';
+      }
+      if (this.movementBase == null) {
+        return `No hay tasa configurada para ${this.movForm.currency}. Configúrala en Configuración → Monedas.`;
+      }
     }
+
+    if (
+      this.movementNeedsProof &&
+      !/^\d{4,6}$/.test(this.movForm.paymentReference.trim())
+    ) {
+      return 'Escribe la referencia del comprobante: de 4 a 6 dígitos.';
+    }
+
+    const cashBase = this.movementCashBase;
     if (
       this.movementAffectsCash &&
       this.movementType === 'OUT' &&
-      this.movementBase > Math.max(this.expectedCash, 0) + 0.005
+      cashBase != null &&
+      cashBase > Math.max(this.expectedCash, 0) + 0.005
     ) {
       const available = this.aggregateDisplay(Math.max(this.expectedCash, 0));
       const amount =
         available == null ? '0' : this.moneyIn(available, displayBaseCode());
-      return `La salida supera el efectivo esperado en caja (${amount}). Ajusta el monto o registra el movimiento con otro método.`;
+      return `La salida en efectivo supera lo disponible en caja (${amount}). Ajusta el monto o registra el movimiento con otro método.`;
     }
     return null;
   }
@@ -974,7 +1169,103 @@ export class CashPage implements OnInit {
   }
 
   setPaymentMethod(method: string): void {
+    const previous = this.movForm.paymentMethod;
+    if (previous === method) return;
     this.movForm.paymentMethod = method;
+
+    if (method === 'MIXED') {
+      // Se arranca con una parte por el monto que ya estaba escrito: en la
+      // mayoria de los casos el cajero solo agrega la segunda forma de pago.
+      if (this.movForm.parts.length === 0) {
+        const amount = this.movementAmount;
+        this.movForm.parts = [
+          {
+            method: 'CASH',
+            currency: this.movForm.currency || BASE_CURRENCY.code,
+            amount: amount > 0 ? amount : 0,
+          },
+        ];
+      }
+      return;
+    }
+
+    // Al volver a un pago simple se conserva la primera parte como monto y
+    // moneda del movimiento; el resto del desglose queda descartado.
+    if (previous === 'MIXED') {
+      const first = this.movForm.parts[0];
+      if (first) {
+        this.movForm.amount = Number(first.amount) || 0;
+        this.movForm.currency = first.currency || this.movForm.currency;
+      }
+    }
+  }
+
+  /** Agrega una parte al pago mixto (hasta el limite del backend). */
+  addMovementPart(): void {
+    if (this.movForm.parts.length >= this.maxMovementParts) {
+      this.toast.error(
+        `Un pago mixto admite hasta ${this.maxMovementParts} partes.`,
+      );
+      return;
+    }
+    const previous = this.movForm.parts[this.movForm.parts.length - 1];
+    this.movForm.parts = [
+      ...this.movForm.parts,
+      {
+        method: 'CASH',
+        currency: previous?.currency || this.movForm.currency || BASE_CURRENCY.code,
+        amount: 0,
+      },
+    ];
+  }
+
+  /** Quita una parte del pago mixto (siempre queda al menos una). */
+  removeMovementPart(index: number): void {
+    if (this.movForm.parts.length <= 1) return;
+    this.movForm.parts = this.movForm.parts.filter((_, i) => i !== index);
+  }
+
+  /** La referencia bancaria solo admite digitos (4 a 6). */
+  onPaymentReferenceChange(value: string): void {
+    this.movForm.paymentReference = String(value ?? '')
+      .replace(/\D/g, '')
+      .slice(0, 6);
+  }
+
+  /** Comprime y adjunta la foto del comprobante elegida. */
+  async onPaymentPhotoSelected(event: Event): Promise<void> {
+    const input = event.target as HTMLInputElement;
+    const file = input.files?.[0];
+    // Permite volver a elegir el mismo archivo despues de quitarlo.
+    input.value = '';
+    if (!file) return;
+
+    if (!file.type.startsWith('image/')) {
+      this.toast.error('El comprobante debe ser una imagen (JPG, PNG o WebP).');
+      return;
+    }
+    if (file.size > 12 * 1024 * 1024) {
+      this.toast.error('La foto del comprobante no puede superar los 12 MB.');
+      return;
+    }
+
+    this.paymentPhotoBusy.set(true);
+    try {
+      this.movForm.paymentPhotoUrl = await toPaymentProofDataUrl(file);
+      this.movForm.paymentPhotoName = file.name;
+    } catch {
+      this.toast.error('No se pudo procesar la foto del comprobante.');
+      this.movForm.paymentPhotoUrl = null;
+      this.movForm.paymentPhotoName = '';
+    } finally {
+      this.paymentPhotoBusy.set(false);
+    }
+  }
+
+  /** Quita la foto del comprobante (la referencia se conserva). */
+  removePaymentPhoto(): void {
+    this.movForm.paymentPhotoUrl = null;
+    this.movForm.paymentPhotoName = '';
   }
 
   /** Marca o desmarca un motivo sugerido sin pisar un texto libre. */
@@ -999,6 +1290,10 @@ export class CashPage implements OnInit {
       amount: 0,
       currency: BASE_CURRENCY.code,
       description: '',
+      parts: [],
+      paymentReference: '',
+      paymentPhotoUrl: null,
+      paymentPhotoName: '',
     };
     this.movOpen.set(true);
   }
@@ -1015,18 +1310,45 @@ export class CashPage implements OnInit {
       return;
     }
     this.saving.set(true);
+
     const payload: CashMovementPayload = {
       category: this.movForm.category,
-      paymentMethod: this.movForm.paymentMethod as CashMovementPayload['paymentMethod'],
-      amount: this.movementAmount,
-      currency: this.movForm.currency || undefined,
       description: this.movForm.description || undefined,
     };
     if (this.needsManualType) payload.type = this.movForm.type;
+
+    // El comprobante viaja una sola vez: el backend lo adjunta a las partes que
+    // se cobran por transferencia / Yape / Plin.
+    if (this.movementNeedsProof) {
+      payload.paymentReference = this.movForm.paymentReference.trim();
+      if (this.movForm.paymentPhotoUrl) {
+        payload.paymentPhotoUrl = this.movForm.paymentPhotoUrl;
+      }
+    }
+
+    if (this.isMixedMovement) {
+      payload.paymentMethod = 'MIXED';
+      payload.parts = this.movementParts.map((part) => ({
+        paymentMethod:
+          part.method as CashMovementPartPayload['paymentMethod'],
+        amount: Number(part.amount),
+        currency: part.currency || undefined,
+      }));
+    } else {
+      payload.paymentMethod =
+        this.movForm.paymentMethod as CashMovementPayload['paymentMethod'];
+      payload.amount = this.movementAmount;
+      payload.currency = this.movForm.currency || undefined;
+    }
+
     this.cash.addMovement(payload).subscribe({
       next: () => {
         this.saving.set(false);
-        this.toast.success('Movimiento registrado');
+        this.toast.success(
+          this.isMixedMovement
+            ? 'Movimiento mixto registrado'
+            : 'Movimiento registrado',
+        );
         this.closeMovement();
         this.load();
         this.loadMovements();
