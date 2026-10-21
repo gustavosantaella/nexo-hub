@@ -1165,6 +1165,32 @@ describe('PosComponent (vista de cajero)', () => {
   });
 
   /**
+   * La barra del cajero lleva las dos tasas oficiales del BCV (dólar y euro) a
+   * la vista, para saber de una vez a cuánto están sin entrar a Configuración.
+   * Mientras las tasas no hayan cargado no se pinta ningún badge.
+   */
+  it('muestra las tasas oficiales del BCV del día en la barra del cajero', () => {
+    const { fixture } = mount();
+
+    expect(fixture.nativeElement.querySelectorAll('[data-bcv-rate]').length).toBe(0);
+
+    TestBed.inject(RatesService).load();
+    http.expectOne(`${API}/rates`).flush(RATES);
+    fixture.detectChanges();
+
+    const badges = Array.from(
+      fixture.nativeElement.querySelectorAll('[data-bcv-rate]'),
+    ) as HTMLElement[];
+    expect(badges.map((badge) => badge.textContent?.trim())).toEqual([
+      'BCV $ 876.80',
+      'BCV € 982.00',
+    ]);
+    // Cada badge lleva la tasa exacta del BCV y la fecha publicada en el tooltip.
+    expect(badges[0].getAttribute('title')).toBe('BCV Dólar: Bs 876.7976 · 2026-10-13');
+    expect(badges[1].getAttribute('title')).toBe('BCV Euro: Bs 982.0045 · 2026-10-13');
+  });
+
+  /**
    * Configuración → Cajero permite fijar la **tasa de cobro** de la empresa (el
    * BCV): el cajero cobra el precio que LEE en pantalla —los bolívares— pasado a
    * esa tasa, no los dólares guardados del catálogo. El cobro viaja con la tasa

@@ -5,6 +5,7 @@ import {
   OnDestroy,
   OnInit,
   Output,
+  computed,
   inject,
   signal,
 } from '@angular/core';
@@ -39,6 +40,7 @@ import type {
   PaymentMethod,
   SalePriceBreakdown,
 } from '../../core/models/operations.model';
+import type { RateKey } from '../../core/models/rates.model';
 import { AuthService } from '../../core/services/auth.service';
 import { CashService } from '../../core/services/cash.service';
 import {
@@ -68,6 +70,7 @@ import {
   moneyIn,
   moneyLoaded,
   mulMoney,
+  rate,
   sumMoney,
 } from '../../core/utils/format';
 import {
@@ -354,6 +357,18 @@ interface ChargeLineDraft {
           </label>
 
           <div class="ml-auto flex items-center gap-2">
+            <!-- Tasas oficiales del BCV a la vista: el cajero sabe de una vez a
+                 cuánto están el dólar y el euro, que es a lo que se cobra. -->
+            @for (item of bcvRates(); track item.key) {
+              <span
+                class="badge"
+                [class]="item.badge"
+                [title]="item.title"
+                [attr.data-bcv-rate]="item.key"
+              >
+                {{ item.label }} {{ item.text }}
+              </span>
+            }
             <span
               class="badge"
               [class]="cashOpen() ? 'bg-emerald-100 text-emerald-700' : 'bg-rose-100 text-rose-700'"
@@ -2146,6 +2161,35 @@ export class PosComponent implements OnInit, OnDestroy {
   chargeRateLabel(): string | null {
     return RATE_META[this.chargeRateKey()]?.label ?? null;
   }
+
+  /**
+   * Tasas oficiales del **BCV** del día (dólar y euro) para la barra del cajero.
+   *
+   * Son la referencia del cobro: la tasa personalizada del local solo infla el
+   * precio de vitrina en bolívares, mientras que el cobro y las conversiones
+   * oficiales van a estas dos. Se muestran como badges arriba para que el cajero
+   * sepa a cuánto están sin entrar a Configuración; mientras las tasas no hayan
+   * cargado, la lista va vacía y los badges no se pintan.
+   */
+  readonly bcvRates = computed(() => {
+    const current = this.rates.bcv()?.current;
+    const rows: { key: RateKey; rate: number }[] = [
+      { key: 'BCV_USD', rate: Number(current?.usd ?? 0) },
+      { key: 'BCV_EUR', rate: Number(current?.eur ?? 0) },
+    ];
+    return rows
+      .filter((row) => row.rate > 0)
+      .map((row) => ({
+        key: row.key,
+        label: RATE_META[row.key].shortLabel,
+        badge: RATE_META[row.key].badge,
+        // Dos decimales, como el resumen de tasas del cobro y el selector de monedas.
+        text: rate(row.rate, 2),
+        title: current?.date
+          ? `${RATE_META[row.key].label}: Bs ${rate(row.rate)} · ${current.date}`
+          : `${RATE_META[row.key].label}: Bs ${rate(row.rate)}`,
+      }));
+  });
 
   readonly loading = signal(false);
   readonly loadingTables = signal(false);
