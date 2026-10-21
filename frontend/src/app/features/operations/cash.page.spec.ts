@@ -3,7 +3,12 @@ import {
   HttpTestingController,
   provideHttpClientTesting,
 } from '@angular/common/http/testing';
-import { TestBed, type ComponentFixture } from '@angular/core/testing';
+import {
+  TestBed,
+  fakeAsync,
+  tick,
+  type ComponentFixture,
+} from '@angular/core/testing';
 import { provideRouter } from '@angular/router';
 import { environment } from '../../../environments/environment';
 import type { PaginationMeta } from '../../core/models/api.model';
@@ -170,6 +175,76 @@ describe('CashPage (fondo inicial multimoneda)', () => {
 
     return fixture.componentInstance;
   }
+
+  it('actualiza la caja sin recargar la página y respeta 10 segundos de espera', fakeAsync(() => {
+    const page = mount();
+
+    const refreshButton = Array.from(
+      fixture.nativeElement.querySelectorAll('button') as NodeListOf<HTMLButtonElement>,
+    ).find((button) => button.textContent?.includes('Actualizar'));
+    expect(refreshButton).toBeTruthy();
+
+    refreshButton!.click();
+
+    http.expectOne(`${API}/rates?refresh=true`).flush(SNAPSHOT);
+    http
+      .expectOne((request) => request.url === `${API}/cash/current`)
+      .flush({ session: null, summary: null, reconciliation: null });
+    http
+      .expectOne((request) => request.url === `${API}/cash/movements`)
+      .flush({ items: [], meta: META });
+    http
+      .expectOne((request) => request.url === `${API}/cash/sessions`)
+      .flush({ items: [], meta: META });
+
+    fixture.detectChanges();
+
+    expect(page.refreshing()).toBe(false);
+    expect(page.loading()).toBe(false);
+    expect(page.movLoading()).toBe(false);
+    expect(page.sesLoading()).toBe(false);
+    expect(page.refreshCooldown()).toBe(10);
+    expect(page.refreshDisabled()).toBe(true);
+    expect(refreshButton!.disabled).toBe(true);
+    expect(refreshButton!.textContent).toContain('Actualizar en 10 s');
+
+    // Aunque se invoque de nuevo, durante la espera no se lanza otra recarga.
+    page.refresh();
+    http.expectNone((request) => request.url === `${API}/cash/current`);
+
+    tick(5_000);
+    fixture.detectChanges();
+    expect(page.refreshCooldown()).toBe(5);
+    expect(refreshButton!.textContent).toContain('Actualizar en 5 s');
+
+    tick(5_000);
+    fixture.detectChanges();
+    expect(page.refreshCooldown()).toBe(0);
+    expect(page.refreshDisabled()).toBe(false);
+    expect(refreshButton!.disabled).toBe(false);
+    expect(refreshButton!.textContent).toContain('Actualizar');
+
+    // Cumplidos los 10 segundos, vuelve a estar disponible.
+    refreshButton!.click();
+
+    http.expectOne(`${API}/rates?refresh=true`).flush(SNAPSHOT);
+    http
+      .expectOne((request) => request.url === `${API}/cash/current`)
+      .flush({ session: null, summary: null, reconciliation: null });
+    http
+      .expectOne((request) => request.url === `${API}/cash/movements`)
+      .flush({ items: [], meta: META });
+    http
+      .expectOne((request) => request.url === `${API}/cash/sessions`)
+      .flush({ items: [], meta: META });
+
+    fixture.detectChanges();
+    expect(page.refreshCooldown()).toBe(10);
+
+    // Deja que termine el segundo cooldown para no dejar temporizadores vivos.
+    tick(10_000);
+    expect(page.refreshCooldown()).toBe(0);
+  }));
 
   it('abre el formulario con una linea en la moneda base', () => {
     const page = mount();

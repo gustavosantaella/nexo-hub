@@ -4,6 +4,21 @@
       subtitle="Control de la sesión de caja y arqueo en vivo"
       icon="wallet"
     >
+      <button
+        type="button"
+        class="btn-secondary"
+        [disabled]="refreshDisabled()"
+        (click)="refresh()"
+      >
+        <app-icon name="refresh" size="h-4 w-4" />
+        @if (refreshCooldown() > 0) {
+          Actualizar en {{ refreshCooldown() }} s
+        } @else if (refreshing()) {
+          Actualizando…
+        } @else {
+          Actualizar
+        }
+      </button>
       <a routerLink="/panel/caja/pos" class="btn-primary">
         <app-icon name="shopping-cart" size="h-4 w-4" />
         Vista de cajero

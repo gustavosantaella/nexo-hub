@@ -1,4 +1,12 @@
-import { ChangeDetectionStrategy, Component, OnInit, inject, signal } from '@angular/core';
+import {
+  ChangeDetectionStrategy,
+  Component,
+  OnDestroy,
+  OnInit,
+  computed,
+  inject,
+  signal,
+} from '@angular/core';
 import { FormsModule } from '@angular/forms';
 import { RouterLink } from '@angular/router';
 import { firstValueFrom } from 'rxjs';
@@ -91,6 +99,9 @@ const EMPTY_META: PaginationMeta = {
   hasNextPage: false,
   hasPreviousPage: false,
 };
+
+/** Segundos minimos entre dos recargas manuales de la caja. */
+const REFRESH_COOLDOWN_MS = 10_000;
 
 /**
  * Pagina de caja: arqueo de la sesion actual, movimientos e historial. La vista
@@ -350,6 +361,27 @@ export class CashPage implements OnInit {
   private sesPage = 1;
   private sesLimit = 10;
 
+  /**
+   * `true` mientras la recarga manual tiene alguna petición en vuelo: desactiva
+   * el botón «Actualizar» para no lanzar la misma tanda dos veces.
+   */
+  readonly refreshing = computed(
+    () =>
+      this.loading() ||
+      this.movLoading() ||
+      this.sesLoading() ||
+      this.rates.loading(),
+  );
+
+  /** Segundos que faltan para poder volver a actualizar la caja. */
+  readonly refreshCooldown = signal(0);
+  /** Deshabilita «Actualizar» mientras recarga o durante el cooldown. */
+  readonly refreshDisabled = computed(
+    () => this.refreshing() || this.refreshCooldown() > 0,
+  );
+  private refreshAvailableAt = 0;
+  private refreshTimer: ReturnType<typeof setInterval> | null = null;
+
   readonly detailOpen = signal(false);
   readonly detailSession = signal<CashSession | null>(null);
 
@@ -362,6 +394,47 @@ export class CashPage implements OnInit {
     this.load();
     this.loadMovements();
     this.loadSessions();
+  }
+
+  ngOnDestroy(): void {
+    this.clearRefreshTimer();
+  }
+
+  /**
+   * Recarga en sitio todo lo que muestra la caja: tasas, sesión y arqueo,
+   * movimientos e historial de sesiones. No toca filtros ni paginación, y evita
+   * que el operador tenga que recargar la página completa. Solo se permite una
+   * vez cada 10 segundos.
+   */
+  refresh(): void {
+    if (this.refreshDisabled()) return;
+    this.rates.load(true);
+    this.load();
+    this.loadMovements();
+    this.loadSessions();
+    this.startRefreshCooldown();
+  }
+
+  /** Arranca la cuenta regresiva que bloquea el botón durante 10 segundos. */
+  private startRefreshCooldown(): void {
+    this.clearRefreshTimer();
+    this.refreshAvailableAt = Date.now() + REFRESH_COOLDOWN_MS;
+    this.refreshCooldown.set(Math.ceil(REFRESH_COOLDOWN_MS / 1000));
+    this.refreshTimer = setInterval(() => {
+      const remaining = this.refreshAvailableAt - Date.now();
+      if (remaining <= 0) {
+        this.clearRefreshTimer();
+        this.refreshCooldown.set(0);
+        return;
+      }
+      this.refreshCooldown.set(Math.ceil(remaining / 1000));
+    }, 250);
+  }
+
+  private clearRefreshTimer(): void {
+    if (!this.refreshTimer) return;
+    clearInterval(this.refreshTimer);
+    this.refreshTimer = null;
   }
 
   load(): void {
