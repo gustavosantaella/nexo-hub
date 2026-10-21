@@ -70,6 +70,7 @@ model Company {
   cashMovements      CashMovement[]
   notificationSettings NotificationSetting?
   cancellationOtps   CancellationOtp[]
+  backgroundJobs     BackgroundJob[]
 
   @@index([name])
   @@map("companies")
@@ -362,8 +363,12 @@ model Order {
   companyId     String
   code          String
   customerId    String?
+  // Nombre con el que el cajero identifica el pedido (opcional).
+  name          String?
   type          String   @default("DINE_IN") // DINE_IN | TAKEAWAY | DELIVERY
-  status        String   @default("PENDING") // PENDING | CONFIRMED | PREPARING | READY | COMPLETED | CANCELLED
+  // PROCESSING: el cobro ya esta en la cola y su worker lo esta aplicando.
+  // Es un estado interno: no se asigna desde el cambio de estado manual.
+  status        String   @default("PENDING") // PENDING | CONFIRMED | PREPARING | READY | PROCESSING | COMPLETED | CANCELLED
   tableNumber   String?
   notes         String?
   subtotal      Int      @default(0)
@@ -493,6 +498,10 @@ model OrderPayment {
   paymentReference String?
   paymentPhotoUrl  String?
   cashMovementId String?  @unique
+  // Clave de idempotencia de la cola: si el worker se cae despues de guardar el
+  // pago y antes de marcar el job como terminado, al reintentarlo se detecta
+  // este registro y NO se cobra dos veces.
+  idempotencyKey String?  @unique
   note           String?
   createdById    String?
   createdAt      DateTime @default(now())
@@ -878,6 +887,33 @@ model NotificationSetting {
   @@index([telegramChatId])
   @@index([telegramLinkCode])
   @@map("notification_settings")
+}
+
+// ============================ Cola de trabajos =============================
+// Cola persistente y transaccional. El endpoint que cobra solo ENCOLA el pago
+// (deja el pedido en PROCESSING) y responde de inmediato; un worker en proceso
+// aplica el cobro y luego encola el aviso de Telegram. Al vivir en la misma base
+// de datos, un reinicio no pierde trabajos pendientes.
+model BackgroundJob {
+  id          String    @id @default(cuid())
+  companyId   String?
+  type        String // ORDER_PAYMENT | SALE_NOTIFICATION | ...
+  payload     String // JSON con los datos del trabajo
+  status      String    @default("PENDING") // PENDING | RUNNING | DONE | FAILED
+  attempts    Int       @default(0)
+  maxAttempts Int       @default(3)
+  availableAt DateTime  @default(now()) // proximo intento (backoff)
+  lockedAt    DateTime? // cuando el worker lo tomo (para recuperar huerfanos)
+  lastError   String?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  finishedAt  DateTime?
+
+  company Company? @relation(fields: [companyId], references: [id], onDelete: Cascade)
+
+  @@index([status, availableAt])
+  @@index([companyId, type])
+  @@map("background_jobs")
 }
 
 // Codigo de un solo uso para que un CAJERO pueda cancelar un pedido. Solo se

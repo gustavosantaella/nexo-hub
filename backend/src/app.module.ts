@@ -23,6 +23,7 @@ import { OrdersModule } from './modules/orders/orders.module';
 import { PayablesModule } from './modules/payables/payables.module';
 import { PreferencesModule } from './modules/preferences/preferences.module';
 import { ProductsModule } from './modules/products/products.module';
+import { QueueModule } from './modules/queue/queue.module';
 import { RatesModule } from './modules/rates/rates.module';
 import { ReceivablesModule } from './modules/receivables/receivables.module';
 import { StatsModule } from './modules/stats/stats.module';
@@ -61,6 +62,7 @@ import { PrismaModule } from './prisma/prisma.module';
     MenusModule,
     NotificationsModule,
     OrdersModule,
+    QueueModule,
     CashModule,
     ExpensesModule,
     PayablesModule,

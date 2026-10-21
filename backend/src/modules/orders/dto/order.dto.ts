@@ -63,6 +63,18 @@ export class CreateOrderDto {
   @IsString()
   customerId?: string;
 
+  @ApiPropertyOptional({
+    description:
+      'Nombre con el que el cajero identifica el pedido (ej. "Cumpleaños de Ana").',
+    example: 'Cumpleaños de Ana',
+  })
+  @IsOptional()
+  @IsString()
+  @MaxLength(120, {
+    message: 'El nombre del pedido no puede superar los 120 caracteres',
+  })
+  name?: string;
+
   @ApiPropertyOptional({ enum: ORDER_TYPES, default: 'DINE_IN' })
   @IsOptional()
   @IsIn(ORDER_TYPES)
@@ -142,6 +154,17 @@ export class UpdateOrderDto {
   @IsOptional()
   @IsString()
   customerId?: string;
+
+  @ApiPropertyOptional({
+    description:
+      'Nombre con el que el cajero identifica el pedido. Enviarlo vacío quita el nombre.',
+  })
+  @IsOptional()
+  @IsString()
+  @MaxLength(120, {
+    message: 'El nombre del pedido no puede superar los 120 caracteres',
+  })
+  name?: string;
 
   @ApiPropertyOptional()
   @IsOptional()

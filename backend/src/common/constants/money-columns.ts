@@ -88,6 +88,7 @@ export const NON_MONEY_INT_COLUMNS = {
   MenuCategory: ['sortOrder'],
   Menu: ['preparationMinutes'],
   MenuIngredient: ['sortOrder'],
+  BackgroundJob: ['attempts', 'maxAttempts'],
 } as const;
 
 /**

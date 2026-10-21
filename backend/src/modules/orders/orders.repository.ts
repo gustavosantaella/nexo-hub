@@ -132,6 +132,7 @@ export class OrdersRepository {
             OrderStatus.CONFIRMED,
             OrderStatus.PREPARING,
             OrderStatus.READY,
+            OrderStatus.PROCESSING,
           ],
         },
       },
@@ -210,6 +211,51 @@ export class OrdersRepository {
     return tx.orderPayment.create({ data });
   }
 
+  /** Pago ya aplicado por un trabajo de la cola (idempotencia). */
+  findPaymentByKey(idempotencyKey: string, tx: PrismaClientLike) {
+    return tx.orderPayment.findUnique({ where: { idempotencyKey } });
+  }
+
+  /**
+   * Toma el pedido para cobro solo si sigue en el estado esperado. El filtro
+   * evita que dos requests simultaneos encolen el mismo cobro dos veces.
+   */
+  markProcessing(
+    companyId: string,
+    id: string,
+    expectedStatus: string,
+    tx: PrismaClientLike,
+  ) {
+    return tx.order.updateMany({
+      where: {
+        id,
+        ...tenantWhere(companyId),
+        status: expectedStatus,
+      },
+      data: { status: OrderStatus.PROCESSING },
+    });
+  }
+
+  /**
+   * Devuelve el pedido a su estado anterior solo si sigue en PROCESSING. Si el
+   * cobro ya lo completo (o alguien lo cambio), no se toca.
+   */
+  restoreStatusIfProcessing(
+    companyId: string,
+    id: string,
+    status: string,
+    tx?: PrismaClientLike,
+  ) {
+    return this.client(tx).order.updateMany({
+      where: {
+        id,
+        ...tenantWhere(companyId),
+        status: OrderStatus.PROCESSING,
+      },
+      data: { status },
+    });
+  }
+
   /** Productos vendibles (sueltos) del catalogo de la empresa. */
   findSaleProducts(
     companyId: string,
@@ -257,6 +303,7 @@ export class OrdersRepository {
         ? {
             OR: [
               { code: { contains: query.search } },
+              { name: { contains: query.search } },
               { tableNumber: { contains: query.search } },
               { customer: { name: { contains: query.search } } },
             ],

@@ -337,6 +337,7 @@ describe('PosComponent (vista de cajero)', () => {
     pos.form.customerId = 'c1';
     pos.form.tableNumber = '4';
     pos.form.notes = 'Sin cebolla';
+    pos.form.name = 'Cumpleaños de Ana';
     pos.form.discount = 5;
     pos.form.taxRate = 18;
     pos.form.tipEnabled = false;
@@ -363,6 +364,7 @@ describe('PosComponent (vista de cajero)', () => {
     expect(pos.form.type).toBe('DINE_IN');
     expect(pos.form.tableNumber).toBe('');
     expect(pos.form.notes).toBe('');
+    expect(pos.form.name).toBe('');
     expect(pos.form.discount).toBe(0);
     expect(pos.form.taxRate).toBe(0);
     // La venta nueva vuelve a arrancar con la propina configurada por el admin.
@@ -402,6 +404,7 @@ describe('PosComponent (vista de cajero)', () => {
       order({
         id: 'o2',
         code: 'PED-0002',
+        name: 'Mesa de Luis',
         tableNumber: '4',
         subtotal: 60,
         total: 60,
@@ -452,6 +455,10 @@ describe('PosComponent (vista de cajero)', () => {
     expect(cards[0].textContent).toContain('1 × Cafe pasado');
     expect(cards[1].textContent).toContain('PED-0002');
     expect(cards[1].textContent).toContain('Mesa 4');
+    expect(cards[1].textContent).toContain('Mesa de Luis');
+    expect(cards[1].querySelector('[data-pos-saved-name]')?.textContent).toContain(
+      'Mesa de Luis',
+    );
     expect(cards[1].textContent).toContain('Pago parcial');
     expect(tab!.textContent).toContain('2');
 
@@ -1486,6 +1493,45 @@ describe('PosComponent (vista de cajero)', () => {
     flushReload();
   });
 
+  it('muestra el nombre opcional del pedido en el panel y lo envía al crearlo', () => {
+    const { fixture, pos } = mount();
+
+    const nameInput = fixture.nativeElement.querySelector(
+      '[data-pos-order-name]',
+    ) as HTMLInputElement | null;
+    expect(nameInput).not.toBeNull();
+    expect(nameInput!.maxLength).toBe(120);
+    expect(nameInput!.placeholder).toContain('Cumpleaños');
+
+    pos.addProduct(PRODUCTS[0]);
+    pos.setTip(false);
+    nameInput!.value = '  Cumpleaños de Ana  ';
+    nameInput!.dispatchEvent(new Event('input'));
+    fixture.detectChanges();
+    expect(pos.form.name).toBe('  Cumpleaños de Ana  ');
+
+    pos.submitSale(true);
+
+    const createRequest = http.expectOne(
+      (request) => request.method === 'POST' && request.url === `${API}/orders`,
+    );
+    expect(createRequest.request.body.name).toBe('Cumpleaños de Ana');
+
+    createRequest.flush(order({ name: 'Cumpleaños de Ana', subtotal: 30, total: 30 }));
+
+    const payRequest = http.expectOne(`${API}/orders/o1/payments`);
+    payRequest.flush(
+      order({
+        name: 'Cumpleaños de Ana',
+        subtotal: 30,
+        total: 30,
+        paymentStatus: 'PAID',
+      }),
+    );
+
+    flushReload();
+  });
+
   it('suma el delivery de un pedido a domicilio al total y lo envía al cobrar', () => {
     const { fixture, pos } = mount();
 
@@ -1541,6 +1587,7 @@ describe('PosComponent (vista de cajero)', () => {
       (request) => request.method === 'POST' && request.url === `${API}/orders`,
     );
     expect(createRequest.request.body.deliveryFee).toBeUndefined();
+    expect(createRequest.request.body.name).toBeUndefined();
 
     createRequest.flush(order({ total: 30 }));
 

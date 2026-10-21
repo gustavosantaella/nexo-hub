@@ -97,6 +97,7 @@ async function main(): Promise<void> {
     prisma.payablePayment.count(),
     prisma.accountReceivable.count(),
     prisma.receivablePayment.count(),
+    prisma.backgroundJob.count(),
   ]);
 
   const preserved: CountRow[] = [
@@ -127,6 +128,7 @@ async function main(): Promise<void> {
     { label: 'Pagos de cuentas por pagar', count: before[22] },
     { label: 'Cuentas por cobrar', count: before[23] },
     { label: 'Cobros de cuentas por cobrar', count: before[24] },
+    { label: 'Trabajos en cola', count: before[25] },
   ];
 
   printRows('SE CONSERVARÁN', preserved);
@@ -153,6 +155,7 @@ async function main(): Promise<void> {
       };
 
       await remove('OTP de cancelación', tx.cancellationOtp.deleteMany());
+      await remove('Trabajos en cola', tx.backgroundJob.deleteMany());
       await remove(
         'Cobros de cuentas por cobrar',
         tx.receivablePayment.deleteMany(),

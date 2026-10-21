@@ -23,6 +23,7 @@ export const ORDER_STATUS_LABELS: Record<string, string> = {
   CONFIRMED: 'Confirmado',
   PREPARING: 'En preparación',
   READY: 'Listo',
+  PROCESSING: 'Procesando',
   COMPLETED: 'Completado',
   CANCELLED: 'Cancelado',
 };
@@ -33,6 +34,7 @@ export const ORDER_STATUS_CLASSES: Record<string, string> = {
   CONFIRMED: 'bg-sky-100 text-sky-700',
   PREPARING: 'bg-indigo-100 text-indigo-700',
   READY: 'bg-teal-100 text-teal-700',
+  PROCESSING: 'bg-amber-100 text-amber-700 animate-pulse',
   COMPLETED: 'bg-emerald-100 text-emerald-700',
   CANCELLED: 'bg-rose-100 text-rose-700',
 };

@@ -5,6 +5,7 @@ import {
   NotFoundException,
   Optional,
 } from '@nestjs/common';
+import { randomUUID } from 'crypto';
 import {
   BASE_CURRENCY_CODE,
   LOCAL_CURRENCY_CODE,
@@ -50,6 +51,13 @@ import { CashService } from '../cash/cash.service';
 import { InventoryService } from '../inventory/inventory.service';
 import { MenusService, type MenuRecipe } from '../menus/menus.service';
 import { NotificationsService } from '../notifications/notifications.service';
+import { QueueService } from '../queue/queue.service';
+import {
+  ORDER_PAYMENT_JOB,
+  SALE_NOTIFICATION_JOB,
+  type QueuedOrderPayment,
+  type QueuedSaleNotification,
+} from './order-jobs';
 import {
   CHARGE_RATE_KEY,
   RatesService,
@@ -79,6 +87,8 @@ const ORDER_TRANSITIONS: Record<string, OrderStatusT[]> = {
   [OrderStatus.CONFIRMED]: [OrderStatus.PREPARING, OrderStatus.CANCELLED],
   [OrderStatus.PREPARING]: [OrderStatus.READY, OrderStatus.CANCELLED],
   [OrderStatus.READY]: [OrderStatus.COMPLETED, OrderStatus.CANCELLED],
+  // PROCESSING es interno del cobro: no se entra ni se sale por la API manual.
+  [OrderStatus.PROCESSING]: [],
   [OrderStatus.COMPLETED]: [],
   [OrderStatus.CANCELLED]: [],
 };
@@ -398,6 +408,7 @@ export class OrdersService {
     private readonly menus: MenusService,
     @Optional() private readonly notifications?: NotificationsService,
     @Optional() private readonly images?: ImageStorageService,
+    @Optional() private readonly queue?: QueueService,
   ) {}
 
   /** Crea el pedido, descuenta stock y guarda el snapshot de precios. */
@@ -436,6 +447,7 @@ export class OrdersService {
           companyId,
           code: await this.nextCode(companyId, tx),
           customerId: normalizeNullableId(dto.customerId),
+          name: dto.name?.trim() || null,
           type: dto.type ?? OrderType.DINE_IN,
           status: OrderStatus.PENDING,
           tableNumber: dto.tableNumber,
@@ -504,12 +516,15 @@ export class OrdersService {
     if (!order) throw new NotFoundException('Pedido no encontrado');
     if (
       order.status === OrderStatus.COMPLETED ||
-      order.status === OrderStatus.CANCELLED
+      order.status === OrderStatus.CANCELLED ||
+      order.status === OrderStatus.PROCESSING
     ) {
       throw new BadRequestException(
         order.status === OrderStatus.CANCELLED
           ? 'No se pueden agregar productos a un pedido cancelado'
-          : 'No se pueden agregar productos a un pedido completado',
+          : order.status === OrderStatus.PROCESSING
+            ? 'El cobro del pedido esta en proceso: espera a que termine'
+            : 'No se pueden agregar productos a un pedido completado',
       );
     }
 
@@ -1172,6 +1187,11 @@ export class OrdersService {
     if (order.status === OrderStatus.CANCELLED) {
       throw new BadRequestException('No se puede editar un pedido cancelado');
     }
+    if (order.status === OrderStatus.PROCESSING) {
+      throw new BadRequestException(
+        'El cobro del pedido esta en proceso: espera a que termine',
+      );
+    }
 
     const deliveryFee = await this.resolveDeliveryFee(companyId, {
       amount: dto.deliveryFee,
@@ -1232,6 +1252,7 @@ export class OrdersService {
       ...(dto.customerId !== undefined
         ? { customerId: normalizeNullableId(dto.customerId) }
         : {}),
+      ...(dto.name !== undefined ? { name: dto.name.trim() || null } : {}),
       ...(dto.tableNumber !== undefined ? { tableNumber: dto.tableNumber } : {}),
       ...(dto.notes !== undefined ? { notes: dto.notes } : {}),
       ...totals,
@@ -1250,7 +1271,189 @@ export class OrdersService {
   // =========================================================================
 
   /**
+   * Encola el cobro de un pedido y responde de inmediato.
+   *
+   * El pedido pasa a PROCESSING en la MISMA transaccion en la que se inserta el
+   * trabajo: o quedan ambos, o no queda ninguno. El worker aplica el pago y lo
+   * completa; si falla de forma definitiva, `releaseQueuedPayment` devuelve el
+   * pedido al estado que tenia antes.
+   */
+  async queuePayment(
+    companyId: string,
+    orderId: string,
+    dto: AddOrderPaymentDto,
+    userId: string,
+  ) {
+    // Sin cola (por ejemplo, una app embebida que no cargo QueueModule) se
+    // conserva el comportamiento sincrono para no perder la operacion.
+    if (!this.queue) return this.addPayment(companyId, orderId, dto, userId);
+
+    const queued = await this.orders.transaction(async (tx) => {
+      const order = await this.orders.findDetail(companyId, orderId, tx);
+      if (!order) throw new NotFoundException('Pedido no encontrado');
+      if (order.status === OrderStatus.CANCELLED) {
+        throw new BadRequestException('No se puede cobrar un pedido cancelado');
+      }
+      if (order.status === OrderStatus.PROCESSING) {
+        throw new ConflictException(
+          'El cobro de este pedido ya esta en proceso. Espera a que termine.',
+        );
+      }
+      const balance = money.sub(order.total, order.paidAmount);
+      if (compareMoney(balance, 0) <= 0) {
+        throw new BadRequestException('El pedido ya esta pagado en su totalidad');
+      }
+      this.assertPaymentShape(dto);
+
+      const previousStatus = order.status;
+      const claimed = await this.orders.markProcessing(
+        companyId,
+        order.id,
+        previousStatus,
+        tx,
+      );
+      if (claimed.count === 0) {
+        throw new ConflictException(
+          'El cobro de este pedido ya esta en proceso. Espera a que termine.',
+        );
+      }
+      const updated = await this.orders.findDetailById(order.id, tx);
+
+      const payload: QueuedOrderPayment = {
+        companyId,
+        orderId: order.id,
+        userId,
+        dto,
+        paymentKey: randomUUID(),
+        previousStatus,
+      };
+      await this.queue!.enqueue(
+        {
+          companyId,
+          type: ORDER_PAYMENT_JOB,
+          payload,
+          // Es idempotente y transaccional: dos reintentos no cobran dos veces.
+          maxAttempts: 3,
+        },
+        tx,
+      );
+
+      return this.withStoredDetails(updated);
+    });
+
+    // Fuera de la transaccion ya existe la fila: se puede despertar al worker
+    // sin esperar al intervalo de sondeo.
+    this.queue.wake();
+    return queued;
+  }
+
+  /** Aplica el cobro encolado (lo invoca el worker, nunca un request HTTP). */
+  async processQueuedPayment(payload: QueuedOrderPayment) {
+    const paid = await this.addPayment(
+      payload.companyId,
+      payload.orderId,
+      payload.dto,
+      payload.userId,
+      payload.paymentKey,
+      payload.previousStatus as OrderStatusT,
+    );
+    // El aviso de venta se inserto en la misma transaccion del pago; este wake
+    // lo procesa apenas la cola quede libre.
+    this.queue?.wake();
+    return paid;
+  }
+
+  /**
+   * Rollback del estado temporal cuando el trabajo de cobro falla de forma
+   * definitiva. Solo toca pedidos que sigan en PROCESSING.
+   */
+  async releaseQueuedPayment(
+    companyId: string,
+    orderId: string,
+    previousStatus: string,
+  ): Promise<void> {
+    await this.orders.restoreStatusIfProcessing(
+      companyId,
+      orderId,
+      previousStatus,
+    );
+  }
+
+  /**
+   * Validaciones deterministas del cobro que no dependen de la caja ni de las
+   * tasas. Se ejecutan al encolar para no dejar en PROCESSING un pago que el
+   * worker rechazaria por datos invalidos.
+   */
+  private assertPaymentShape(dto: AddOrderPaymentDto): void {
+    if (!(toMoney(dto.amount) > 0)) {
+      throw new BadRequestException('El monto del cobro debe ser mayor a 0');
+    }
+    if (dto.method === PaymentMethod.MIXED && !dto.parts?.length) {
+      throw new BadRequestException(
+        'El pago mixto requiere el desglose de las partes (parts)',
+      );
+    }
+    const parts =
+      dto.parts && dto.parts.length > 0
+        ? dto.parts
+        : [
+            {
+              amount: dto.amount,
+              method: dto.method,
+              currency: dto.currency,
+            },
+          ];
+    for (const part of parts) {
+      if (!(toMoney(part.amount) > 0)) {
+        throw new BadRequestException('Cada parte del pago debe ser mayor a 0');
+      }
+      if (part.method === PaymentMethod.MIXED) {
+        throw new BadRequestException(
+          'Cada parte del pago debe tener un metodo concreto (no MIXTO)',
+        );
+      }
+    }
+
+    // Si todo el cobro (partes y vuelto) esta en la misma moneda, el neto se
+    // puede validar aqui sin tasas: un vuelto igual a lo entregado dejaria el
+    // cobro en 0 y el pedido nunca deberia entrar en PROCESSING.
+    const changes = (dto.change ?? []).filter(
+      (change) => toMoney(change.amount) > 0,
+    );
+    const currencies = new Set(
+      [...parts, ...changes].map(
+        (line) => normalizeCurrencyCode(line.currency) || BASE_CURRENCY_CODE,
+      ),
+    );
+    if (currencies.size === 1) {
+      const gross = parts.reduce(
+        (sum, part) => money.add(sum, toMoney(part.amount)),
+        0,
+      );
+      const returned = changes.reduce(
+        (sum, change) => money.add(sum, toMoney(change.amount)),
+        0,
+      );
+      if (compareMoney(money.sub(gross, returned), 0) <= 0) {
+        throw new BadRequestException(
+          'El monto aplicado al pedido debe ser mayor a 0',
+        );
+      }
+    }
+
+    const needsProof = parts.some((part) =>
+      PAYMENT_PROOF_METHODS.includes(part.method),
+    );
+    if (needsProof && !/^\d{4,6}$/.test((dto.paymentReference ?? '').trim())) {
+      throw new BadRequestException(
+        'La referencia del comprobante debe tener entre 4 y 6 digitos',
+      );
+    }
+  }
+
+  /**
    * Registra un cobro del pedido. En una sola transaccion:
+   *
    *   1. valida saldo pendiente y que exista una caja abierta
    *   2. crea el CashMovement (ingreso por venta, con el metodo elegido)
    *   3. crea el OrderPayment apuntando al movimiento
@@ -1259,18 +1462,32 @@ export class OrdersService {
    * El cobro guarda ademas el HISTORIAL DE TASAS del dia: la tasa de cobro
    * elegida (`rateKey`) y la foto de TODAS las tasas vigentes en ese momento
    * (`ratesHistory`), para poder auditar el cobro despues aunque las tasas cambien.
+   *
+   * `paymentKey` es la clave del trabajo de la cola: si el worker reintenta un
+   * cobro que ya quedo guardado, se detecta aqui y no se aplica dos veces.
    */
   async addPayment(
     companyId: string,
     orderId: string,
     dto: AddOrderPaymentDto,
     userId: string,
+    paymentKey?: string,
+    previousStatus?: OrderStatusT,
   ) {
     const paid = await this.orders.transaction(async (tx) => {
       const order = await this.orders.findDetail(companyId, orderId, tx);
       if (!order) throw new NotFoundException('Pedido no encontrado');
       if (order.status === OrderStatus.CANCELLED) {
         throw new BadRequestException('No se puede cobrar un pedido cancelado');
+      }
+      if (paymentKey) {
+        const applied = await this.orders.findPaymentByKey(paymentKey, tx);
+        if (applied) {
+          return {
+            order: this.withStoredDetails(order),
+            notification: null,
+          };
+        }
       }
 
       const balance = money.sub(order.total, order.paidAmount);
@@ -1384,6 +1601,11 @@ export class OrdersService {
         throw new BadRequestException('El vuelto no puede superar lo entregado por el cliente');
       }
       const computedApplied = money.sub(grossBase, changeBase);
+      if (compareMoney(computedApplied, 0) <= 0) {
+        throw new BadRequestException(
+          'El monto aplicado al pedido debe ser mayor a 0',
+        );
+      }
 
       // El pedido esta en USD y el cobro se valora a la tasa oficial del BCV:
       // el monto aplicado nunca puede superar el saldo pendiente. Solo se
@@ -1501,7 +1723,7 @@ export class OrdersService {
           ? PaymentMethod.MIXED
           : parts[0].method;
 
-      await this.orders.createPayment(
+      const payment = await this.orders.createPayment(
         {
           companyId,
           orderId: order.id,
@@ -1521,6 +1743,7 @@ export class OrdersService {
           change: encodePaymentLines(changes),
           changeBaseAmount: changeBase,
           cashMovementId: partMovements[0]?.id,
+          idempotencyKey: paymentKey,
           paymentReference: paymentReference ?? undefined,
           paymentPhotoUrl: paymentPhotoUrl ?? undefined,
           note: dto.note,
@@ -1534,6 +1757,18 @@ export class OrdersService {
         compareMoney(paidAmount, order.total) >= 0
           ? PaymentStatus.PAID
           : PaymentStatus.PARTIAL;
+      // Si el cobro venia de la cola, el pedido esta en PROCESSING. Al liquidar
+      // el saldo queda COMPLETED; un abono parcial vuelve a su estado anterior.
+      const restoredStatus =
+        order.status === OrderStatus.PROCESSING
+          ? (previousStatus ?? OrderStatus.PENDING)
+          : null;
+      const nextStatus =
+        paymentStatus === PaymentStatus.PAID
+          ? order.status !== OrderStatus.COMPLETED
+            ? OrderStatus.COMPLETED
+            : null
+          : restoredStatus;
 
       const updated = await this.orders.update(
         companyId,
@@ -1542,42 +1777,60 @@ export class OrdersService {
           paidAmount,
           paymentStatus,
           cashSessionId: session.id,
-          ...(paymentStatus === PaymentStatus.PAID &&
-          order.status !== OrderStatus.COMPLETED
-            ? { status: OrderStatus.COMPLETED }
-            : {}),
+          ...(nextStatus ? { status: nextStatus } : {}),
         },
         tx,
       );
 
-      return this.withStoredDetails(updated);
-    });
-
-    const payments = paid.payments ?? [];
-    const payment = payments[payments.length - 1];
-    if (payment) {
-      void this.notifications?.notifySale(
+      const notification: QueuedSaleNotification = {
         companyId,
-        {
-          orderCode: paid.code,
-          total: paid.total,
+        userId,
+        sale: {
+          orderCode: updated.code,
+          total: updated.total,
           paidNow: payment.amount,
-          paidTotal: paid.paidAmount,
+          paidTotal: updated.paidAmount,
           paymentCurrency: payment.currency,
           method: payment.method,
           rates: parseRatesHistory(payment.ratesHistory),
           paymentReference: payment.paymentReference,
           paymentPhotoUrl: payment.paymentPhotoUrl,
-          items: (paid.items ?? []).map((item) => ({
+          items: (updated.items ?? []).map((item) => ({
             name: item.name,
             quantity: item.quantity,
           })),
         },
+      };
+      if (this.queue) {
+        // El aviso se inserta en la MISMA transaccion del cobro: aunque el
+        // proceso se caiga despues, el aviso sigue pendiente en la cola.
+        await this.queue.enqueue(
+          {
+            companyId,
+            type: SALE_NOTIFICATION_JOB,
+            payload: notification,
+            maxAttempts: 3,
+          },
+          tx,
+        );
+      }
+
+      return { order: this.withStoredDetails(updated), notification };
+    });
+
+    const payments = paid.order.payments ?? [];
+    const lastPayment = payments[payments.length - 1];
+    // Sin cola (app embebida) el aviso se envia directo; con cola, el worker
+    // registrado en OrderJobsProcessor lo tomara de `background_jobs`.
+    if (!this.queue && lastPayment && paid.notification) {
+      void this.notifications?.notifySale(
+        companyId,
+        paid.notification.sale,
         userId,
       );
     }
 
-    return paid;
+    return paid.order;
   }
 
   // =========================================================================
@@ -1637,6 +1890,17 @@ export class OrdersService {
   ) {
     const order = await this.orders.findStatusContext(companyId, id);
     if (!order) throw new NotFoundException('Pedido no encontrado');
+
+    if (order.status === OrderStatus.PROCESSING) {
+      throw new ConflictException(
+        'El cobro del pedido esta en proceso: espera a que termine',
+      );
+    }
+    if (dto.status === OrderStatus.PROCESSING) {
+      throw new BadRequestException(
+        'El estado PROCESSING lo asigna el cobro, no se cambia manualmente',
+      );
+    }
 
     if (order.status === dto.status) return this.findOne(companyId, id);
 
@@ -1720,6 +1984,11 @@ export class OrdersService {
     }
     if (order.status === OrderStatus.COMPLETED) {
       throw new BadRequestException('No se puede eliminar un pedido completado');
+    }
+    if (order.status === OrderStatus.PROCESSING) {
+      throw new ConflictException(
+        'El cobro del pedido esta en proceso: espera a que termine',
+      );
     }
 
     await this.orders.transaction(async (tx) => {
@@ -1931,12 +2200,15 @@ export class OrdersService {
     if (!order) throw new NotFoundException('Pedido no encontrado');
     if (
       order.status === OrderStatus.COMPLETED ||
-      order.status === OrderStatus.CANCELLED
+      order.status === OrderStatus.CANCELLED ||
+      order.status === OrderStatus.PROCESSING
     ) {
       throw new BadRequestException(
         order.status === OrderStatus.CANCELLED
           ? 'No se pueden modificar los productos de un pedido cancelado'
-          : 'No se pueden modificar los productos de un pedido completado',
+          : order.status === OrderStatus.PROCESSING
+            ? 'El cobro del pedido esta en proceso: espera a que termine'
+            : 'No se pueden modificar los productos de un pedido completado',
       );
     }
     return order;

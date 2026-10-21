@@ -13,6 +13,7 @@ import type { CashService } from '../cash/cash.service';
 import type { InventoryService } from '../inventory/inventory.service';
 import type { MenusService } from '../menus/menus.service';
 import type { NotificationsService } from '../notifications/notifications.service';
+import type { QueueService } from '../queue/queue.service';
 import type {
   RatesService,
   RateHistory,
@@ -28,6 +29,7 @@ import {
   parsePriceBreakdown,
   parseRatesHistory,
 } from './orders.service';
+import { ORDER_PAYMENT_JOB, SALE_NOTIFICATION_JOB } from './order-jobs';
 import { OrdersRepository } from './orders.repository';
 
 const COMPANY_ID = 'company-1';
@@ -255,6 +257,7 @@ function createService(
   rates: Partial<RatesService> = {},
   cash: Partial<CashService> = {},
   notifications?: Partial<NotificationsService>,
+  queue?: Partial<QueueService>,
 ) {
   const trackedProducts = jest.fn(
     async (args: { where: { id: { in: string[] } } }) =>
@@ -287,6 +290,8 @@ function createService(
         id: 'pay1',
         ...args.data,
       })),
+      // Clave de idempotencia del cobro encolado (por defecto, no existe).
+      findUnique: jest.fn(async () => null),
     },
     product: { findMany: trackedProducts },
   };
@@ -353,9 +358,11 @@ function createService(
     } as unknown as RatesService,
     menus as unknown as MenusService,
     notifications as unknown as NotificationsService | undefined,
+    undefined,
+    queue as unknown as QueueService | undefined,
   );
 
-  return { service, prisma, tx, inventory, menus, cash, notifications };
+  return { service, prisma, tx, inventory, menus, cash, notifications, queue };
 }
 
 /** Datos enviados a `tx.order.update` en la primera llamada. */
@@ -952,6 +959,33 @@ describe('OrdersService.create (costo de delivery)', () => {
     expect(data.deliveryFeeRateKey).toBeNull();
     expect(data.total).toBe(30);
   });
+
+  it('guarda el nombre opcional del pedido sin espacios sobrantes', async () => {
+    const { service, tx } = createService(null);
+
+    await service.create(
+      COMPANY_ID,
+      {
+        name: '  Cumpleaños de Ana  ',
+        items: [{ productId: 'p1', quantity: 1 }],
+      },
+      'u1',
+    );
+
+    expect(tx.order.create.mock.calls[0][0].data.name).toBe('Cumpleaños de Ana');
+  });
+
+  it('guarda el nombre en null cuando el cajero no lo escribe', async () => {
+    const { service, tx } = createService(null);
+
+    await service.create(
+      COMPANY_ID,
+      { items: [{ productId: 'p1', quantity: 1 }] },
+      'u1',
+    );
+
+    expect(tx.order.create.mock.calls[0][0].data.name).toBeNull();
+  });
 });
 
 
@@ -1018,6 +1052,16 @@ describe('OrdersService.update (costo de delivery)', () => {
     expect(data.notes).toBe('Sin cebolla');
   });
 
+  it('actualiza o quita el nombre del pedido', async () => {
+    const { service, prisma } = createService(order());
+
+    await service.update(COMPANY_ID, 'o1', { name: '  Mesa de Luis  ' });
+    expect(prisma.order.update.mock.calls[0][0].data.name).toBe('Mesa de Luis');
+
+    await service.update(COMPANY_ID, 'o1', { name: '' });
+    expect(prisma.order.update.mock.calls[1][0].data.name).toBeNull();
+  });
+
   it('quita el delivery y su contexto cuando se envia en cero', async () => {
     const { service, prisma } = createService(order({ deliveryFee: 3, total: 103 }));
 
@@ -1032,6 +1076,186 @@ describe('OrdersService.update (costo de delivery)', () => {
   });
 });
 
+
+describe('OrdersService.queuePayment (cobro en cola)', () => {
+  const rates = {
+    resolvePayment: jest.fn(async () => ({
+      currency: 'USD',
+      exchangeRate: null,
+      baseAmount: 100,
+      unitsPerBase: 1,
+    })),
+    ratesHistory: jest.fn(async () => RATES_HISTORY),
+  };
+  const cash = {
+    getOpenSessionOrThrow: jest.fn(async () => ({ id: 's1' })),
+    registerMovement: jest.fn(async () => ({ id: 'mv1' })),
+  } as unknown as Partial<CashService>;
+
+  it('deja el pedido en PROCESSING y encola el cobro en la misma transaccion', async () => {
+    const queue = {
+      enqueue: jest.fn(async () => 'job-1'),
+      wake: jest.fn(),
+    } as unknown as Partial<QueueService>;
+    const { service, tx, queue: mocked } = createService(
+      order(),
+      rates,
+      cash,
+      undefined,
+      queue,
+    );
+
+    await service.queuePayment(
+      COMPANY_ID,
+      'o1',
+      {
+        amount: 100,
+        method: PaymentMethod.CASH,
+        currency: 'USD',
+      },
+      'u1',
+    );
+
+    expect(tx.order.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          id: 'o1',
+          status: OrderStatus.PENDING,
+        }),
+        data: { status: OrderStatus.PROCESSING },
+      }),
+    );
+    expect(mocked?.enqueue).toHaveBeenCalledWith(
+      expect.objectContaining({
+        companyId: COMPANY_ID,
+        type: ORDER_PAYMENT_JOB,
+        payload: expect.objectContaining({
+          orderId: 'o1',
+          previousStatus: OrderStatus.PENDING,
+          paymentKey: expect.any(String),
+        }),
+      }),
+      expect.anything(),
+    );
+    expect(mocked?.wake).toHaveBeenCalled();
+  });
+
+  it('no encola un cobro si el pedido ya esta en proceso', async () => {
+    const queue = {
+      enqueue: jest.fn(async () => 'job-1'),
+      wake: jest.fn(),
+    } as unknown as Partial<QueueService>;
+    const { service } = createService(
+      order({ status: OrderStatus.PROCESSING }),
+      rates,
+      cash,
+      undefined,
+      queue,
+    );
+
+    await expect(
+      service.queuePayment(
+        COMPANY_ID,
+        'o1',
+        { amount: 100, method: PaymentMethod.CASH, currency: 'USD' },
+        'u1',
+      ),
+    ).rejects.toThrow('ya esta en proceso');
+    expect(queue.enqueue).not.toHaveBeenCalled();
+  });
+
+  it('rechaza el cobro en 0 antes de marcar el pedido en proceso', async () => {
+    const queue = {
+      enqueue: jest.fn(async () => 'job-1'),
+      wake: jest.fn(),
+    } as unknown as Partial<QueueService>;
+    const { service, tx } = createService(
+      order(),
+      rates,
+      cash,
+      undefined,
+      queue,
+    );
+
+    await expect(
+      service.queuePayment(
+        COMPANY_ID,
+        'o1',
+        { amount: 0, method: PaymentMethod.CASH, currency: 'USD' },
+        'u1',
+      ),
+    ).rejects.toThrow('El monto del cobro debe ser mayor a 0');
+
+    expect(tx.order.updateMany).not.toHaveBeenCalled();
+    expect(queue.enqueue).not.toHaveBeenCalled();
+  });
+
+  it('rechaza un pago mixto cuyo vuelto deja el neto en 0 antes de encolar', async () => {
+    const queue = {
+      enqueue: jest.fn(async () => 'job-1'),
+      wake: jest.fn(),
+    } as unknown as Partial<QueueService>;
+    const { service, tx } = createService(
+      order(),
+      rates,
+      cash,
+      undefined,
+      queue,
+    );
+
+    await expect(
+      service.queuePayment(
+        COMPANY_ID,
+        'o1',
+        {
+          amount: 10,
+          method: PaymentMethod.MIXED,
+          currency: 'USD',
+          parts: [{ amount: 10, method: PaymentMethod.CASH, currency: 'USD' }],
+          change: [{ amount: 10, method: PaymentMethod.CASH, currency: 'USD' }],
+        },
+        'u1',
+      ),
+    ).rejects.toThrow('El monto aplicado al pedido debe ser mayor a 0');
+
+    expect(tx.order.updateMany).not.toHaveBeenCalled();
+    expect(queue.enqueue).not.toHaveBeenCalled();
+  });
+
+  it('encola el aviso de venta junto al pago en vez de enviarlo directo', async () => {
+    const queue = {
+      enqueue: jest.fn(async () => 'job-2'),
+      wake: jest.fn(),
+    } as unknown as Partial<QueueService>;
+    const notifications = { notifySale: jest.fn(async () => true) };
+    const { service } = createService(
+      order(),
+      rates,
+      cash,
+      notifications,
+      queue,
+    );
+
+    await service.addPayment(
+      COMPANY_ID,
+      'o1',
+      { amount: 100, method: PaymentMethod.CASH, currency: 'USD' },
+      'u1',
+    );
+
+    expect(queue.enqueue).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: SALE_NOTIFICATION_JOB,
+        payload: expect.objectContaining({
+          companyId: COMPANY_ID,
+          userId: 'u1',
+        }),
+      }),
+      expect.anything(),
+    );
+    expect(notifications.notifySale).not.toHaveBeenCalled();
+  });
+});
 
 describe('OrdersService.addPayment (tasa de cobro del cajero)', () => {
   /** Conversion simulada: 1 USD = 36.5 VES. */
@@ -1379,6 +1603,48 @@ describe('OrdersService.addPayment (tasa de cobro del cajero)', () => {
     expect(payment.changeBaseAmount).toBe(10);
     expect(parsePaymentLines(payment.parts).map((line) => line.amount)).toEqual([60, 2000]);
     expect(parsePaymentLines(payment.change).map((line) => line.baseAmount)).toEqual([10]);
+  });
+
+  it('rechaza el cobro cuando el vuelto deja el monto aplicado en 0', async () => {
+    const zeroRates = {
+      resolvePayment: jest.fn(
+        async (_companyId: string, amount: number, currency: string) => ({
+          currency,
+          exchangeRate: currency === 'USD' ? null : 1,
+          baseAmount: amount,
+          unitsPerBase: 1,
+        }),
+      ),
+      chargeBalance: jest.fn(async (_companyId: string, balance: number) => balance),
+    };
+    const registerMovement = jest.fn();
+    const zeroCash = {
+      getOpenSessionOrThrow: jest.fn(async () => ({ id: 's1' })),
+      registerMovement,
+    };
+    const { service, tx } = createService(
+      order({ total: 100 }),
+      zeroRates,
+      zeroCash as unknown as Partial<CashService>,
+    );
+
+    await expect(
+      service.addPayment(
+        COMPANY_ID,
+        'o1',
+        {
+          amount: 10,
+          method: PaymentMethod.MIXED,
+          currency: 'USD',
+          parts: [{ amount: 10, method: PaymentMethod.CASH, currency: 'USD' }],
+          change: [{ amount: 10, method: PaymentMethod.CASH, currency: 'USD' }],
+        },
+        'u1',
+      ),
+    ).rejects.toThrow('El monto aplicado al pedido debe ser mayor a 0');
+
+    expect(tx.orderPayment.create).not.toHaveBeenCalled();
+    expect(registerMovement).not.toHaveBeenCalled();
   });
 
   it('serializa y lee el desglose del pago con los montos en decimales', () => {

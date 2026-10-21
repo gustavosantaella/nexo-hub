@@ -3,6 +3,8 @@ import {
   Controller,
   Delete,
   Get,
+  HttpCode,
+  HttpStatus,
   Param,
   Patch,
   Post,
@@ -146,15 +148,19 @@ export class OrdersController {
   }
 
   @Post(':id/payments')
+  @HttpCode(HttpStatus.ACCEPTED)
   @Roles(...ORDER_ROLES)
-  @ApiOperation({ summary: 'Registrar cobro (entra a caja como SALE)' })
+  @ApiOperation({
+    summary:
+      'Encolar cobro (responde 202; el pedido pasa a PROCESSING y la caja se impacta en segundo plano)',
+  })
   pay(
     @CurrentUser('companyId') companyId: string,
     @Param('id') id: string,
     @Body() dto: AddOrderPaymentDto,
     @CurrentUser() user: AuthenticatedUser,
   ) {
-    return this.ordersService.addPayment(companyId, id, dto, user.id);
+    return this.ordersService.queuePayment(companyId, id, dto, user.id);
   }
 
   @Delete(':id')

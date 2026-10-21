@@ -15,6 +15,7 @@ import { BASE_CURRENCY, CHARGE_RATE_KEY, RATE_META } from '../../core/constants/
 import {
   ORDER_TYPE_LABELS,
   ORDER_STATUS_LABELS,
+  ORDER_STATUS_CLASSES,
   PAYMENT_METHOD_LABELS,
   PAYMENT_METHOD_OPTIONS,
   PAYMENT_STATUS_CLASSES,
@@ -315,6 +316,7 @@ export class PosComponent implements OnInit, OnDestroy {
   readonly methodLabels = PAYMENT_METHOD_LABELS;
   readonly paymentStatusLabels = PAYMENT_STATUS_LABELS;
   readonly paymentStatusClasses = PAYMENT_STATUS_CLASSES;
+  readonly orderStatusClasses = ORDER_STATUS_CLASSES;
   readonly orderTypes: OrderType[] = ['DINE_IN', 'TAKEAWAY', 'DELIVERY'];
   readonly maxTableCount = MAX_TABLE_COUNT;
   /** Billetes/monedas frecuentes para completar el efectivo recibido. */
@@ -439,6 +441,8 @@ export class PosComponent implements OnInit, OnDestroy {
   /** Cabecera de la venta nueva (no se usa al agregar a un pedido existente). */
   form: {
     customerId: string;
+    /** Nombre con el que el cajero identifica el pedido (opcional). */
+    name: string;
     type: OrderType;
     tableNumber: string;
     notes: string;
@@ -454,6 +458,7 @@ export class PosComponent implements OnInit, OnDestroy {
     deliveryFeeCurrency: string;
   } = {
       customerId: '',
+      name: '',
       type: 'DINE_IN',
       tableNumber: '',
       notes: '',
@@ -504,6 +509,9 @@ export class PosComponent implements OnInit, OnDestroy {
   readonly customerError = signal<string | null>(null);
   customerForm: CustomerPayload = { name: '', phone: '', docNumber: '' };
 
+  /** Refresca las tarjetas mientras algun pedido esta en cola de cobro. */
+  private orderRefreshTimer: ReturnType<typeof setInterval> | null = null;
+
   ngOnInit(): void {
     // El punto de venta ocupa toda la pantalla: oculta la barra lateral y la
     // cabecera del back-office mientras está abierto.
@@ -511,10 +519,21 @@ export class PosComponent implements OnInit, OnDestroy {
     // La venta arranca limpia y con la propina configurada por el admin.
     this.resetSale();
     this.reload();
+    this.orderRefreshTimer = setInterval(() => {
+      if (!this.activeOrders().some((order) => order.status === 'PROCESSING')) {
+        return;
+      }
+      this.orders.active().subscribe({
+        next: (list) => this.activeOrders.set(list),
+        error: () => undefined,
+      });
+    }, 2000);
   }
 
   ngOnDestroy(): void {
     // Al volver al arqueo (o salir de la ruta) se restaura el shell normal.
+    if (this.orderRefreshTimer) clearInterval(this.orderRefreshTimer);
+    this.orderRefreshTimer = null;
     this.layout.setFullscreen(false);
   }
 
@@ -2189,6 +2208,7 @@ export class PosComponent implements OnInit, OnDestroy {
     this.orders
       .create({
         customerId: this.form.customerId || null,
+        name: this.form.name.trim() || undefined,
         type: this.form.type,
         tableNumber: this.form.tableNumber || undefined,
         notes: this.form.notes || undefined,
@@ -2350,7 +2370,8 @@ export class PosComponent implements OnInit, OnDestroy {
       .subscribe({
         next: () => {
           this.toast.success(
-            `Pedido ${order.code} cobrado con ${this.methodLabels[this.charge.method]}`,
+            `Cobro de ${order.code} en cola. El pedido pasó a Procesando.`,
+            'Cobro en proceso',
           );
           this.backToSaleStart();
         },
@@ -2443,6 +2464,7 @@ export class PosComponent implements OnInit, OnDestroy {
     this.lines.set([]);
     this.form = {
       customerId: '',
+      name: '',
       type: 'DINE_IN',
       tableNumber: '',
       notes: '',

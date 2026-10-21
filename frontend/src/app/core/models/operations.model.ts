@@ -111,6 +111,7 @@ export type OrderStatus =
   | 'CONFIRMED'
   | 'PREPARING'
   | 'READY'
+  | 'PROCESSING'
   | 'COMPLETED'
   | 'CANCELLED';
 
@@ -213,6 +214,8 @@ export interface Order {
   id: string;
   code: string;
   customerId?: string | null;
+  /** Nombre con el que el cajero identifica el pedido (opcional). */
+  name?: string | null;
   type: OrderType;
   status: OrderStatus;
   paymentStatus: PaymentStatus;
@@ -267,6 +270,8 @@ export interface OrderItemPayload {
 
 export interface OrderPayload {
   customerId?: string | null;
+  /** Nombre con el que el cajero identifica el pedido (opcional). */
+  name?: string;
   type?: OrderType;
   tableNumber?: string;
   notes?: string;

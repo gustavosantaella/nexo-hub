@@ -159,6 +159,9 @@ export class PrismaService implements OnModuleInit, OnModuleDestroy {
   get cancellationOtp() {
     return this.client.cancellationOtp;
   }
+  get backgroundJob() {
+    return this.client.backgroundJob;
+  }
 
   // ==================== Transacciones y consultas crudas ====================
   // `$queryRaw` / `$executeRaw` hablan SQL directo: no pasan por el codec, los

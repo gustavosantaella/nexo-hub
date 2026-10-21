@@ -1,4 +1,4 @@
-import { ChangeDetectionStrategy, Component, OnInit, inject, signal } from '@angular/core';
+import { ChangeDetectionStrategy, Component, OnDestroy, OnInit, inject, signal } from '@angular/core';
 import { FormsModule } from '@angular/forms';
 import { RouterLink } from '@angular/router';
 import type { Customer, MenuOption, PaginationMeta, ProductOption } from '../../core/models/api.model';
@@ -107,6 +107,8 @@ const NEXT_STATUS: Partial<Record<OrderStatus, OrderStatus>> = {
   CONFIRMED: 'PREPARING',
   PREPARING: 'READY',
   READY: 'COMPLETED',
+  // PROCESSING es transitorio: lo controla el backend mientras cobra.
+  PROCESSING: undefined,
 };
 
 /** Pagina de pedidos: tablero operativo + historial de ventas. */
@@ -129,7 +131,7 @@ const NEXT_STATUS: Partial<Record<OrderStatus, OrderStatus>> = {
   changeDetection: ChangeDetectionStrategy.OnPush,
   templateUrl: './orders.page.html',
 })
-export class OrdersPage implements OnInit {
+export class OrdersPage implements OnInit, OnDestroy {
   readonly auth = inject(AuthService);
   private readonly orders = inject(OrdersService);
   private readonly cash = inject(CashService);
@@ -279,10 +281,25 @@ export class OrdersPage implements OnInit {
   readonly cancelExpiresAt = signal<string | null>(null);
   readonly cancelRequesting = signal(false);
 
+  /** Refresca el tablero mientras haya cobros en la cola (PROCESSING). */
+  private boardRefreshTimer: ReturnType<typeof setInterval> | null = null;
+
   ngOnInit(): void {
     this.loadCash();
     this.loadBoard();
     this.load();
+    this.boardRefreshTimer = setInterval(() => {
+      if (!this.board().some((order) => order.status === 'PROCESSING')) return;
+      this.loadBoard();
+      if (this.items().some((order) => order.status === 'PROCESSING')) {
+        this.load();
+      }
+    }, 2000);
+  }
+
+  ngOnDestroy(): void {
+    if (this.boardRefreshTimer) clearInterval(this.boardRefreshTimer);
+    this.boardRefreshTimer = null;
   }
 
   private loadCash(): void {
@@ -865,7 +882,10 @@ export class OrdersPage implements OnInit {
       .subscribe({
         next: () => {
           this.saving.set(false);
-          this.toast.success('Pago registrado');
+          this.toast.success(
+            'Cobro en cola. El pedido pasó a Procesando.',
+            'Cobro en proceso',
+          );
           this.closePay();
           this.reload();
         },
@@ -1368,7 +1388,8 @@ export class OrdersPage implements OnInit {
         next: () => {
           this.saving.set(false);
           this.toast.success(
-            `Pedido ${order.code} cobrado con ${this.methodLabels[this.chargeMethod]}`,
+            `Cobro de ${order.code} en cola. El pedido pasó a Procesando.`,
+            'Cobro en proceso',
           );
           this.closeCreate();
           this.reload();
