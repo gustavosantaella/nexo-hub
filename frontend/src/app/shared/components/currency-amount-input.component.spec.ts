@@ -102,6 +102,7 @@ const SNAPSHOT: RatesSnapshot = {
       [amount]="amount()"
       [currency]="currency()"
       [rateKey]="rateKey()"
+      [showRatePicker]="showRatePicker()"
       (amountChange)="amount.set($event)"
       (currencyChange)="currency.set($event)"
       (rateKeyChange)="rateKey.set($event)"
@@ -113,6 +114,8 @@ class HostComponent {
   readonly currency = signal('USD');
   /** `null` = el campo no pide tasa (comportamiento anterior). */
   readonly rateKey = signal<RateKey | null>(null);
+  /** `false` = el campo calcula con la tasa pero no la deja elegir. */
+  readonly showRatePicker = signal(true);
 }
 
 describe('CurrencyAmountInputComponent', () => {
@@ -272,6 +275,26 @@ describe('CurrencyAmountInputComponent', () => {
     expect(fixture.componentInstance.rateKey()).toBe('BCV_EUR');
     // La moneda no se toca: son selectores independientes.
     expect(fixture.componentInstance.currency()).toBe('VES');
+  });
+
+  /**
+   * `showRatePicker = false` oculta el selector de tasa sin cambiar el calculo:
+   * el monto se sigue convirtiendo y guardando con la tasa del campo. Lo usa el
+   * catalogo de productos, donde la tasa se toma del sistema y solo se elige la
+   * moneda.
+   */
+  it('oculta el selector de tasa cuando el campo no lo permite', () => {
+    fixture.componentInstance.rateKey.set('BCV_EUR');
+    fixture.componentInstance.currency.set('VES');
+    fixture.componentInstance.amount.set(9000);
+    fixture.componentInstance.showRatePicker.set(false);
+    fixture.detectChanges();
+
+    expect(rateSelect()).toBeNull();
+    // Sigue convirtiendo con la tasa recibida (el euro), no con la activa.
+    expect(selectedConversion()).toContain('BCV €: € 9.00');
+    // La moneda se sigue eligiendo con su selector.
+    expect(select().value).toBe('VES');
   });
 
   it('resalta la conversion de la tasa elegida y la calcula con ella', () => {

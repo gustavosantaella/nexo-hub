@@ -1,5 +1,6 @@
 import { ChangeDetectionStrategy, Component, OnInit, inject, signal } from '@angular/core';
 import { FormsModule } from '@angular/forms';
+import { RouterLink } from '@angular/router';
 import type { PaginationMeta } from '../../core/models/api.model';
 import type {
   CashCurrentResponse,
@@ -38,7 +39,6 @@ import {
 } from '../../core/utils/format';
 import { EmptyStateComponent, LoaderComponent } from '../../shared/components/feedback.component';
 import { IconComponent } from '../../shared/components/icon.component';
-import { PosComponent } from './pos.component';
 import { DialogComponent } from '../../shared/components/dialog.component';
 import { MoneyComponent } from '../../shared/components/money.component';
 import { PageHeaderComponent } from '../../shared/components/page-header.component';
@@ -56,18 +56,21 @@ const EMPTY_META: PaginationMeta = {
   hasPreviousPage: false,
 };
 
-/** Pagina de caja: arqueo de la sesion actual, movimientos e historial. */
+/**
+ * Pagina de caja: arqueo de la sesion actual, movimientos e historial. La vista
+ * del cajero (POS) es una ruta aparte, `/panel/caja/pos`.
+ */
 @Component({
   selector: 'app-cash',
   standalone: true,
   imports: [
     FormsModule,
+    RouterLink,
     IconComponent,
     PageHeaderComponent,
     PaginationComponent,
     DialogComponent,
     StatCardComponent,
-    PosComponent,
     MoneyComponent,
     CurrencySelectComponent,
     RateConversionsComponent,
@@ -100,23 +103,6 @@ export class CashPage implements OnInit {
   /** Monedas configuradas (para el filtro del historial). */
   readonly currencies = this.rates.currencies;
 
-  /**
-   * Vista activa de la caja: el arqueo del turno o el punto de venta del cajero
-   * (misma sesión, cobros y pedidos).
-   */
-  readonly view = signal<'arqueo' | 'pos'>('arqueo');
-
-  /** Abre el punto de venta dentro de la caja. */
-  openPos(): void {
-    this.view.set('pos');
-  }
-
-  /** Vuelve al arqueo y refresca los totales tras cobrar en el POS. */
-  closePos(): void {
-    this.view.set('arqueo');
-    this.load();
-    this.loadMovements();
-  }
   readonly categoryLabels = CASH_CATEGORY_LABELS;
   /**
    * Categorias del movimiento manual. `CHANGE` (vuelto) lo genera el cobro de un

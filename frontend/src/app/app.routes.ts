@@ -45,6 +45,14 @@ export const routes: Routes = [
           import('./features/operations/orders.page').then((m) => m.OrdersPage),
       },
       {
+        // Vista del cajero (punto de venta). Vive bajo Caja porque solo se
+        // vende con una sesión de caja abierta.
+        path: 'caja/pos',
+        title: 'Punto de venta · Nexo Hub',
+        loadComponent: () =>
+          import('./features/operations/pos.page').then((m) => m.PosPage),
+      },
+      {
         path: 'caja',
         title: 'Caja · Nexo Hub',
         loadComponent: () =>

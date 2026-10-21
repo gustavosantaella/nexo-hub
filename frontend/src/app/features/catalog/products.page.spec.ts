@@ -429,11 +429,11 @@ describe('ProductsPage', () => {
   });
 
   /**
-   * La tasa tambien es por campo: el operador puede convertir el precio al cambio
-   * del euro, la presentacion a la personalizada y la unidad suelta al BCV dolar.
-   * Las tres viajan con su monto y el formulario las recupera al reabrir.
+   * El formulario de productos NO deja elegir la tasa: cada monto conserva la
+   * tasa con la que se guardo (la del sistema) y la reenvia al guardar, pero el
+   * operador solo puede cambiar la moneda. Sin selector de tasa en el modal.
    */
-  it('envia la tasa elegida de cada monto y la recupera al editar', () => {
+  it('recupera la tasa guardada de cada monto y no deja cambiarla', () => {
     const item = product({
       name: 'Malta (caja 24)',
       price: 24,
@@ -460,19 +460,23 @@ describe('ProductsPage', () => {
     expect(page.form.priceRateKey).toBe('BCV_EUR');
     expect(page.form.costRateKey).toBe('CUSTOM_USD');
     expect(page.form.unitPriceRateKey).toBe('BCV_USD');
-
-    // Cambiar la tasa de un monto no toca la de los otros.
-    page.onCostRateKeyChange('BCV_EUR');
-    expect(page.form.costRateKey).toBe('BCV_EUR');
-    expect(page.form.priceRateKey).toBe('BCV_EUR');
-    expect(page.form.unitPriceRateKey).toBe('BCV_USD');
+    // Ni el precio, ni el costo, ni el precio unitario ofrecen el selector.
+    for (const id of ['#prod-price-rate', '#prod-cost-rate', '#prod-unit-price-rate']) {
+      expect(fixture.nativeElement.querySelector(id)).toBeNull();
+    }
+    // La moneda de cada monto se sigue eligiendo; lo que se oculto es la tasa.
+    for (const id of ['#prod-price', '#prod-cost', '#prod-unit-price']) {
+      const field = fixture.nativeElement.querySelector(id) as HTMLElement | null;
+      expect(field).not.toBeNull();
+      expect(field?.querySelector('select')).not.toBeNull();
+    }
 
     page.save();
     const request = http.expectOne(
       (candidate) => candidate.method === 'PATCH' && candidate.url === `${API}/products/p1`,
     );
     expect(request.request.body.priceRateKey).toBe('BCV_EUR');
-    expect(request.request.body.costRateKey).toBe('BCV_EUR');
+    expect(request.request.body.costRateKey).toBe('CUSTOM_USD');
     expect(request.request.body.unitPriceRateKey).toBe('BCV_USD');
     request.flush(item);
     expectReload([item]);

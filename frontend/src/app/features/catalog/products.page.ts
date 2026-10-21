@@ -64,12 +64,12 @@ interface ProductForm {
   /** Precio tal como se escribe, en `priceCurrency`. */
   price: number;
   priceCurrency: string;
-  /** Tasa elegida para convertir el precio a USD. */
+  /** Tasa del sistema con la que se convierte el precio a USD. */
   priceRateKey: RateKey;
   /** Costo de la presentacion, en `costCurrency`. */
   cost: number;
   costCurrency: string;
-  /** Tasa elegida para convertir el costo de la presentacion a USD. */
+  /** Tasa del sistema con la que se convierte el costo de la presentacion a USD. */
   costRateKey: RateKey;
   /**
    * PRECIO DE VENTA de una unidad suelta (cajas/paquetes), en
@@ -80,7 +80,7 @@ interface ProductForm {
    */
   unitPrice: number;
   unitPriceCurrency: string;
-  /** Tasa elegida para convertir el precio unitario a USD. */
+  /** Tasa del sistema con la que se convierte el precio unitario a USD. */
   unitPriceRateKey: RateKey;
   stock: number;
   minStock: number;
@@ -181,8 +181,9 @@ export class ProductsPage implements OnInit {
     // Los precios nuevos se cargan en la moneda base del sistema (USD o la que
     // el local haya elegido mostrar); el formulario deja cambiarla.
     const currency = this.rates.baseCode() ?? BASE_CURRENCY.code;
-    // Tasa con la que cada monto se convierte a USD: arranca en la activa del
-    // sistema (la personalizada si el local la definio) y el operador la cambia.
+    // Tasa con la que cada monto se convierte a USD: la activa del sistema (la
+    // personalizada si el local la definio). El formulario no deja elegirla: todos
+    // los montos se calculan con la misma tasa del sistema.
     const rateKey = this.activeRateKey;
     return {
       sku: '',
@@ -216,9 +217,9 @@ export class ProductsPage implements OnInit {
   }
 
   /**
-   * Tasa con la que quedo guardado un monto, normalizada a una de las elegibles.
-   * Un producto anterior a la columna (o con una clave desconocida) arranca con la
-   * tasa activa del sistema.
+   * Tasa con la que quedo guardado un monto, normalizada a una de las tasas del
+   * sistema. Un producto anterior a la columna (o con una clave desconocida)
+   * arranca con la tasa activa del sistema.
    */
   private storedRateKey(saved?: string | null): RateKey {
     const key = String(saved ?? '')
@@ -287,19 +288,9 @@ export class ProductsPage implements OnInit {
     this.form.costCurrency = currency;
   }
 
-  /** Cambia la tasa del costo de la presentacion (independiente de las otras). */
-  onCostRateKeyChange(key: RateKey): void {
-    this.form.costRateKey = key;
-  }
-
   /** Cambia la moneda del precio unitario (independiente de la presentacion). */
   onUnitPriceCurrencyChange(currency: string): void {
     this.form.unitPriceCurrency = currency;
-  }
-
-  /** Cambia la tasa del precio unitario (independiente de las otras). */
-  onUnitPriceRateKeyChange(key: RateKey): void {
-    this.form.unitPriceRateKey = key;
   }
 
   /** Margen estimado (precio - costo) usado como ayuda en el formulario. */
@@ -577,8 +568,8 @@ export class ProductsPage implements OnInit {
       description: this.form.description.trim() || undefined,
       // Cadena vacia = el backend guarda `null` (producto sin foto).
       imageUrl: this.form.imageUrl.trim(),
-      // El backend convierte a USD con la tasa elegida para cada monto y guarda el
-      // contexto (moneda, monto escrito y tasa).
+      // El backend convierte a USD con la tasa del sistema (la guardada o la
+      // activa) y guarda el contexto (moneda, monto escrito y tasa).
       price: Number(this.form.price) || 0,
       priceCurrency: this.form.priceCurrency,
       priceRateKey: this.form.priceRateKey,

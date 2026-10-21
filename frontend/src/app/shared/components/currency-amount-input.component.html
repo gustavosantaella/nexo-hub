@@ -28,7 +28,7 @@
       </select>
     </div>
 
-    @if (rateOptions().length) {
+    @if (showRatePicker && rateOptions().length) {
       <div class="mt-1 flex items-center gap-1.5">
         <label class="shrink-0 text-xs text-slate-500" [attr.for]="id + '-rate'">
           Tasa

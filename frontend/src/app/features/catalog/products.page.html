@@ -326,9 +326,9 @@
               [amount]="form.price"
               [currency]="form.priceCurrency"
               [rateKey]="form.priceRateKey"
+              [showRatePicker]="false"
               (amountChange)="form.price = $event"
               (currencyChange)="form.priceCurrency = $event"
-              (rateKeyChange)="form.priceRateKey = $event"
             />
           </div>
           <div>
@@ -338,10 +338,10 @@
               [amount]="form.cost"
               [currency]="form.costCurrency"
               [rateKey]="form.costRateKey"
+              [showRatePicker]="false"
               hint="Lo que te cuesta comprar esta presentación (caja, paquete o unidad)."
               (amountChange)="onCostChange($event)"
               (currencyChange)="onCostCurrencyChange($event)"
-              (rateKeyChange)="onCostRateKeyChange($event)"
             />
           </div>
           @if (isBoxForm) {
@@ -352,10 +352,10 @@
                 [amount]="form.unitPrice"
                 [currency]="form.unitPriceCurrency"
                 [rateKey]="form.unitPriceRateKey"
+                [showRatePicker]="false"
                 hint="Precio al que se vende una unidad suelta al abrir la caja. Déjalo en 0 para repartir el precio de la presentación entre sus unidades."
                 (amountChange)="onUnitPriceChange($event)"
                 (currencyChange)="onUnitPriceCurrencyChange($event)"
-                (rateKeyChange)="onUnitPriceRateKeyChange($event)"
               />
               @if (unitPriceReference; as reference) {
                 <p class="mt-1 text-[11px] text-slate-400">

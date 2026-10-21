@@ -1,30 +1,24 @@
 
-    @if (view() === 'arqueo') {
-      <app-page-header
-        title="Caja"
-        subtitle="Control de la sesión de caja y arqueo en vivo"
-        icon="wallet"
-      >
-        <button type="button" class="btn-primary" (click)="openPos()">
-          <app-icon name="shopping-cart" size="h-4 w-4" />
-          Vista de cajero
+    <app-page-header
+      title="Caja"
+      subtitle="Control de la sesión de caja y arqueo en vivo"
+      icon="wallet"
+    >
+      <a routerLink="/panel/caja/pos" class="btn-primary">
+        <app-icon name="shopping-cart" size="h-4 w-4" />
+        Vista de cajero
+      </a>
+      @if (session()) {
+        <button type="button" class="btn-secondary" (click)="openMovement()">
+          <app-icon name="plus" size="h-4 w-4" />
+          Registrar movimiento
         </button>
-        @if (session()) {
-          <button type="button" class="btn-secondary" (click)="openMovement()">
-            <app-icon name="plus" size="h-4 w-4" />
-            Registrar movimiento
-          </button>
-          <button type="button" class="btn-primary" (click)="openClose()">
-            <app-icon name="wallet" size="h-4 w-4" />
-            Cerrar caja
-          </button>
-        }
-      </app-page-header>
-    }
-
-    @if (view() === 'pos') {
-      <app-pos (exit)="closePos()" />
-    } @else {
+        <button type="button" class="btn-primary" (click)="openClose()">
+          <app-icon name="wallet" size="h-4 w-4" />
+          Cerrar caja
+        </button>
+      }
+    </app-page-header>
 
     @if (loading()) {
       <app-loader />
@@ -1048,5 +1042,4 @@
         <button type="button" class="btn-secondary" (click)="closeMovementDetail()">Cerrar</button>
       </div>
     </ng-template>
-    }
   

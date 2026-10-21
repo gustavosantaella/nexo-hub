@@ -29,6 +29,11 @@ import { RateConversionsComponent } from './rate-conversions.component';
  * para convertir a la moneda base y la que el API guarda). Sin `rateKey` el
  * campo se comporta como antes: convierte con la tasa activa del sistema.
  *
+ * Con `showRatePicker = false` se oculta ese selector pero el campo sigue
+ * calculando (y guardando) con la tasa recibida: lo usan los formularios en los
+ * que la tasa se decide en otra parte y solo se quiere mostrar el monto con su
+ * moneda (por ejemplo, el catalogo de productos).
+ *
  * El valor que viaja al API es el monto tal como se escribio, junto con el
  * codigo de la moneda y la tasa elegida; el backend lo convierte a la moneda base
  * contable (USD) y guarda tambien la tasa aplicada. Se usa con doble binding:
@@ -66,6 +71,11 @@ export class CurrencyAmountInputComponent {
    * `null` desactiva el selector de tasa: el campo convierte con la activa.
    */
   @Input() rateKey: RateKey | null = null;
+  /**
+   * `false` oculta el selector de tasa: el monto se sigue calculando y guardando
+   * con `rateKey` (o con la activa del sistema), pero el operador no lo cambia.
+   */
+  @Input() showRatePicker = true;
   @Input() placeholder: string | null = null;
   @Input() step = '0.01';
   @Input() showLabel = true;
