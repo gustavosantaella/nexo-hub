@@ -6,19 +6,40 @@
     >
       <button
         type="button"
-        class="btn-secondary"
+        class="btn-secondary px-2.5 sm:min-w-[10rem] sm:px-4"
         [disabled]="refreshDisabled()"
+        [attr.aria-busy]="refreshing()"
+        [attr.aria-label]="refreshAriaLabel()"
+        [attr.title]="refreshTitle()"
         (click)="refresh()"
       >
-        <app-icon name="refresh" size="h-4 w-4" />
-        @if (refreshCooldown() > 0) {
-          Actualizar en {{ refreshCooldown() }} s
-        } @else if (refreshing()) {
-          Actualizando…
+        @if (refreshing()) {
+          <span
+            class="h-4 w-4 animate-spin rounded-full border-2 border-current border-t-transparent"
+            aria-hidden="true"
+          ></span>
+          <span class="hidden sm:inline">Actualizando…</span>
         } @else {
-          Actualizar
+          <app-icon [name]="refreshCooldown() > 0 ? 'clock' : 'refresh'" size="h-4 w-4" />
+          <span class="hidden sm:inline">Actualizar</span>
+          @if (refreshCooldown() > 0) {
+            <span
+              class="rounded-full bg-slate-500/10 px-1.5 py-0.5 text-[11px] font-semibold tabular-nums text-slate-500"
+            >
+              {{ refreshCooldown() }} s
+            </span>
+          }
         }
       </button>
+      @if (lastRefreshAt()) {
+        <span
+          class="order-last w-full text-left text-xs text-slate-500 sm:order-none sm:w-auto"
+          [attr.title]="'Última actualización: ' + dateTime(lastRefreshAt())"
+          aria-live="polite"
+        >
+          Actualizado a las {{ lastRefreshTime() }}
+        </span>
+      }
       <a routerLink="/panel/caja/pos" class="btn-primary">
         <app-icon name="shopping-cart" size="h-4 w-4" />
         Vista de cajero

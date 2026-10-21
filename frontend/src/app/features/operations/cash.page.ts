@@ -127,7 +127,7 @@ const REFRESH_COOLDOWN_MS = 10_000;
   changeDetection: ChangeDetectionStrategy.OnPush,
   templateUrl: './cash.page.html',
 })
-export class CashPage implements OnInit {
+export class CashPage implements OnInit, OnDestroy {
   private readonly cash = inject(CashService);
   private readonly toast = inject(ToastService);
   private readonly rates = inject(RatesService);
@@ -375,6 +375,33 @@ export class CashPage implements OnInit {
 
   /** Segundos que faltan para poder volver a actualizar la caja. */
   readonly refreshCooldown = signal(0);
+  /** Momento de la última recarga manual, para mostrarlo en la cabecera. */
+  readonly lastRefreshAt = signal<Date | null>(null);
+  /** Hora local (con segundos) de la última recarga manual. */
+  readonly lastRefreshTime = computed(() => {
+    const at = this.lastRefreshAt();
+    if (!at) return '';
+    return new Intl.DateTimeFormat('es-PE', {
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+      hour12: false,
+    }).format(at);
+  });
+  /** Nombre accesible del botón: cambia con la recarga y el cooldown. */
+  readonly refreshAriaLabel = computed(() => {
+    if (this.refreshing()) return 'Actualizando datos de caja';
+    const seconds = this.refreshCooldown();
+    return seconds > 0
+      ? `Actualizar datos de caja, disponible en ${seconds} segundos`
+      : 'Actualizar datos de caja';
+  });
+  /** Tooltip del botón, útil sobre todo cuando está deshabilitado. */
+  readonly refreshTitle = computed(() => {
+    if (this.refreshing()) return 'Actualizando…';
+    const seconds = this.refreshCooldown();
+    return seconds > 0 ? `Espera ${seconds} s para volver a actualizar` : 'Actualizar datos de caja';
+  });
   /** Deshabilita «Actualizar» mientras recarga o durante el cooldown. */
   readonly refreshDisabled = computed(
     () => this.refreshing() || this.refreshCooldown() > 0,
@@ -405,14 +432,28 @@ export class CashPage implements OnInit {
    * movimientos e historial de sesiones. No toca filtros ni paginación, y evita
    * que el operador tenga que recargar la página completa. Solo se permite una
    * vez cada 10 segundos.
+   *
+   * Las tasas se piden sin `force`: el backend ya las cachea 15 minutos y no
+   * tiene sentido consultar el BCV en cada clic.
    */
   refresh(): void {
     if (this.refreshDisabled()) return;
-    this.rates.load(true);
-    this.load();
-    this.loadMovements();
-    this.loadSessions();
+    this.rates.load();
+    // La hora se marca cuando terminan las recargas de la caja, no al hacer clic.
+    const settled = this.refreshSettled(3);
+    this.load(settled);
+    this.loadMovements(settled);
+    this.loadSessions(settled);
     this.startRefreshCooldown();
+  }
+
+  /** Callback que marca `lastRefreshAt` cuando terminó la última recarga. */
+  private refreshSettled(pending: number): () => void {
+    let remaining = pending;
+    return () => {
+      remaining -= 1;
+      if (remaining === 0) this.lastRefreshAt.set(new Date());
+    };
   }
 
   /** Arranca la cuenta regresiva que bloquea el botón durante 10 segundos. */
@@ -437,7 +478,7 @@ export class CashPage implements OnInit {
     this.refreshTimer = null;
   }
 
-  load(): void {
+  load(onSettled?: () => void): void {
     this.loading.set(true);
     this.cash.current().subscribe({
       next: (response) => {
@@ -453,11 +494,13 @@ export class CashPage implements OnInit {
         this.session.set(session && session.status === 'OPEN' ? session : null);
         this.summary.set(session ? summary : null);
         this.loading.set(false);
+        onSettled?.();
       },
       error: () => {
         this.session.set(null);
         this.summary.set(null);
         this.loading.set(false);
+        onSettled?.();
       },
     });
   }
@@ -1502,7 +1545,7 @@ export class CashPage implements OnInit {
       });
   }
 
-  loadMovements(): void {
+  loadMovements(onSettled?: () => void): void {
     this.movLoading.set(true);
     this.cash
       .movements({
@@ -1518,8 +1561,12 @@ export class CashPage implements OnInit {
           this.movItems.set(response.items);
           this.movMeta.set(response.meta);
           this.movLoading.set(false);
+          onSettled?.();
         },
-        error: () => this.movLoading.set(false),
+        error: () => {
+          this.movLoading.set(false);
+          onSettled?.();
+        },
       });
   }
 
@@ -1534,15 +1581,19 @@ export class CashPage implements OnInit {
     this.loadMovements();
   }
 
-  loadSessions(): void {
+  loadSessions(onSettled?: () => void): void {
     this.sesLoading.set(true);
     this.cash.sessions({ page: this.sesPage, limit: this.sesLimit }).subscribe({
       next: (response) => {
         this.sesItems.set(response.items);
         this.sesMeta.set(response.meta);
         this.sesLoading.set(false);
+        onSettled?.();
       },
-      error: () => this.sesLoading.set(false),
+      error: () => {
+        this.sesLoading.set(false);
+        onSettled?.();
+      },
     });
   }
 
