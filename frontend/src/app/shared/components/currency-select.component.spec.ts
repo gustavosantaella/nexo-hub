@@ -262,8 +262,8 @@ describe('CurrencySelectComponent', () => {
     fixture.detectChanges();
 
     expect(options()[0].textContent).toContain('Dólares (USD) · tasa BCV');
-    // $ 10 al cambio del BCV son Bs 8.767,98 (con la personalizada, 9.055,00).
-    expect(fixture.nativeElement.textContent).toContain('Bs 8,767.98');
+    // $ 10 al cambio del BCV son Bs 8.767,976 (con la personalizada, 9.055,00).
+    expect(fixture.nativeElement.textContent).toContain('Bs 8,767.97');
     expect(fixture.nativeElement.textContent).toContain('tasa BCV');
   });
 
@@ -282,10 +282,10 @@ describe('CurrencySelectComponent', () => {
     fixture.componentInstance.rateKey.set('BCV_USD');
     fixture.detectChanges();
 
-    // 9.055 Bs al cambio del BCV (876,7976) son $ 10.33: lo mismo que guarda el
-    // API, y la ayuda nombra la tasa para que el número se explique.
+    // 9.055 Bs al cambio del BCV (876,7976) son $ 10,3276...: se leen $ 10.32,
+    // con la tasa nombrada para que el número se explique.
     expect(fixture.nativeElement.textContent).toContain(
-      '= $ 10.33 · Bs 9,055.00 · tasa BCV',
+      '= $ 10.32 · Bs 9,055.00 · tasa BCV',
     );
   });
 

@@ -206,8 +206,9 @@ describe('CashPage (fondo inicial multimoneda)', () => {
       { currency: 'EUR', amount: 50 },
     ];
 
-    // 100 + 5000/905 (5.52) + 50*982.00454402/905 (54.25)
-    expect(page.openingTotal).toBeCloseTo(159.77, 2);
+    // 100 + 5000/905 (5,524861...) + 50*982.00454402/905 (54,254395...) =
+    // 159,779256..., sin redondear a centavos.
+    expect(page.openingTotal).toBeCloseTo(159.7792565757, 8);
     expect(page.openingMissingRates).toEqual([]);
     expect(page.openingLines.length).toBe(3);
   });
@@ -247,7 +248,8 @@ describe('CashPage (fondo inicial multimoneda)', () => {
       (candidate) =>
         candidate.method === 'POST' && candidate.url === `${API}/cash/open`,
     );
-    expect(request.request.body.openingAmount).toBe(105.52);
+    // 100 + 5000/905 = 105,524861...: el fondo viaja con la precisión completa.
+    expect(request.request.body.openingAmount).toBeCloseTo(100 + 5000 / 905, 8);
     expect(request.request.body.openingLines).toEqual([
       { currency: 'USD', amount: 100 },
       { currency: 'VES', amount: 5000 },

@@ -33,31 +33,7 @@ import { SidebarComponent } from './sidebar.component';
   standalone: true,
   imports: [NgTemplateOutlet, ModalComponent, SidebarComponent],
   changeDetection: ChangeDetectionStrategy.OnPush,
-  template: `
-    @if (variant === 'sidebar') {
-      <app-sidebar
-        [open]="open"
-        [title]="title"
-        [subtitle]="subtitle"
-        [size]="size"
-        (closed)="closed.emit()"
-      >
-        <ng-container [ngTemplateOutlet]="body" />
-        <ng-container [ngTemplateOutlet]="footer" ngProjectAs="[sidebarFooter]" />
-      </app-sidebar>
-    } @else {
-      <app-modal
-        [open]="open"
-        [title]="title"
-        [subtitle]="subtitle"
-        [size]="size"
-        (closed)="closed.emit()"
-      >
-        <ng-container [ngTemplateOutlet]="body" />
-        <ng-container [ngTemplateOutlet]="footer" ngProjectAs="[modalFooter]" />
-      </app-modal>
-    }
-  `,
+  templateUrl: './dialog.component.html',
 })
 export class DialogComponent {
   @Input() open = false;

@@ -296,9 +296,9 @@ describe('MoneyComponent (montos al cambio)', () => {
 
     expect(text).toContain('$ 10.00');
     expect(text).toContain('BCV $');
-    expect(text).toContain('Bs 8,767.98');
+    expect(text).toContain('Bs 8,767.97');
     expect(text).toContain('BCV €');
-    expect(text).toContain('Bs 9,820.05');
+    expect(text).toContain('Bs 9,820.04');
     expect(text).not.toContain('Personalizada');
   });
 
@@ -306,8 +306,8 @@ describe('MoneyComponent (montos al cambio)', () => {
     const text = load(WITH_CUSTOM);
 
     expect(text).not.toContain('Personalizada');
-    expect(text).toContain('Bs 8,767.98');
-    expect(text).toContain('Bs 9,820.05');
+    expect(text).toContain('Bs 8,767.97');
+    expect(text).toContain('Bs 9,820.04');
   });
 
   it('oculta las conversiones cuando el interruptor global está apagado', () => {
@@ -328,7 +328,7 @@ describe('MoneyComponent (montos al cambio)', () => {
     fixture.detectChanges();
 
     expect(fixture.nativeElement.textContent).toContain('$ 2.00');
-    expect(fixture.nativeElement.textContent).toContain('Bs 1,753.60');
+    expect(fixture.nativeElement.textContent).toContain('Bs 1,753.59');
   });
 
   it('abrevia el monto y su conversion cuando no caben en el hueco', () => {
@@ -352,12 +352,12 @@ describe('MoneyComponent (montos al cambio)', () => {
     const text = load(withBase('VES'));
 
     // 10 USD * 876.7976 = 8 767,98 Bs (la moneda base ahora es el bolivar).
-    expect(text).toContain('Bs 8,767.98');
+    expect(text).toContain('Bs 8,767.97');
     // Debajo no se pierde ninguna tasa: cada linea va rotulada con su moneda y el
     // origen de su tasa, con el equivalente EN DIVISA del monto (el monto base ya
     // esta en bolivares, asi que repetir bolivares no diria nada nuevo).
     expect(text).toContain('USD · BCV $ 10.00');
-    expect(text).toContain('EUR · BCV € 8.93');
+    expect(text).toContain('EUR · BCV € 8.92');
     expect(text).not.toContain('Personalizada');
   });
 
@@ -367,7 +367,7 @@ describe('MoneyComponent (montos al cambio)', () => {
     // Listado con la moneda base en bolivares: la tasa personalizada del local no
     // tapa al dolar del BCV. El monto en Bs (9.054,20 a la tasa del local) vuelto
     // a divisa: al BCV son 10,33 dolares y al euro del BCV 9,22.
-    expect(text).toContain('USD · BCV $ 10.33');
+    expect(text).toContain('USD · BCV $ 10.32');
     expect(text).toContain('EUR · BCV € 9.22');
     expect(text).not.toContain('personalizada');
     // La moneda base usa la tasa activa (la personalizada del local).
@@ -462,7 +462,7 @@ describe('MoneyComponent (conversiones que ve el cajero)', () => {
 
     expect(rates.allowedConversionCodes()).toEqual([]);
     // El precio se ve en la moneda que le configuraron…
-    expect(text).toContain('Bs 8,767.98');
+    expect(text).toContain('Bs 8,767.97');
     // …y debajo no aparece ninguna conversión "al cambio".
     expect(text).not.toContain('BCV $');
     expect(text).not.toContain('BCV €');
@@ -476,7 +476,7 @@ describe('MoneyComponent (conversiones que ve el cajero)', () => {
     const text = load(BCV_ONLY);
 
     expect(text).toContain('BCV $');
-    expect(text).toContain('Bs 8,767.98');
+    expect(text).toContain('Bs 8,767.97');
   });
 
   it('con la moneda base de la empresa en otra moneda, deja pasar las activadas', () => {
@@ -641,7 +641,7 @@ describe('MoneyComponent (monto tal como se cargó)', () => {
     const text = fixture.nativeElement.textContent as string;
 
     // Se cargó en dólares: no hay nada que recuperar, manda la conversión.
-    expect(base?.textContent?.trim()).toBe('Bs 8,767.98');
+    expect(base?.textContent?.trim()).toBe('Bs 8,767.97');
     expect(text).toContain('USD · BCV $ 10.00');
   });
 });
@@ -738,7 +738,7 @@ describe('MoneyComponent (precio en dólares del BCV)', () => {
     const text = load(withBase('VES'));
 
     // El precio en bolívares y sus conversiones, pero nada del dólar oficial.
-    expect(text).toContain('Bs 8,767.98');
+    expect(text).toContain('Bs 8,767.97');
     expect(rates.showBcvPrice()).toBeFalse();
     expect(bcvLines(text)).toBe(0);
     expect(bcvBsLines(text)).toBe(0);
@@ -763,7 +763,7 @@ describe('MoneyComponent (precio en dólares del BCV)', () => {
     // y la línea oficial son ESOS bolívares al BCV: 9.054,20 / 876,7976 = $ 10,33.
     // Con el monto guardado en dólares salía $ 10,00: los de la vitrina, no el BCV.
     expect(text).toContain('Bs 9,054.20');
-    expect(text).toContain('USD · BCV $ 10.33');
+    expect(text).toContain('USD · BCV $ 10.32');
     expect(text).not.toContain('USD · BCV $ 10.00');
     expect(bcvLines(text)).toBe(1);
   });
@@ -781,7 +781,7 @@ describe('MoneyComponent (precio en dólares del BCV)', () => {
     const text = fixture.nativeElement.textContent as string;
 
     expect(text).toContain('Bs 9,054.20');
-    expect(text).toContain('USD · BCV $ 10.33');
+    expect(text).toContain('USD · BCV $ 10.32');
     expect(text).not.toContain('USD · BCV $ 9.92');
   });
 
@@ -817,7 +817,7 @@ describe('MoneyComponent (precio en dólares del BCV)', () => {
 
     // La preferencia es de la caja: ADMIN y MANAGER conservan su vista.
     expect(rates.showBcvPrice()).toBeFalse();
-    expect(text).toContain('Bs 8,767.98');
+    expect(text).toContain('Bs 8,767.97');
     expect(bcvLines(text)).toBe(1);
   });
 
@@ -836,7 +836,7 @@ describe('MoneyComponent (precio en dólares del BCV)', () => {
     // El dólar oficial sale de los bolívares cobrados (350 / 876,7976 = $ 0,40) y no
     // de reconvertir el equivalente guardado (0,36 * 876,7976 / 876,7976 = $ 0,36).
     expect(text).toContain('Bs 350.00');
-    expect(text).toContain('USD · BCV $ 0.40');
+    expect(text).toContain('USD · BCV $ 0.39');
     expect(bcvLines(text)).toBe(1);
   });
 
@@ -850,7 +850,7 @@ describe('MoneyComponent (precio en dólares del BCV)', () => {
     expect(rates.showBcvPrice()).toBeTrue();
     // $ 10,00 a 876,7976 Bs por dólar son los 8 767,98 Bs del monto.
     expect(text).toContain('$ 10.00');
-    expect(text).toContain('VES · BCV Bs 8,767.98');
+    expect(text).toContain('VES · BCV Bs 8,767.97');
     expect(bcvBsLines(text)).toBe(1);
     expect(bcvLines(text)).toBe(0);
   });
@@ -862,7 +862,7 @@ describe('MoneyComponent (precio en dólares del BCV)', () => {
     companyPrefs({ priceCurrency: null, showBcvPrice: true });
     const text = load(WITH_CUSTOM);
 
-    expect(text).toContain('VES · BCV Bs 8,767.98');
+    expect(text).toContain('VES · BCV Bs 8,767.97');
     expect(text).not.toContain('VES · BCV Bs 9,054.20');
   });
 });

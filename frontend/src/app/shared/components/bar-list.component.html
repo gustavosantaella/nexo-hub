@@ -1,0 +1,31 @@
+
+    <div class="space-y-3">
+      @for (row of rows; track row.label) {
+        <div>
+          <div class="flex items-baseline justify-between gap-3 text-xs">
+            <span class="truncate font-medium text-slate-700" [title]="row.label">{{ row.label }}</span>
+            <span class="shrink-0 whitespace-nowrap">
+              <span class="font-medium text-slate-700" [attr.title]="titleOf(row)">{{ valueOf(row) }}</span>
+              @if (row.caption) {
+                <span class="text-slate-400" [attr.title]="row.captionTitle"> · {{ row.caption }}</span>
+              }
+            </span>
+          </div>
+          <div class="relative mt-1 h-2 w-full rounded-full bg-slate-100">
+            <div
+              class="h-full rounded-full transition-[width] duration-300"
+              [class]="row.color?.fill ?? 'bg-brand-500'"
+              [style.width.%]="widthOf(row.value)"
+            ></div>
+            @if (row.marker !== undefined) {
+              <span
+                class="absolute -top-0.5 h-3 w-0.5 rounded-full bg-slate-500"
+                [style.left.%]="widthOf(row.marker)"
+                [attr.title]="markerOf(row)"
+              ></span>
+            }
+          </div>
+        </div>
+      }
+    </div>
+  

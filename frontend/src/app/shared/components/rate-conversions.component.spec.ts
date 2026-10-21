@@ -207,9 +207,9 @@ describe('RateConversionsComponent', () => {
     fixture.componentInstance.rateKey.set('BCV_USD');
     fixture.detectChanges();
 
-    // 1.000 soles son 250 Bs y, al cambio del BCV (900), $ 0.28 (con la
+    // 1.000 soles son 250 Bs y, al cambio del BCV (900), $ 0.27 (con la
     // personalizada del local serian $ 0.26: la tasa elegida es la que manda).
-    expect(text()).toContain('=: $ 0.28');
+    expect(text()).toContain('=: $ 0.27');
   });
 
   /**

@@ -9,7 +9,6 @@ import {
 import {
   BASE_CURRENCY_CODE,
   LOCAL_CURRENCY_CODE,
-  currencyMeta,
   rateKeySource,
   rateSourceLabel,
 } from '../../core/constants/currency';
@@ -45,32 +44,7 @@ import { IconComponent } from './icon.component';
   standalone: true,
   imports: [IconComponent],
   changeDetection: ChangeDetectionStrategy.OnPush,
-  template: `
-    @if (showLabel) {
-      <label class="label" [attr.for]="id">{{ label }}</label>
-    }
-    <select
-      class="input"
-      [id]="id"
-      [disabled]="disabled"
-      (change)="onChange($event)"
-    >
-      @for (option of options(); track option.code) {
-        <option [value]="option.code" [selected]="option.code === code()">
-          {{ optionLabel(option) }}
-        </option>
-      }
-    </select>
-
-    @if (missingRate) {
-      <p class="mt-1 flex items-center gap-1 text-xs text-rose-600">
-        <app-icon name="alert" size="h-3.5 w-3.5" />
-        {{ value }} no tiene tasa configurada. Definela en Configuración → Monedas.
-      </p>
-    } @else if (hint) {
-      <p class="mt-1 text-xs text-slate-400">{{ hint }}</p>
-    }
-  `,
+  templateUrl: './currency-select.component.html',
 })
 export class CurrencySelectComponent {
   private readonly rates = inject(RatesService);
@@ -145,8 +119,7 @@ export class CurrencySelectComponent {
 
     const converted = this.rates.toBase(amount, code, this.rateKey);
     if (converted === null) return null;
-    const symbol = currencyMeta(BASE_CURRENCY_CODE).symbol;
-    return `= ${symbol} ${converted.toFixed(2)} · ${moneyIn(amount, code)}${this.conversionHint(code)}`;
+    return `= ${moneyIn(converted, BASE_CURRENCY_CODE)} · ${moneyIn(amount, code)}${this.conversionHint(code)}`;
   }
 
   /**

@@ -24,11 +24,6 @@ import type { DisplayCurrency } from '../utils/format';
 import { sessionChanges, storedCanManage, storedIsCashier } from '../auth/session';
 import { PreferencesService } from './preferences.service';
 
-/** Redondeo monetario (2 decimales) equivalente al del backend. */
-function round2(value: number): number {
-  return Math.round((value + Number.EPSILON) * 100) / 100;
-}
-
 /** Moneda base mientras las tasas aún no se han cargado (dólares). */
 const DEFAULT_BASE_CURRENCY: BaseCurrencyInfo = {
   code: BASE_CURRENCY.code,
@@ -344,7 +339,7 @@ export class RatesService {
       )
       .map((item) => {
         const bsPerUnit = item.bsPerUnit as number;
-        const value = round2((usd * bsPerUsd) / bsPerUnit);
+        const value = (usd * bsPerUsd) / bsPerUnit;
         // La tasa personalizada no se rotula: es el precio de vitrina, no una
         // tasa de cobro. La moneda se muestra sola (`USD`) y el monto sigue
         // siendo el equivalente de vitrina.
@@ -394,7 +389,7 @@ export class RatesService {
     // dividirlos por la tasa de cada línea queda el equivalente en su moneda.
     const bsAmount = usd * bsPerUsd;
     const byRate: RateConversion[] = options.map((option) => {
-      const value = round2(bsAmount / option.rate);
+      const value = bsAmount / option.rate;
       return {
         key: option.key,
         code: option.currency,
@@ -421,7 +416,7 @@ export class RatesService {
    */
   conversionWithBs(item: RateConversion, bsAmount: number): RateConversion {
     if (item.inBs) return { ...item, amount: bsAmount, text: bs(bsAmount) };
-    const value = round2(bsAmount / item.rate);
+    const value = bsAmount / item.rate;
     return { ...item, amount: value, text: moneyIn(value, item.code) };
   }
 
@@ -444,12 +439,10 @@ export class RatesService {
    * Ese número —el que el operador lee en el pedido— es el precio que se cobra.
    */
   displayAmount(amount: number | null | undefined): number {
-    // Se redondea PRIMERO el monto en moneda base: el cajero lee 2 decimales en
-    // pantalla y la conversion tiene que partir de ese mismo numero. Sin esto un
-    // total guardado de USD 9,3494 se veia como USD 9,35 pero al pasarlo a Bs con
-    // la tasa BCV daba Bs 8.245,00 en vez de los Bs 8.245,48 que resultan de los
-    // 9,35 que el cajero esta leyendo (la diferencia era solo el redondeo oculto).
-    const value = round2(Number(amount ?? 0));
+    // Sin redondear: el monto en moneda base viaja con toda su precisión y solo
+    // se recorta al pintarlo. Redondearlo primero a 2 decimales hacía que el
+    // cobro en bolívares no coincidiera con el total del pedido.
+    const value = Number(amount ?? 0);
     const code = displayBaseCode();
     if (code === BASE_CURRENCY_CODE) return value;
     return this.fromBase(value, code) ?? value;
@@ -464,7 +457,7 @@ export class RatesService {
     amount: number | null | undefined,
     currency?: string | null,
   ): number {
-    const value = round2(Number(amount ?? 0));
+    const value = Number(amount ?? 0);
     const target =
       String(currency ?? '').trim().toUpperCase() || BASE_CURRENCY_CODE;
     if (target === BASE_CURRENCY_CODE) return value;
@@ -581,8 +574,8 @@ export class RatesService {
    *
    * `bsAmount` son los bolívares tal como los escribió el operador cuando el
    * registro los guarda (`priceEntered`): con eso la línea respeta lo cargado y no
-   * el redondeo a centavos del equivalente en dólares. Sin él se usan los
-   * bolívares que salen de la tasa activa del sistema.
+   * el equivalente en dólares guardado. Sin él se usan los bolívares que salen de
+   * la tasa activa del sistema.
    *
    * Devuelve `null` cuando falta la tasa del BCV o no hay monto que convertir.
    */
@@ -605,7 +598,7 @@ export class RatesService {
     // escribió el operador son de otra tasa (la del local), así que aquí no aplican.
     if (shown !== LOCAL_CURRENCY_CODE) {
       if (!usd) return null;
-      const value = round2(usd * rate);
+      const value = usd * rate;
       return {
         key: BCV_USD_RATE_KEY,
         code: LOCAL_CURRENCY_CODE,
@@ -624,7 +617,7 @@ export class RatesService {
     const bsTotal = Number.isFinite(entered) ? entered : usd * rate;
     if (!bsTotal) return null;
 
-    const value = round2(bsTotal / rate);
+    const value = bsTotal / rate;
     return {
       key: BCV_USD_RATE_KEY,
       code: BASE_CURRENCY_CODE,
@@ -690,14 +683,14 @@ export class RatesService {
     const value = Number(amount ?? 0);
     const normalized =
       String(code ?? '').trim().toUpperCase() || BASE_CURRENCY_CODE;
-    if (normalized === BASE_CURRENCY_CODE) return round2(value);
+    if (normalized === BASE_CURRENCY_CODE) return value;
 
     const bsPerUsd = this.bsPerUsdWith(key);
     if (!bsPerUsd) return null;
     const bsPerUnit = this.bsPerUnit(normalized);
     if (!bsPerUnit) return null;
 
-    return round2((value * bsPerUnit) / bsPerUsd);
+    return (value * bsPerUnit) / bsPerUsd;
   }
 
   /** Convierte un monto de la moneda base (USD) a `code` con la tasa elegida. */
@@ -709,13 +702,13 @@ export class RatesService {
     const value = Number(amount ?? 0);
     const normalized =
       String(code ?? '').trim().toUpperCase() || BASE_CURRENCY_CODE;
-    if (normalized === BASE_CURRENCY_CODE) return round2(value);
+    if (normalized === BASE_CURRENCY_CODE) return value;
 
     const bsPerUsd = this.bsPerUsdWith(key);
     const bsPerUnit = this.bsPerUnit(normalized);
     if (!bsPerUsd || !bsPerUnit) return null;
 
-    return round2((value * bsPerUsd) / bsPerUnit);
+    return (value * bsPerUsd) / bsPerUnit;
   }
 
   /**

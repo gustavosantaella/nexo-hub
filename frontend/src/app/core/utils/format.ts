@@ -51,6 +51,23 @@ export function displayBaseLabel(): string {
 }
 
 /**
+ * Recorta un numero a `digits` decimales **sin redondear** (truncamiento).
+ *
+ * Los montos viajan y se calculan con toda su precision; esto es solo para
+ * mostrarlos. Ej.: `truncate(17.568485397328504, 2)` -> `17.56` (redondear daria
+ * 17.57 y al volver a bolivares ya no daria los 15.520,00 originales).
+ *
+ * Suma una tolerancia relativa minima para que el ruido del punto flotante no
+ * pierda un centavo: `0.7 * 3 = 2.0999999999999996` se lee `2.10`, no `2.09`.
+ */
+export function truncate(value: number | null | undefined, digits = 2): number {
+  const amount = Number(value ?? 0);
+  if (!Number.isFinite(amount)) return 0;
+  const factor = 10 ** digits;
+  return Math.trunc(amount * factor + amount * 1e-12) / factor;
+}
+
+/**
  * Monto guardado en dólares (moneda base contable) con su símbolo, valor y
  * decimales ya expresados en la moneda de visualización.
  */
@@ -59,11 +76,10 @@ function toDisplay(value: number | null | undefined): {
   value: number;
   decimals: number;
 } {
-  // El monto se redondea a centavos ANTES de convertir: es el numero que el
-  // operador lee en pantalla y el que debe usar cualquier conversion posterior
-  // (ej. USD 9,3494 se lee $ 9,35 y a 881,87 Bs/USD son Bs 8.245,48, no 8.245,00).
-  const raw = Number(value ?? 0);
-  const amount = Math.round((raw + Number.EPSILON) * 100) / 100;
+  // El monto conserva toda su precision: redondearlo a centavos antes de
+  // convertir hacia que Bs 15.520,00 al BCV (883,40) se cobraran como $ 17,57 y
+  // de vuelta dieran Bs 15.521,34. Solo se recorta al pintarlo (`decimal`).
+  const amount = Number(value ?? 0);
   const state = display();
   if (state.code === BASE_CURRENCY.code) {
     return { symbol: state.symbol, value: amount, decimals: state.decimals };
@@ -80,12 +96,17 @@ function toDisplay(value: number | null | undefined): {
   };
 }
 
-/** Numero con separador de miles y la cantidad de decimales indicada. */
+/**
+ * Numero con separador de miles y la cantidad de decimales indicada.
+ *
+ * Recorta (no redondea) a esos decimales: la precision completa se queda en el
+ * numero y solo la vista pierde el resto.
+ */
 function decimal(value: number, digits: number): string {
   return new Intl.NumberFormat(BASE_CURRENCY.locale, {
     minimumFractionDigits: digits,
     maximumFractionDigits: digits,
-  }).format(Number.isFinite(value) ? value : 0);
+  }).format(truncate(Number.isFinite(value) ? value : 0, digits));
 }
 
 /**
@@ -137,15 +158,13 @@ export function signedPercent(
   digits = 2,
 ): string {
   const amount = Number(value ?? 0);
-  return `${amount > 0 ? '+' : ''}${amount.toFixed(digits)}%`;
+  const safe = truncate(Number.isFinite(amount) ? amount : 0, digits);
+  return `${amount > 0 ? '+' : ''}${safe.toFixed(digits)}%`;
 }
 
-/** Numero con separador de miles (sin simbolo de moneda). */
+/** Numero con separador de miles (sin simbolo de moneda), recortado sin redondear. */
 export function number(value: number | null | undefined, digits = 0): string {
-  return new Intl.NumberFormat(BASE_CURRENCY.locale, {
-    minimumFractionDigits: digits,
-    maximumFractionDigits: digits,
-  }).format(Number(value ?? 0));
+  return decimal(Number(value ?? 0), digits);
 }
 
 /**
@@ -155,7 +174,7 @@ export function number(value: number | null | undefined, digits = 0): string {
  */
 export function quantity(value: number | null | undefined, digits = 3): string {
   const amount = Number(value ?? 0);
-  const safe = Number.isFinite(amount) ? Math.round(amount * 1000) / 1000 : 0;
+  const safe = truncate(Number.isFinite(amount) ? amount : 0, digits);
   return new Intl.NumberFormat(BASE_CURRENCY.locale, {
     maximumFractionDigits: digits,
   }).format(safe);
@@ -231,13 +250,14 @@ export function moneyInCompact(
  * Monto **tal como lo escribió el operador** (`*Entered`, en `*Currency`)
  * cuando el sistema está mostrando los montos en ESA misma moneda.
  *
- * Los montos se guardan en dólares (moneda base contable) redondeados a
- * centavos, así que un precio escrito en bolívares se redondea al convertirlo:
- * Bs 350,00 a 970 Bs por dólar son $ 0,36 y al volver a bolívares daría
- * **349,20**. Con el contexto de moneda del precio (`priceEntered` +
- * `priceCurrency`, `unitPriceEntered` + `unitPriceCurrency`, …) la pantalla
- * recupera lo que se escribió; las conversiones que van debajo siguen mostrando
- * el equivalente contable de cada moneda y tasa.
+ * Los montos se guardan en dólares (moneda base contable) con precisión completa
+ * y solo se recortan a 2 decimales al pintarlos, así que un precio escrito en
+ * bolívares no siempre vuelve exacto: Bs 350,00 a 970 Bs por dólar son
+ * $ 0,36… y al reconvertir puede quedar **349,20**. Con el contexto de moneda del
+ * precio (`priceEntered` + `priceCurrency`, `unitPriceEntered` +
+ * `unitPriceCurrency`, …) la pantalla recupera lo que se escribió; las
+ * conversiones que van debajo siguen mostrando el equivalente contable de cada
+ * moneda y tasa.
  *
  * Devuelve `null` cuando no aplica (sin monto escrito, en `0` —que también se
  * guarda en `0`— o cuando el monto se escribió en otra moneda).
@@ -355,24 +375,28 @@ export function isCompanyUnderReview(error: unknown): boolean {
   );
 }
 
-/** Suma segura de montos (evita los decimales de punto flotante). */
+/**
+ * Suma de montos sin redondear: el resultado conserva toda la precision y solo
+ * se recorta al mostrarlo (`money`/`bs`). Redondear aqui era lo que hacia que
+ * Bs 15.520,00 al BCV se convirtieran en $ 17,57 y de vuelta en Bs 15.521,34.
+ */
 export function sumMoney(values: number[]): number {
-  return Math.round(values.reduce((acc, v) => acc + Number(v || 0), 0) * 100) / 100;
+  return values.reduce((acc, v) => acc + Number(v || 0), 0);
 }
 
-/** Multiplica montos redondeando a 2 decimales. */
+/** Multiplica montos sin redondear (la vista recorta a 2 decimales). */
 export function mulMoney(a: number, b: number): number {
-  return Math.round(Number(a || 0) * Number(b || 0) * 100) / 100;
+  return Number(a || 0) * Number(b || 0);
 }
 
 /**
- * Divide montos redondeando a 2 decimales (reparte el precio de una caja entre
- * sus unidades). Devuelve 0 cuando el divisor es 0 para no pintar `NaN`.
+ * Divide montos sin redondear (reparte el precio de una caja entre sus
+ * unidades). Devuelve 0 cuando el divisor es 0 para no pintar `NaN`.
  */
 export function divMoney(a: number, b: number): number {
   const divisor = Number(b || 0);
   if (!divisor) return 0;
-  return Math.round((Number(a || 0) / divisor) * 100) / 100;
+  return Number(a || 0) / divisor;
 }
 
 export function trackById<T extends { id: string }>(_index: number, item: T): string {

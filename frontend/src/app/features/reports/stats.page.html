@@ -1,0 +1,272 @@
+    <app-page-header
+      title="Reportes"
+      subtitle="Ventas, gastos, utilidad y rotación en el rango seleccionado"
+      icon="chart"
+    >
+      <button type="button" class="btn-secondary" (click)="load()">
+        <app-icon name="refresh" size="h-4 w-4" />
+        Actualizar
+      </button>
+      <button
+        type="button"
+        class="btn-primary"
+        [disabled]="reportLoading()"
+        (click)="generateReport()"
+      >
+        <app-icon name="download" size="h-4 w-4" />
+        {{ reportLoading() ? 'Generando…' : 'Generar reporte' }}
+      </button>
+    </app-page-header>
+
+    <section class="card">
+      <div class="card-header">
+        <h2 class="text-sm font-semibold text-slate-800">Rango de fechas</h2>
+        <div class="flex flex-wrap items-center gap-2">
+          <button type="button" class="btn-secondary btn-sm" (click)="applyPreset('today')">Hoy</button>
+          <button type="button" class="btn-secondary btn-sm" (click)="applyPreset('week')">Últimos 7 días</button>
+          <button type="button" class="btn-secondary btn-sm" (click)="applyPreset('month')">Este mes</button>
+          <button type="button" class="btn-secondary btn-sm" (click)="applyPreset('previous')">Mes anterior</button>
+        </div>
+      </div>
+      <div class="card-body grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+        <div>
+          <label class="label" for="s-from">Desde</label>
+          <input id="s-from" type="date" class="input" [(ngModel)]="filters.from" />
+        </div>
+        <div>
+          <label class="label" for="s-to">Hasta</label>
+          <input id="s-to" type="date" class="input" [(ngModel)]="filters.to" />
+        </div>
+        <div class="flex items-end">
+          <button type="button" class="btn-primary" (click)="load()">
+            <app-icon name="filter" size="h-4 w-4" />
+            Aplicar
+          </button>
+        </div>
+      </div>
+    </section>
+
+    @if (loading()) {
+      <app-loader />
+    } @else {
+      <div class="mt-4 grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6">
+        <app-stat-card label="Ventas" [value]="totals()?.sales ?? 0" [isCurrency]="true" [hint]="growthHint()" icon="receipt" tone="brand" />
+        <app-stat-card label="Cobrado" [value]="totals()?.collected ?? 0" [isCurrency]="true" icon="wallet" tone="emerald" />
+        <app-stat-card label="Gastos" [value]="totals()?.expenses ?? 0" [isCurrency]="true" icon="money" tone="rose" />
+        <app-stat-card label="Utilidad" [value]="totals()?.profit ?? 0" [isCurrency]="true" icon="trend-up" tone="emerald" />
+        <app-stat-card label="Pedidos" [value]="totals()?.orders ?? 0" icon="box" tone="sky" />
+        <app-stat-card label="Ticket promedio" [value]="totals()?.ticketAverage ?? 0" [isCurrency]="true" icon="chart" tone="amber" />
+      </div>
+
+      <section class="card mt-4">
+        <div class="card-header">
+          <h2 class="text-sm font-semibold text-slate-800">Ventas vs. gastos</h2>
+          <div class="flex flex-wrap items-center gap-3 text-xs text-slate-500">
+            <span class="flex items-center gap-1"><span class="h-2.5 w-2.5 rounded-sm bg-brand-500"></span> Ventas</span>
+            <span class="flex items-center gap-1"><span class="h-2.5 w-2.5 rounded-sm bg-rose-400"></span> Gastos</span>
+            @if (granularityLabel()) {
+              <span class="text-slate-400">· {{ granularityLabel() }}</span>
+            }
+          </div>
+        </div>
+        <div class="card-body">
+          @if (chartPoints().length === 0) {
+            <p class="text-sm text-slate-500">Sin datos en el rango seleccionado.</p>
+          } @else {
+            <app-bar-chart [points]="chartPoints()" [isCurrency]="true" />
+          }
+        </div>
+      </section>
+
+      <section class="card mt-4">
+        <div class="card-header">
+          <div>
+            <h2 class="text-sm font-semibold text-slate-800">Tendencia del período</h2>
+            <p class="mt-0.5 text-xs text-slate-500">
+              Ventas, cobros y utilidad {{ granularityLabel() }}.
+            </p>
+          </div>
+          <div class="flex flex-wrap items-center gap-3 text-xs text-slate-500">
+            @for (serie of trendSeries(); track serie.label) {
+              <span class="flex items-center gap-1">
+                <span class="h-2.5 w-2.5 rounded-sm" [class]="serie.color.fill"></span>
+                {{ serie.label }}
+              </span>
+            }
+          </div>
+        </div>
+        <div class="card-body">
+          @if (chartLabels().length < 2) {
+            <p class="text-sm text-slate-500">
+              Elige un rango de al menos dos períodos para ver la tendencia.
+            </p>
+          } @else {
+            <app-line-chart [labels]="chartLabels()" [series]="trendSeries()" [isCurrency]="true" />
+          }
+        </div>
+      </section>
+
+      <section class="card mt-4">
+        <div class="card-header">
+          <h2 class="text-sm font-semibold text-slate-800">Productos más vendidos</h2>
+          <span class="text-xs text-slate-500">Top 10</span>
+        </div>
+        @if (topProducts().length === 0) {
+          <app-empty-state title="Sin ventas" message="No hay productos vendidos en el rango seleccionado." icon="box" />
+        } @else {
+          <div class="card-body">
+            <p class="mb-3 text-xs font-semibold uppercase tracking-wide text-slate-500">
+              Ingresos por producto
+            </p>
+            <app-bar-list [rows]="topProductRows()" [isCurrency]="true" />
+          </div>
+          <div class="table-wrap border-t border-slate-100">
+            <table class="table">
+              <thead>
+                <tr>
+                  <th>#</th>
+                  <th>Producto</th>
+                  <th>SKU</th>
+                  <th class="text-right">Cantidad</th>
+                  <th class="text-right">Ingresos</th>
+                  <th class="text-right">Costo</th>
+                  <th class="text-right">Utilidad</th>
+                </tr>
+              </thead>
+              <tbody>
+                @for (item of topProducts(); track item.productId; let i = $index) {
+                  <tr>
+                    <td class="text-slate-400">{{ i + 1 }}</td>
+                    <td class="font-medium text-slate-900">{{ item.name }}</td>
+                    <td class="text-slate-500">{{ item.sku }}</td>
+                    <td class="text-right">{{ number(item.quantity) }}</td>
+                    <td class="text-right"><app-money [amount]="item.revenue" alignEnd="true" /></td>
+                    <td class="text-right text-slate-500"><app-money [amount]="item.cost" alignEnd="true" /></td>
+                    <td class="text-right font-medium"><app-money [amount]="item.profit" alignEnd="true" /></td>
+                  </tr>
+                }
+              </tbody>
+            </table>
+          </div>
+        }
+      </section>
+
+      <div class="mt-4 grid gap-4 lg:grid-cols-2">
+        <section class="card">
+          <div class="card-header">
+            <h2 class="text-sm font-semibold text-slate-800">Métodos de pago</h2>
+            <app-money class="text-xs text-slate-500" [amount]="paymentMethods()?.total ?? 0" alignEnd="true" />
+          </div>
+          <div class="card-body">
+            @if ((paymentMethods()?.items?.length ?? 0) === 0) {
+              <p class="text-sm text-slate-500">Sin pagos en el rango seleccionado.</p>
+            } @else {
+              <div class="grid gap-5 sm:grid-cols-[auto_1fr] sm:items-center">
+                <app-donut-chart
+                  [slices]="paymentChart().slices"
+                  centerLabel="Mayor"
+                  [centerValue]="paymentCenter().value"
+                  [centerHint]="paymentCenter().hint"
+                />
+                <app-bar-list [rows]="paymentChart().rows" [isCurrency]="true" />
+              </div>
+            }
+          </div>
+        </section>
+        <section class="card">
+          <div class="card-header">
+            <div>
+              <h2 class="text-sm font-semibold text-slate-800">Cobros por moneda</h2>
+              <p class="mt-0.5 text-xs text-slate-500">
+                Cuánto entró en cada moneda y su equivalente en
+                {{ moneyBaseLabel() }}.
+              </p>
+            </div>
+            <app-money class="text-xs text-slate-500" [amount]="paymentsByCurrency()?.total ?? 0" alignEnd="true" />
+          </div>
+          <div class="card-body">
+            @if ((paymentsByCurrency()?.items?.length ?? 0) === 0) {
+              <p class="text-sm text-slate-500">Sin cobros en el rango seleccionado.</p>
+            } @else {
+              <div class="grid gap-5 sm:grid-cols-[auto_1fr] sm:items-center">
+                <app-donut-chart
+                  [slices]="currencyChart().slices"
+                  centerLabel="Mayor"
+                  [centerValue]="currencyCenter().value"
+                  [centerHint]="currencyCenter().hint"
+                />
+                <app-bar-list [rows]="currencyChart().rows" [isCurrency]="true" />
+              </div>
+            }
+          </div>
+        </section>
+
+        <section class="card">
+          <div class="card-header">
+            <h2 class="text-sm font-semibold text-slate-800">Ventas por categoría</h2>
+            <app-money class="text-xs text-slate-500" [amount]="categories()?.total ?? 0" alignEnd="true" />
+          </div>
+          <div class="card-body">
+            @if ((categories()?.items?.length ?? 0) === 0) {
+              <p class="text-sm text-slate-500">Sin ventas en el rango seleccionado.</p>
+            } @else {
+              <div class="grid gap-5 sm:grid-cols-[auto_1fr] sm:items-center">
+                <app-donut-chart
+                  [slices]="categoryChart().slices"
+                  centerLabel="Mayor"
+                  [centerValue]="categoryCenter().value"
+                  [centerHint]="categoryCenter().hint"
+                />
+                <app-bar-list [rows]="categoryChart().rows" [isCurrency]="true" />
+              </div>
+            }
+          </div>
+        </section>
+      </div>
+
+      <section class="card mt-4">
+        <div class="card-header">
+          <h2 class="text-sm font-semibold text-slate-800">Stock bajo</h2>
+          <span class="text-xs text-slate-500">Top 10</span>
+        </div>
+        @if (lowStock().length === 0) {
+          <app-empty-state title="Todo en orden" message="No hay productos por debajo del stock mínimo." icon="box" />
+        } @else {
+          <div class="card-body">
+            <p class="mb-3 text-xs font-semibold uppercase tracking-wide text-slate-500">
+              Existencias vs. mínimo
+            </p>
+            <app-bar-list [rows]="lowStockRows()" [isCurrency]="false" markerLabel="Mínimo" />
+          </div>
+          <div class="table-wrap border-t border-slate-100">
+            <table class="table">
+              <thead>
+                <tr>
+                  <th>Producto</th>
+                  <th>SKU</th>
+                  <th class="text-right">Stock</th>
+                  <th class="text-right">Mínimo</th>
+                  <th>Unidad</th>
+                </tr>
+              </thead>
+              <tbody>
+                @for (item of lowStock(); track item.id) {
+                  <tr>
+                    <td class="font-medium text-slate-900">{{ item.name }}</td>
+                    <td class="text-slate-500">{{ item.sku }}</td>
+                    <td class="text-right font-semibold text-rose-600">{{ quantity(item.stock) }}</td>
+                    <td class="text-right text-slate-500">{{ quantity(item.minStock) }}</td>
+                    <td>{{ unitLabels[item.unit] || item.unit }}</td>
+                  </tr>
+                }
+              </tbody>
+            </table>
+          </div>
+        }
+      </section>
+    }
+
+    @if (report(); as sheet) {
+      <app-report-sheet [data]="sheet" (closed)="closeReport()" />
+    }
+  

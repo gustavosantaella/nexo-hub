@@ -15,34 +15,7 @@ const CARD_COMPACT_FROM = 1_000;
   standalone: true,
   imports: [IconComponent, MoneyComponent],
   changeDetection: ChangeDetectionStrategy.OnPush,
-  template: `
-    <div class="card p-5">
-      <div class="flex items-center justify-between gap-3">
-        <p class="min-w-0 truncate text-xs font-semibold uppercase tracking-wide text-slate-500">
-          {{ label }}
-        </p>
-        <span
-          class="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl"
-          [class]="toneClasses"
-        >
-          <app-icon [name]="icon" size="h-5 w-5" />
-        </span>
-      </div>
-      @if (isCurrency) {
-        <app-money
-          [class]="valueClasses('block')"
-          [amount]="amount"
-          [compact]="abbreviated"
-          [displayRateKey]="displayRateKey"
-        />
-      } @else {
-        <p [class]="valueClasses('')" [attr.title]="title">{{ text }}</p>
-      }
-      @if (hint) {
-        <p class="mt-1 text-xs text-slate-500">{{ hint }}</p>
-      }
-    </div>
-  `,
+  templateUrl: './stat-card.component.html',
 })
 export class StatCardComponent {
   @Input({ required: true }) label = '';

@@ -57,25 +57,7 @@ import {
     ':host { display: inline-flex; flex-direction: column; align-items: flex-start; max-width: 100%; }',
     ':host(.items-end) { align-items: flex-end; }',
   ],
-  template: `
-    @if (!hideBase) {
-      <span class="whitespace-nowrap" [class.font-semibold]="strong" [attr.title]="baseTitle">
-        {{ base }}
-      </span>
-    }
-    @if (showConversions() && conversions.length > 0) {
-      <span
-        class="flex flex-wrap gap-x-2 gap-y-0.5 text-[10px] font-normal leading-tight text-slate-400"
-        [class.justify-end]="alignEnd"
-      >
-        @for (item of conversions; track item.key) {
-          <span class="whitespace-nowrap" [title]="item.label + ' · ' + item.rate">
-            {{ item.label }} {{ item.text }}
-          </span>
-        }
-      </span>
-    }
-  `,
+  templateUrl: './money.component.html',
 })
 export class MoneyComponent {
   private readonly rates = inject(RatesService);
@@ -225,7 +207,9 @@ export class MoneyComponent {
 
     // Sin monto cargado la base la pinta `money()`: dólares × tasa de vitrina (la
     // personalizada del local si existe), el precio que el cajero está leyendo.
-    const amount = Math.round(Number(this.amount ?? 0) * 100) / 100;
+    // Se conserva la precisión completa del monto: redondearlo a centavos hacía
+    // que los bolívares del día siguiente no coincidieran con el ticket.
+    const amount = Number(this.amount ?? 0);
     const bsPerUsd = this.rates.bsPerUsd();
     if (!amount || !bsPerUsd) return null;
     return amount * bsPerUsd;

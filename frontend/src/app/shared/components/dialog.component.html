@@ -1,0 +1,25 @@
+
+    @if (variant === 'sidebar') {
+      <app-sidebar
+        [open]="open"
+        [title]="title"
+        [subtitle]="subtitle"
+        [size]="size"
+        (closed)="closed.emit()"
+      >
+        <ng-container [ngTemplateOutlet]="body" />
+        <ng-container [ngTemplateOutlet]="footer" ngProjectAs="[sidebarFooter]" />
+      </app-sidebar>
+    } @else {
+      <app-modal
+        [open]="open"
+        [title]="title"
+        [subtitle]="subtitle"
+        [size]="size"
+        (closed)="closed.emit()"
+      >
+        <ng-container [ngTemplateOutlet]="body" />
+        <ng-container [ngTemplateOutlet]="footer" ngProjectAs="[modalFooter]" />
+      </app-modal>
+    }
+  

@@ -1,0 +1,203 @@
+    <app-page-header
+      title="Clientes"
+      subtitle="Directorio de clientes, pedidos y saldos por cobrar"
+      icon="users"
+    >
+      @if (auth.canManage()) {
+        <button type="button" class="btn-primary" (click)="openCreate()">
+          <app-icon name="plus" size="h-4 w-4" />
+          Nuevo cliente
+        </button>
+      }
+    </app-page-header>
+
+    <section class="card">
+      <div class="card-header">
+        <div class="flex w-full max-w-sm items-center gap-2">
+          <div class="relative flex-1">
+            <span class="pointer-events-none absolute left-3 top-2.5 text-slate-400">
+              <app-icon name="search" size="h-4 w-4" />
+            </span>
+            <input
+              class="input pl-9"
+              placeholder="Buscar por nombre o teléfono…"
+              [(ngModel)]="search"
+              (keyup.enter)="applySearch()"
+            />
+          </div>
+          <button type="button" class="btn-secondary" (click)="applySearch()">Buscar</button>
+        </div>
+      </div>
+
+      @if (loading()) {
+        <app-loader />
+      } @else if (items().length === 0) {
+        <app-empty-state
+          title="Sin clientes"
+          message="Registra clientes para asignarlos a los pedidos y controlar sus saldos."
+          icon="users"
+        />
+      } @else {
+        <div class="table-wrap">
+          <table class="table">
+            <thead>
+              <tr>
+                <th>Nombre</th>
+                <th>Documento</th>
+                <th>Teléfono</th>
+                <th>Email</th>
+                <th class="text-center">Pedidos</th>
+                <th class="text-center">Saldo por cobrar</th>
+                <th class="text-center">Estado</th>
+                <th class="text-right">Acciones</th>
+              </tr>
+            </thead>
+            <tbody>
+              @for (item of items(); track item.id) {
+                <tr>
+                  <td class="font-medium text-slate-900">{{ item.name }}</td>
+                  <td class="font-mono text-xs text-slate-500">{{ item.docNumber || '—' }}</td>
+                  <td class="text-slate-500">{{ item.phone || '—' }}</td>
+                  <td class="text-slate-500">{{ item.email || '—' }}</td>
+                  <td class="text-center">{{ item._count?.orders ?? 0 }}</td>
+                  <td class="text-center">
+                    @if ((item._count?.receivables ?? 0) > 0) {
+                      <span class="badge bg-amber-100 text-amber-700">
+                        {{ item._count?.receivables }}
+                      </span>
+                    } @else {
+                      <span class="text-slate-400">0</span>
+                    }
+                  </td>
+                  <td class="text-center">
+                    <span
+                      class="badge"
+                      [class]="item.active ? 'bg-emerald-100 text-emerald-700' : 'bg-slate-200 text-slate-600'"
+                    >
+                      {{ item.active ? 'Activo' : 'Inactivo' }}
+                    </span>
+                  </td>
+                  <td>
+                    <div class="flex justify-end gap-1">
+                      @if (auth.canManage()) {
+                        <button
+                          type="button"
+                          class="btn-ghost btn-sm"
+                          (click)="openEdit(item)"
+                          title="Editar"
+                        >
+                          <app-icon name="edit" size="h-4 w-4" />
+                        </button>
+                        <button
+                          type="button"
+                          class="btn-ghost btn-sm text-rose-600"
+                          (click)="remove(item)"
+                          title="Desactivar"
+                        >
+                          <app-icon name="trash" size="h-4 w-4" />
+                        </button>
+                      }
+                    </div>
+                  </td>
+                </tr>
+              }
+            </tbody>
+          </table>
+        </div>
+
+        <app-pagination
+          [meta]="meta()"
+          (pageChange)="changePage($event)"
+          (limitChange)="changeLimit($event)"
+        />
+      }
+    </section>
+    <app-modal
+      [open]="modalOpen()"
+      [title]="editing() ? 'Editar cliente' : 'Nuevo cliente'"
+      subtitle="Datos de contacto y facturación del cliente"
+      size="lg"
+      (closed)="closeModal()"
+    >
+      <form class="space-y-4" (ngSubmit)="save()" #customerForm="ngForm">
+        <div class="grid grid-cols-1 gap-4 sm:grid-cols-2">
+          <div>
+            <label class="label" for="cus-name">Nombre *</label>
+            <input
+              id="cus-name"
+              name="name"
+              class="input"
+              required
+              minlength="2"
+              [(ngModel)]="form.name"
+              placeholder="Ej. María Fernández"
+            />
+          </div>
+          <div>
+            <label class="label" for="cus-doc">Documento (DNI/RUC)</label>
+            <input
+              id="cus-doc"
+              name="docNumber"
+              class="input"
+              [(ngModel)]="form.docNumber"
+              placeholder="Ej. 70123456"
+            />
+          </div>
+          <div>
+            <label class="label" for="cus-phone">Teléfono</label>
+            <input
+              id="cus-phone"
+              name="phone"
+              type="tel"
+              class="input"
+              [(ngModel)]="form.phone"
+              placeholder="Ej. 987 654 321"
+            />
+          </div>
+          <div>
+            <label class="label" for="cus-email">Email</label>
+            <input
+              id="cus-email"
+              name="email"
+              type="email"
+              class="input"
+              [(ngModel)]="form.email"
+              placeholder="cliente@correo.com"
+            />
+          </div>
+          <div class="sm:col-span-2">
+            <label class="label" for="cus-address">Dirección</label>
+            <input
+              id="cus-address"
+              name="address"
+              class="input"
+              [(ngModel)]="form.address"
+              placeholder="Av. Los Álamos 456, Lima"
+            />
+          </div>
+          <div class="sm:col-span-2">
+            <label class="label" for="cus-notes">Notas</label>
+            <textarea
+              id="cus-notes"
+              name="notes"
+              class="input"
+              rows="3"
+              [(ngModel)]="form.notes"
+              placeholder="Preferencias, referencias de entrega, etc."
+            ></textarea>
+          </div>
+        </div>
+
+        <label class="flex items-center gap-2 text-sm text-slate-600">
+          <input type="checkbox" name="active" class="h-4 w-4" [(ngModel)]="form.active" />
+          Cliente activo
+        </label>
+
+        <div modalFooter class="flex w-full justify-end gap-2">
+          <button type="button" class="btn-secondary" (click)="closeModal()">Cancelar</button>
+          <button type="submit" class="btn-primary" [disabled]="saving() || customerForm.invalid">
+            {{ saving() ? 'Guardando…' : 'Guardar' }}
+          </button>
+        </div>
+      </form>
+    </app-modal>

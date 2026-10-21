@@ -373,9 +373,9 @@ describe('MenusPage (receta y costos)', () => {
     expect(margin).toContain('$ 10.00');
     // Tasa oficial del dólar y del euro (BCV).
     expect(margin).toContain('BCV $');
-    expect(margin).toContain('Bs 8,767.98');
+    expect(margin).toContain('Bs 8,767.97');
     expect(margin).toContain('BCV €');
-    expect(margin).toContain('Bs 9,820.05');
+    expect(margin).toContain('Bs 9,820.04');
     // La tasa personalizada no se lista debajo del monto.
     expect(margin).not.toContain('Personalizada');
     expect(margin).not.toContain('Bs 9,054.20');
@@ -400,8 +400,8 @@ describe('MenusPage (receta y costos)', () => {
     expect(margin).toContain('Bs 9,054.20');
     // Las tasas oficiales quedan listadas, cada una con su moneda y el origen de
     // su tasa, y el equivalente del monto en esa divisa: los 9.054,20 Bs son
-    // 10,33 al BCV y 10,00 al dólar del local.
-    expect(margin).toContain('USD · BCV $ 10.33');
+    // 10,327... al BCV (se leen 10,32) y 10,00 al dólar del local.
+    expect(margin).toContain('USD · BCV $ 10.32');
     expect(margin).toContain('EUR · BCV € 9.22');
     expect(margin).toContain('USD $ 10.00');
     expect(margin).not.toContain('personalizada');

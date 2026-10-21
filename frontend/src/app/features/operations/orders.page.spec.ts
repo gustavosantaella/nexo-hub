@@ -986,7 +986,7 @@ describe('OrdersPage (formulario del cajero)', () => {
     page.onChargeCurrencyChange('VES');
     // El cobro incluye la propina sugerida: 30 + 3 de propina = 33 USD * 876.7976.
     expect(page.tipAmount).toBe(3);
-    expect(page.chargeTotal).toBe(28934.32);
+    expect(page.chargeTotal).toBeCloseTo(33 * 876.7976, 8);
 
     page.submitCreate();
 
@@ -997,11 +997,11 @@ describe('OrdersPage (formulario del cajero)', () => {
 
     const payRequest = http.expectOne(`${API}/orders/o1/payments`);
     expect(payRequest.request.body).toEqual({
-      amount: 28934.32,
+      amount: 33 * 876.7976,
       method: 'CASH',
       currency: 'VES',
       rateKey: 'BCV_USD',
-      parts: [{ amount: 28934.32, method: 'CASH', currency: 'VES' }],
+      parts: [{ amount: 33 * 876.7976, method: 'CASH', currency: 'VES' }],
       change: [],
     });
     payRequest.flush(order({ tip: 3, total: 33, paymentStatus: 'PAID' }));
@@ -1030,11 +1030,11 @@ describe('OrdersPage (formulario del cajero)', () => {
     page.addProduct(PRODUCTS[0]);
 
     // 30 USD de catálogo se ven como Bs 28.500,00 (personalizada 950); al
-    // valorarlos al BCV son $ 32,50: eso cobra el cajero.
+    // valorarlos al BCV son $ 32,504651...: eso cobra el cajero.
     page.onChargeCurrencyChange('VES');
     expect(page.chargeTotal).toBe(28500);
     page.onChargeCurrencyChange('USD');
-    expect(page.chargeTotal).toBe(32.5);
+    expect(page.chargeTotal).toBeCloseTo(28500 / 876.7976, 8);
 
     page.submitCreate();
 
@@ -1045,11 +1045,11 @@ describe('OrdersPage (formulario del cajero)', () => {
 
     const payRequest = http.expectOne(`${API}/orders/o1/payments`);
     expect(payRequest.request.body).toEqual({
-      amount: 32.5,
+      amount: 28500 / 876.7976,
       method: 'CASH',
       currency: 'USD',
       rateKey: 'BCV_USD',
-      parts: [{ amount: 32.5, method: 'CASH', currency: 'USD' }],
+      parts: [{ amount: 28500 / 876.7976, method: 'CASH', currency: 'USD' }],
       change: [],
     });
     payRequest.flush(order({ total: 32.5, paidAmount: 32.5, paymentStatus: 'PAID' }));

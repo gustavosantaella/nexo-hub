@@ -9,50 +9,7 @@ import { IconComponent } from './icon.component';
   standalone: true,
   imports: [IconComponent],
   changeDetection: ChangeDetectionStrategy.OnPush,
-  template: `
-    <div
-      class="flex flex-wrap items-center justify-between gap-3 border-t border-slate-200 px-5 py-3 text-sm text-slate-600"
-    >
-      <p>
-        {{ meta.total === 0 ? 'Sin resultados' : start() + '–' + end() + ' de ' + totalLabel }}
-      </p>
-
-      <div class="flex items-center gap-2">
-        <label class="text-xs text-slate-500">Filas</label>
-        <select
-          class="rounded-lg border border-slate-300 bg-white px-2 py-1 text-xs"
-          [value]="meta.limit"
-          (change)="onLimitChange($event)"
-        >
-          @for (option of limitOptions; track option) {
-            <option [value]="option">{{ option }}</option>
-          }
-        </select>
-
-        <button
-          type="button"
-          class="btn-secondary btn-sm"
-          [disabled]="!meta.hasPreviousPage"
-          (click)="go(meta.page - 1)"
-        >
-          <app-icon name="chevron-left" size="h-4 w-4" />
-          Anterior
-        </button>
-        <span class="px-1 text-xs font-medium">
-          Página {{ meta.page }} / {{ meta.totalPages || 1 }}
-        </span>
-        <button
-          type="button"
-          class="btn-secondary btn-sm"
-          [disabled]="!meta.hasNextPage"
-          (click)="go(meta.page + 1)"
-        >
-          Siguiente
-          <app-icon name="chevron-right" size="h-4 w-4" />
-        </button>
-      </div>
-    </div>
-  `,
+  templateUrl: './pagination.component.html',
 })
 export class PaginationComponent {
   @Input({ required: true }) meta!: PaginationMeta;

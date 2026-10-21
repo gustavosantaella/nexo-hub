@@ -41,8 +41,10 @@ describe('product-pricing (venta por caja o suelta)', () => {
       expect(unitPriceOf({ price: 10, unit: 'CAJA', unitsPerBox: 4 })).toBe(2.5);
     });
 
-    it('redondea a centavos cuando la division no es exacta', () => {
-      expect(unitPriceOf({ price: 10, unit: 'CAJA', unitsPerBox: 3 })).toBe(3.33);
+    it('reparte sin redondear cuando la division no es exacta', () => {
+      // 10 / 3 = 3,333...: el precio unitario conserva la precision completa y
+      // solo se recorta a 2 decimales al pintarlo.
+      expect(unitPriceOf({ price: 10, unit: 'CAJA', unitsPerBox: 3 })).toBe(10 / 3);
     });
 
     it('no toca el precio del producto suelto', () => {

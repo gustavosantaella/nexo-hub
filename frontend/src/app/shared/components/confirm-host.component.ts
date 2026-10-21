@@ -11,45 +11,7 @@ import { IconComponent } from './icon.component';
   host: {
     '(document:keydown.escape)': 'onEscape()',
   },
-  template: `
-    @if (state().open) {
-      <div class="fixed inset-0 z-[70] flex items-center justify-center p-4">
-        <div class="fixed inset-0 bg-slate-900/50 backdrop-blur-sm" (click)="cancel()"></div>
-        <div class="relative w-full max-w-md rounded-2xl bg-white p-6 shadow-2xl">
-          <div class="flex items-start gap-4">
-            <span
-              class="flex h-11 w-11 shrink-0 items-center justify-center rounded-full"
-              [class]="state().tone === 'danger' ? 'bg-rose-100 text-rose-600' : 'bg-brand-50 text-brand-700'"
-            >
-              <app-icon
-                [name]="state().tone === 'danger' ? 'alert' : 'info'"
-                size="h-5 w-5"
-              />
-            </span>
-            <div class="flex-1">
-              <h2 class="text-base font-semibold text-slate-900">
-                {{ state().title ?? 'Confirmar acción' }}
-              </h2>
-              <p class="mt-1 text-sm text-slate-600">{{ state().message }}</p>
-            </div>
-          </div>
-
-          <div class="mt-6 flex justify-end gap-2">
-            <button type="button" class="btn-secondary" (click)="cancel()">
-              {{ state().cancelLabel }}
-            </button>
-            <button
-              type="button"
-              [class]="state().tone === 'danger' ? 'btn-danger' : 'btn-primary'"
-              (click)="accept()"
-            >
-              {{ state().confirmLabel }}
-            </button>
-          </div>
-        </div>
-      </div>
-    }
-  `,
+  templateUrl: './confirm-host.component.html',
 })
 export class ConfirmHostComponent {
   private readonly confirmService = inject(ConfirmService);

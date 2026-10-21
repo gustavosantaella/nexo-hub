@@ -11,10 +11,31 @@ import {
   moneyLoadedCompact,
   number,
   setDisplayCurrency,
+  truncate,
 } from './format';
 
 /** Numeros abreviados: escala (k, m, b), redondeo y tooltips exactos. */
 describe('format (valores abreviados)', () => {
+  describe('truncate', () => {
+    it('recorta a 2 decimales sin redondear', () => {
+      // Bs 15.520,00 / 883,40 = 17,568485397328504: se lee 17,56 (no 17,57).
+      expect(truncate(15_520 / 883.4, 2)).toBe(17.56);
+      expect(truncate(1.239, 2)).toBe(1.23);
+      expect(truncate(-1.239, 2)).toBe(-1.23);
+    });
+
+    it('no pierde un centavo por el ruido del punto flotante', () => {
+      expect(truncate(0.7 * 3, 2)).toBe(2.1);
+      expect(truncate(1.005, 2)).toBe(1);
+    });
+
+    it('deja intacta la precision del monto original', () => {
+      const usd = 15_520 / 883.4;
+      expect(truncate(usd, 2)).not.toBe(usd);
+      expect(usd * 883.4).toBeCloseTo(15_520, 8);
+    });
+  });
+
   describe('compact', () => {
     it('abrevia miles, millones y miles de millones', () => {
       expect(compact(1_500)).toBe('1.5k');
@@ -80,10 +101,10 @@ describe('format (valores abreviados)', () => {
   });
 
   describe('aritmetica de montos', () => {
-    it('divide redondeando a centavos (0 cuando el divisor es 0)', () => {
+    it('divide sin redondear (0 cuando el divisor es 0)', () => {
       expect(divMoney(24, 24)).toBe(1);
       expect(divMoney(10, 4)).toBe(2.5);
-      expect(divMoney(10, 3)).toBe(3.33);
+      expect(divMoney(10, 3)).toBe(10 / 3);
       expect(divMoney(10, 0)).toBe(0);
     });
   });
@@ -106,12 +127,12 @@ describe('format (valores abreviados)', () => {
         bsPerUsd: 876.7976,
       });
 
-      // 10 USD * 876.7976 = 8 767,976 Bs.
-      expect(money(10)).toBe('Bs 8,767.98');
+      // 10 USD * 876.7976 = 8 767,976 Bs: se muestran 2 decimales recortados.
+      expect(money(10)).toBe('Bs 8,767.97');
       expect(moneyCompact(1_250_000)).toBe('Bs 1.1b');
     });
 
-    it('redondea el monto base antes de convertirlo a la moneda visible', () => {
+    it('no redondea el monto base antes de convertirlo a la moneda visible', () => {
       setDisplayCurrency({
         code: 'VES',
         label: 'Bolívares',
@@ -121,9 +142,9 @@ describe('format (valores abreviados)', () => {
         bsPerUsd: 881.87,
       });
 
-      // El total guardado trae decimales ocultos (9,3494 USD): el cajero lee
-      // USD 9,35 y el total en Bs tiene que corresponder a esos 9,35.
-      expect(money(9.3494)).toBe('Bs 8,245.48');
+      // 9,3494 USD * 881,87 = 8.244,9553... Bs: se recorta a 8.244,95, no se
+      // redondea el dólar a 9,35 antes de convertir.
+      expect(money(9.3494)).toBe('Bs 8,244.95');
     });
 
     it('convierte con la tasa de la moneda elegida (no solo cambia el simbolo)', () => {
@@ -136,8 +157,8 @@ describe('format (valores abreviados)', () => {
         bsPerUsd: 876.7976,
       });
 
-      // 10 USD = 8 767,976 Bs / 982,00454402 = 8,928...
-      expect(money(10)).toBe('€ 8.93');
+      // 10 USD = 8 767,976 Bs / 982,00454402 = 8,928...: se recorta a € 8.92.
+      expect(money(10)).toBe('€ 8.92');
     });
 
     it('vuelve al dolar cuando la moneda elegida todavia no tiene tasa', () => {

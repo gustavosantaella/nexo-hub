@@ -39,55 +39,7 @@ const GAP = 0.8;
   selector: 'app-donut-chart',
   standalone: true,
   changeDetection: ChangeDetectionStrategy.OnPush,
-  template: `
-    <figure class="flex flex-col items-center gap-3">
-      <div class="relative shrink-0" [class]="size">
-        <svg viewBox="0 0 42 42" class="h-full w-full -rotate-90" aria-hidden="true" focusable="false">
-          <circle
-            cx="21"
-            cy="21"
-            [attr.r]="radius"
-            fill="none"
-            stroke="currentColor"
-            stroke-width="5.5"
-            class="text-slate-200"
-          />
-          @for (arc of arcs; track arc.label) {
-            <circle
-              cx="21"
-              cy="21"
-              [attr.r]="radius"
-              fill="none"
-              stroke="currentColor"
-              stroke-width="5.5"
-              pathLength="100"
-              [class]="arc.stroke"
-              [attr.stroke-dasharray]="arc.dash"
-              [attr.stroke-dashoffset]="arc.offset"
-            >
-              <title>{{ arc.title }}</title>
-            </circle>
-          }
-        </svg>
-        <div
-          class="pointer-events-none absolute inset-0 flex flex-col items-center justify-center px-2 text-center"
-        >
-          <span class="text-[10px] font-semibold uppercase tracking-wide text-slate-500">
-            {{ centerLabel }}
-          </span>
-          @if (centerValue) {
-            <span class="text-sm font-semibold leading-tight text-slate-900">{{ centerValue }}</span>
-          }
-          @if (centerHint) {
-            <span class="max-w-full truncate text-[10px] text-slate-400">{{ centerHint }}</span>
-          }
-        </div>
-      </div>
-      @if (caption) {
-        <figcaption class="text-xs text-slate-500">{{ caption }}</figcaption>
-      }
-    </figure>
-  `,
+  templateUrl: './donut-chart.component.html',
 })
 export class DonutChartComponent {
   /** Porciones del anillo (se dibujan en el orden recibido). */

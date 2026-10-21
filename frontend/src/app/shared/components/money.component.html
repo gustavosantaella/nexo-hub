@@ -1,0 +1,19 @@
+
+    @if (!hideBase) {
+      <span class="whitespace-nowrap" [class.font-semibold]="strong" [attr.title]="baseTitle">
+        {{ base }}
+      </span>
+    }
+    @if (showConversions() && conversions.length > 0) {
+      <span
+        class="flex flex-wrap gap-x-2 gap-y-0.5 text-[10px] font-normal leading-tight text-slate-400"
+        [class.justify-end]="alignEnd"
+      >
+        @for (item of conversions; track item.key) {
+          <span class="whitespace-nowrap" [title]="item.label + ' · ' + item.rate">
+            {{ item.label }} {{ item.text }}
+          </span>
+        }
+      </span>
+    }
+  

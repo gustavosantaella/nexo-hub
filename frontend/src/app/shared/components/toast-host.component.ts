@@ -22,35 +22,7 @@ const ICON_NAMES: Record<ToastKind, string> = {
   standalone: true,
   imports: [IconComponent],
   changeDetection: ChangeDetectionStrategy.OnPush,
-  template: `
-    <div
-      class="pointer-events-none fixed bottom-4 right-4 z-[60] flex w-[22rem] max-w-[calc(100vw-2rem)] flex-col gap-2"
-    >
-      @for (toast of toasts(); track toast.id) {
-        <div
-          class="pointer-events-auto flex items-start gap-3 rounded-xl border px-4 py-3 shadow-lg"
-          [class]="styleFor(toast.kind)"
-          role="status"
-        >
-          <app-icon [name]="iconFor(toast.kind)" size="h-5 w-5" class="mt-0.5 shrink-0" />
-          <div class="flex-1 text-sm leading-snug">
-            @if (toast.title) {
-              <p class="font-semibold">{{ toast.title }}</p>
-            }
-            <p>{{ toast.message }}</p>
-          </div>
-          <button
-            type="button"
-            class="shrink-0 rounded p-1 opacity-60 transition hover:opacity-100"
-            (click)="dismiss(toast.id)"
-            aria-label="Cerrar notificación"
-          >
-            <app-icon name="close" size="h-4 w-4" />
-          </button>
-        </div>
-      }
-    </div>
-  `,
+  templateUrl: './toast-host.component.html',
 })
 export class ToastHostComponent {
   private readonly toastService = inject(ToastService);

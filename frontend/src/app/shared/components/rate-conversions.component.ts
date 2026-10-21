@@ -44,24 +44,7 @@ interface ConversionLine {
   selector: 'app-rate-conversions',
   standalone: true,
   changeDetection: ChangeDetectionStrategy.OnPush,
-  template: `
-    @if (lines().length) {
-      <div class="mt-1 flex flex-wrap gap-1.5 text-[11px] text-slate-500">
-        @for (line of lines(); track line.label) {
-          <span
-            class="rounded px-1.5 py-0.5"
-            [class.bg-slate-100]="!line.selected"
-            [class.bg-slate-700]="line.selected"
-            [class.font-medium]="line.selected"
-            [class.text-white]="line.selected"
-            [title]="line.text"
-          >
-            {{ line.label }}: {{ line.text }}
-          </span>
-        }
-      </div>
-    }
-  `,
+  templateUrl: './rate-conversions.component.html',
 })
 export class RateConversionsComponent {
   private readonly rates = inject(RatesService);

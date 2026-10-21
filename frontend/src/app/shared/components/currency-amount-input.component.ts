@@ -49,72 +49,7 @@ import { RateConversionsComponent } from './rate-conversions.component';
   standalone: true,
   imports: [IconComponent, RateConversionsComponent],
   changeDetection: ChangeDetectionStrategy.OnPush,
-  template: `
-    <label class="label" [attr.for]="id">
-      {{ label }} @if (required) { <span class="text-rose-500">*</span> }
-    </label>
-
-    <div class="flex gap-2">
-      <input
-        [id]="id"
-        type="number"
-        class="input"
-        [step]="step"
-        min="0"
-        [placeholder]="placeholder"
-        [value]="amount ?? ''"
-        [disabled]="disabled"
-        (input)="onAmount($event)"
-      />
-      <select
-        class="input w-40 shrink-0"
-        [disabled]="disabled"
-        (change)="onCurrency($event)"
-      >
-        @for (option of currencyOptions(); track option.code) {
-          <option [value]="option.code" [selected]="option.code === code()">
-            {{ currencyOptionLabel(option) }}
-          </option>
-        }
-      </select>
-    </div>
-
-    @if (rateOptions().length) {
-      <div class="mt-1 flex items-center gap-1.5">
-        <label class="shrink-0 text-xs text-slate-500" [attr.for]="id + '-rate'">
-          Tasa
-        </label>
-        <select
-          class="input h-7 w-full py-0 text-xs"
-          [id]="id + '-rate'"
-          [disabled]="disabled"
-          (change)="onRateKey($event)"
-        >
-          @for (option of rateOptions(); track option.key) {
-            <option [value]="option.key" [selected]="option.key === selectedRateKey()">
-              {{ rateLabel(option) }}
-            </option>
-          }
-        </select>
-      </div>
-    }
-
-    @if (missingRate) {
-      <p class="mt-1 flex items-center gap-1 text-xs text-rose-600">
-        <app-icon name="alert" size="h-3.5 w-3.5" />
-        {{ code() }} no tiene tasa configurada. Definela en Configuración → Monedas.
-      </p>
-    } @else {
-      <app-rate-conversions
-        [amount]="amount"
-        [currency]="code()"
-        [rateKey]="selectedRateKey()"
-      />
-      @if (hint) {
-        <p class="mt-1 text-xs text-slate-400">{{ hint }}</p>
-      }
-    }
-  `,
+  templateUrl: './currency-amount-input.component.html',
 })
 export class CurrencyAmountInputComponent {
   private readonly rates = inject(RatesService);

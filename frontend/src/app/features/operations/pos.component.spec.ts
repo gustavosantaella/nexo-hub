@@ -1182,7 +1182,7 @@ describe('PosComponent (vista de cajero)', () => {
       fixture.nativeElement.querySelectorAll('[data-bcv-rate]'),
     ) as HTMLElement[];
     expect(badges.map((badge) => badge.textContent?.trim())).toEqual([
-      'BCV $ 876.80',
+      'BCV $ 876.79',
       'BCV € 982.00',
     ]);
     // Cada badge lleva la tasa exacta del BCV y la fecha publicada en el tooltip.
@@ -1210,8 +1210,9 @@ describe('PosComponent (vista de cajero)', () => {
     pos.addProduct(PRODUCTS[0]);
 
     // 30 USD de catálogo se ven como Bs 28.500,00 (personalizada 950); al
-    // valorarlos al BCV son $ 32,50: eso cobra el cajero.
-    expect(pos.chargeAmount).toBe(32.5);
+    // valorarlos al BCV son $ 32,504651...: eso cobra el cajero, con la
+    // precisión completa (la vista recorta a 2 decimales).
+    expect(pos.chargeAmount).toBeCloseTo(28500 / 876.7976, 8);
     // Pagando en bolívares se cobra el precio de vitrina completo.
     pos.charge.currency = 'VES';
     expect(pos.chargeAmount).toBe(28500);
@@ -1235,11 +1236,11 @@ describe('PosComponent (vista de cajero)', () => {
 
     const payRequest = http.expectOne(`${API}/orders/o1/payments`);
     expect(payRequest.request.body).toEqual({
-      amount: 32.5,
+      amount: 28500 / 876.7976,
       method: 'CASH',
       currency: 'USD',
       rateKey: 'BCV_USD',
-      parts: [{ amount: 32.5, method: 'CASH', currency: 'USD' }],
+      parts: [{ amount: 28500 / 876.7976, method: 'CASH', currency: 'USD' }],
       change: [],
     });
     payRequest.flush(

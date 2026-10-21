@@ -1,0 +1,1556 @@
+
+    <app-page-header
+      title="Pedidos"
+      subtitle="Tablero operativo y historial de ventas"
+      icon="receipt"
+    >
+      <button type="button" class="btn-primary" (click)="openCreate()">
+        <app-icon name="plus" size="h-4 w-4" />
+        Nuevo pedido
+      </button>
+    </app-page-header>
+
+    @if (!cashOpen()) {
+      <div
+        class="mb-4 flex flex-wrap items-center gap-2 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800"
+      >
+        <app-icon name="alert" size="h-4 w-4" />
+        <span>No hay una caja abierta: los cobros requieren una sesión de caja activa.</span>
+        <a routerLink="/panel/caja" class="ml-auto font-semibold underline">Abrir caja</a>
+      </div>
+    }
+
+    <div class="mb-4 flex gap-1 border-b border-slate-200">
+      <button
+        type="button"
+        class="px-4 py-2 text-sm font-medium"
+        [class]="tab() === 'board' ? activeTabClass : inactiveTabClass"
+        (click)="tab.set('board')"
+      >
+        Tablero
+      </button>
+      <button
+        type="button"
+        class="px-4 py-2 text-sm font-medium"
+        [class]="tab() === 'history' ? activeTabClass : inactiveTabClass"
+        (click)="tab.set('history')"
+      >
+        Historial
+      </button>
+    </div>
+
+    @if (tab() === 'board') {
+      @if (boardLoading()) {
+        <app-loader />
+      } @else if (board().length === 0) {
+        <div class="card">
+          <app-empty-state
+            title="Sin pedidos activos"
+            message="Los pedidos en curso aparecerán aquí para su seguimiento."
+            icon="receipt"
+          />
+        </div>
+      } @else {
+        <div class="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
+          @for (order of board(); track order.id) {
+            <div class="card flex flex-col p-4">
+              <div class="flex items-start justify-between gap-2">
+                <div>
+                  <p class="font-semibold text-slate-900">{{ order.code }}</p>
+                  <p class="text-xs text-slate-500">
+                    {{ typeLabels[order.type] }}
+                    @if (order.tableNumber) {
+                      · Mesa {{ order.tableNumber }}
+                    }
+                  </p>
+                </div>
+                <span class="badge" [class]="statusClasses[order.status]">
+                  {{ statusLabels[order.status] }}
+                </span>
+              </div>
+
+              <p class="mt-2 text-sm text-slate-600">
+                {{ order.customer?.name || 'Cliente general' }}
+              </p>
+              <p class="text-xs text-slate-400">
+                {{ order._count?.items ?? order.items?.length ?? 0 }} ítems ·
+                {{ dateTime(order.createdAt) }}
+              </p>
+              <app-money
+                class="mt-2 text-lg font-semibold text-slate-900"
+                [amount]="order.total"
+                [entered]="saleEntered(order, 'total')"
+                [currency]="saleCurrency(order)"
+                [displayRateKey]="saleDisplayKey(order)"
+              />
+
+              <div class="mt-3 flex flex-wrap gap-2">
+                @if (nextStatus(order.status); as next) {
+                  <button type="button" class="btn-success btn-sm" (click)="advance(order)">
+                    {{ statusLabels[next] }}
+                  </button>
+                }
+                <button
+                  type="button"
+                  class="btn-primary btn-sm"
+                  [disabled]="!cashOpen() || order.paymentStatus === 'PAID'"
+                  (click)="openPay(order)"
+                >
+                  Cobrar
+                </button>
+                <button type="button" class="btn-secondary btn-sm" (click)="openDetail(order)">
+                  Detalle
+                </button>
+                @if (order.paidAmount === 0) {
+                  <button type="button" class="btn-danger btn-sm" (click)="cancel(order)">
+                    Cancelar
+                  </button>
+                }
+              </div>
+            </div>
+          }
+        </div>
+      }
+    }
+
+    @if (tab() === 'history') {
+      <div class="card mb-4">
+        <div class="card-body grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+          <div>
+            <label class="label">Estado</label>
+            <select class="input" [(ngModel)]="fStatus" (ngModelChange)="applyFilters()">
+              <option value="">Todos</option>
+              @for (option of statusOptions; track option.value) {
+                <option [value]="option.value">{{ option.label }}</option>
+              }
+            </select>
+          </div>
+          <div>
+            <label class="label">Pago</label>
+            <select class="input" [(ngModel)]="fPaymentStatus" (ngModelChange)="applyFilters()">
+              <option value="">Todos</option>
+              @for (option of paymentStatusOptions; track option.value) {
+                <option [value]="option.value">{{ option.label }}</option>
+              }
+            </select>
+          </div>
+          <div>
+            <label class="label">Tipo</label>
+            <select class="input" [(ngModel)]="fType" (ngModelChange)="applyFilters()">
+              <option value="">Todos</option>
+              @for (option of typeOptions; track option.value) {
+                <option [value]="option.value">{{ option.label }}</option>
+              }
+            </select>
+          </div>
+          <div>
+            <label class="label">Buscar</label>
+            <input
+              class="input"
+              placeholder="Código, mesa o cliente"
+              [(ngModel)]="fSearch"
+              (keyup.enter)="applyFilters()"
+            />
+          </div>
+          <div>
+            <label class="label">Desde</label>
+            <input type="date" class="input" [(ngModel)]="fFrom" (ngModelChange)="applyFilters()" />
+          </div>
+          <div>
+            <label class="label">Hasta</label>
+            <input type="date" class="input" [(ngModel)]="fTo" (ngModelChange)="applyFilters()" />
+          </div>
+          <div class="flex items-end gap-2">
+            <button type="button" class="btn-primary" (click)="applyFilters()">Filtrar</button>
+            <button type="button" class="btn-secondary" (click)="clearFilters()">Limpiar</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
+        @if (loading()) {
+          <app-loader />
+        } @else if (items().length === 0) {
+          <app-empty-state
+            title="Sin pedidos"
+            message="Ajusta los filtros o registra un nuevo pedido."
+            icon="receipt"
+          />
+        } @else {
+          <div class="table-wrap">
+            <table class="table">
+              <thead>
+                <tr>
+                  <th>Código</th>
+                  <th>Fecha</th>
+                  <th>Cliente</th>
+                  <th>Tipo</th>
+                  <th class="text-center">Ítems</th>
+                  <th class="text-right">Total</th>
+                  <th class="text-right">Pagado</th>
+                  <th>Estado</th>
+                  <th>Pago</th>
+                  <th class="text-right">Acciones</th>
+                </tr>
+              </thead>
+              <tbody>
+                @for (order of items(); track order.id) {
+                  <tr>
+                    <td class="font-medium text-slate-900">{{ order.code }}</td>
+                    <td>{{ dateTime(order.createdAt) }}</td>
+                    <td>{{ order.customer?.name || '—' }}</td>
+                    <td>{{ typeLabels[order.type] }}</td>
+                    <td class="text-center">{{ order._count?.items ?? order.items?.length ?? 0 }}</td>
+                    <td class="text-right">
+                      <app-money
+                        [amount]="order.total"
+                        [entered]="saleEntered(order, 'total')"
+                        [currency]="saleCurrency(order)"
+                        [displayRateKey]="saleDisplayKey(order)"
+                        alignEnd="true"
+                      />
+                    </td>
+                    <td class="text-right"><app-money displayRateKey="BCV_USD" [amount]="order.paidAmount" alignEnd="true" /></td>
+                    <td>
+                      <span class="badge" [class]="statusClasses[order.status]">
+                        {{ statusLabels[order.status] }}
+                      </span>
+                    </td>
+                    <td>
+                      <span class="badge" [class]="paymentStatusClasses[order.paymentStatus]">
+                        {{ paymentStatusLabels[order.paymentStatus] }}
+                      </span>
+                    </td>
+                    <td class="text-right">
+                      <div class="flex justify-end gap-1">
+                        <button
+                          type="button"
+                          class="btn-ghost btn-sm"
+                          title="Ver detalle"
+                          (click)="openDetail(order)"
+                        >
+                          <app-icon name="search" size="h-4 w-4" />
+                        </button>
+                        <button
+                          type="button"
+                          class="btn-ghost btn-sm"
+                          title="Cobrar"
+                          [disabled]="!cashOpen() || order.paymentStatus === 'PAID'"
+                          (click)="openPay(order)"
+                        >
+                          <app-icon name="money" size="h-4 w-4" />
+                        </button>
+                        @if (auth.canManage() && order.paidAmount === 0) {
+                          <button
+                            type="button"
+                            class="btn-ghost btn-sm text-rose-600"
+                            title="Eliminar"
+                            (click)="remove(order)"
+                          >
+                            <app-icon name="trash" size="h-4 w-4" />
+                          </button>
+                        }
+                      </div>
+                    </td>
+                  </tr>
+                }
+              </tbody>
+            </table>
+          </div>
+          <app-pagination
+            [meta]="meta()"
+            (pageChange)="changePage($event)"
+            (limitChange)="changeLimit($event)"
+          />
+        }
+      </div>
+    }
+
+    <app-dialog
+      [open]="createOpen()"
+      [variant]="dialogView()"
+      title="Nuevo pedido"
+      size="xl"
+      [body]="createBody"
+      [footer]="createFooter"
+      (closed)="closeCreate()"
+    />
+
+    <ng-template #createBody>
+      <div class="grid gap-5 lg:grid-cols-3">
+        <div class="space-y-4 lg:col-span-2">
+          <div class="grid gap-3 sm:grid-cols-3">
+            <div>
+              <label class="label">Cliente</label>
+              <select class="input" [(ngModel)]="form.customerId">
+                <option value="">Cliente general</option>
+                @for (customer of customers(); track customer.id) {
+                  <option [value]="customer.id">{{ customer.name }}</option>
+                }
+              </select>
+            </div>
+            <div>
+              <label class="label">Tipo</label>
+              <select class="input" [(ngModel)]="form.type">
+                @for (option of typeOptions; track option.value) {
+                  <option [value]="option.value">{{ option.label }}</option>
+                }
+              </select>
+            </div>
+            <div>
+              <label class="label">Mesa</label>
+              <input class="input" [(ngModel)]="form.tableNumber" placeholder="N.º de mesa" />
+            </div>
+          </div>
+
+          <div class="space-y-2">
+            <div class="flex flex-wrap items-center justify-between gap-2">
+              <div class="flex rounded-lg border border-slate-200 p-0.5">
+                <button
+                  type="button"
+                  class="rounded-md px-3 py-1 text-sm font-medium transition"
+                  [class]="lineKind() === 'products' ? 'bg-brand-600 text-white' : 'text-slate-600 hover:bg-slate-100'"
+                  (click)="lineKind.set('products')"
+                >
+                  Productos
+                </button>
+                <button
+                  type="button"
+                  class="rounded-md px-3 py-1 text-sm font-medium transition"
+                  [class]="lineKind() === 'menus' ? 'bg-brand-600 text-white' : 'text-slate-600 hover:bg-slate-100'"
+                  (click)="lineKind.set('menus')"
+                >
+                  Menús
+                  @if (menus().length > 0) {
+                    <span class="badge bg-white/20 text-current">{{ menus().length }}</span>
+                  }
+                </button>
+              </div>
+              <label class="flex items-center gap-2 text-xs font-medium text-slate-500">
+                <input
+                  type="checkbox"
+                  class="h-4 w-4 rounded border-slate-300"
+                  [(ngModel)]="onlyAvailable"
+                />
+                Solo con stock
+              </label>
+            </div>
+
+            <div class="flex gap-2">
+              <div class="relative flex-1">
+                <span class="pointer-events-none absolute inset-y-0 left-3 flex items-center text-slate-400">
+                  <app-icon name="search" size="h-4 w-4" />
+                </span>
+                <input
+                  class="input pl-9"
+                  placeholder="Buscar por nombre o código (SKU) y presionar Enter…"
+                  [(ngModel)]="productSearch"
+                  (keyup.enter)="addBySearch()"
+                />
+              </div>
+              <button type="button" class="btn-secondary" (click)="addBySearch()">
+                Agregar
+              </button>
+            </div>
+
+            @if (lineKind() === 'menus') {
+              @if (filteredMenus.length === 0) {
+                <p class="rounded-lg bg-slate-50 px-3 py-2 text-xs text-slate-500">
+                  No hay menús que coincidan con la búsqueda. Créalos en Catálogo → Menús.
+                </p>
+              } @else {
+                <div class="grid max-h-56 gap-2 overflow-y-auto pr-1 sm:grid-cols-2 xl:grid-cols-3">
+                  @for (menu of filteredMenus; track menu.id) {
+                    <button
+                      type="button"
+                      class="flex min-w-0 items-center justify-between gap-2 rounded-lg border border-slate-200 bg-white px-3 py-2 text-left transition hover:border-brand-300 hover:bg-brand-50 disabled:cursor-not-allowed disabled:opacity-50"
+                      [disabled]="!menu.available"
+                      (click)="addMenu(menu)"
+                    >
+                      <span class="min-w-0">
+                        <span class="block truncate text-sm font-medium text-slate-800">{{ menu.name }}</span>
+                        <span class="block text-xs text-slate-400">
+                          {{ menu.code }} · {{ menu.ingredients.length }} ingrediente(s)
+                        </span>
+                      </span>
+                      <span class="flex shrink-0 flex-col items-end gap-1">
+                        <app-money [amount]="menu.price" />
+                        <span
+                          class="badge"
+                          [title]="menuUnavailableReason(menu) ?? ''"
+                          [class]="menu.available ? 'bg-emerald-100 text-emerald-700' : 'bg-rose-100 text-rose-700'"
+                        >
+                          {{ menuStockLabel(menu) }}
+                        </span>
+                      </span>
+                    </button>
+                  }
+                </div>
+              }
+            } @else {
+
+            @if (filteredProducts.length === 0) {
+              <p class="rounded-lg bg-slate-50 px-3 py-2 text-xs text-slate-500">
+                No hay productos que coincidan con la búsqueda.
+              </p>
+            } @else {
+              <div class="grid max-h-56 gap-2 overflow-y-auto pr-1 sm:grid-cols-2 xl:grid-cols-3">
+                @for (product of filteredProducts; track product.id) {
+                  <div
+                    class="flex items-center gap-2 rounded-lg border border-slate-200 bg-white px-3 py-2 transition hover:border-brand-300 hover:bg-brand-50"
+                  >
+                    <button
+                      type="button"
+                      class="flex min-w-0 flex-1 items-center justify-between gap-2 text-left disabled:cursor-not-allowed disabled:opacity-50"
+                      [disabled]="product.stock <= 0"
+                      [title]="
+                        isBoxProduct(product)
+                          ? 'Agregar 1 unidad suelta (' + money(unitPriceOf(product)) + ')'
+                          : 'Agregar al pedido'
+                      "
+                      (click)="addProduct(product)"
+                    >
+                      <span class="min-w-0">
+                        <span class="block truncate text-sm font-medium text-slate-800">
+                          {{ product.name }}
+                        </span>
+                        <span class="block text-xs text-slate-400">
+                          {{ product.sku }}
+                        </span>
+                        <span class="flex items-center gap-1 text-xs text-slate-500">
+                          <app-money [amount]="unitPriceOf(product)" />
+                          <span>/ {{ soldUnitLabel(product) }}</span>
+                        </span>
+                        @if (isBoxProduct(product)) {
+                          <span class="block text-[11px] text-slate-400">
+                            Caja de {{ boxUnitsOf(product) }} = {{ money(boxCharge(product)) }}
+                          </span>
+                        }
+                      </span>
+                      @if (product.price > 0) {
+                        <span
+                          class="badge shrink-0"
+                          [class]="
+                            product.stock <= 0
+                              ? 'bg-rose-100 text-rose-700'
+                              : 'bg-emerald-100 text-emerald-700'
+                          "
+                        >
+                          {{ product.stock }} {{ soldUnitLabel(product) }}
+                        </span>
+                      } @else {
+                        <span class="badge shrink-0 bg-amber-100 text-amber-700">Sin precio</span>
+                      }
+                    </button>
+                    @if (isBoxProduct(product)) {
+                      <button
+                        type="button"
+                        class="btn-secondary btn-sm shrink-0"
+                        [disabled]="product.stock < boxUnitsOf(product)"
+                        [title]="'Agregar una caja completa (' + boxUnitsOf(product) + ') por ' + money(boxCharge(product))"
+                        (click)="addBox(product)"
+                      >
+                        Caja
+                      </button>
+                    }
+                  </div>
+                }
+              </div>
+            }
+            }
+          </div>
+
+          <div class="space-y-2">
+            <div class="flex items-center justify-between">
+              <label class="label mb-0">Detalle del pedido</label>
+              @if (lines().length > 0) {
+                <button
+                  type="button"
+                  class="btn-ghost btn-sm text-rose-600"
+                  (click)="clearLines()"
+                >
+                  <app-icon name="trash" size="h-4 w-4" />
+                  Vaciar
+                </button>
+              }
+            </div>
+            <div class="table-wrap rounded-lg border border-slate-200">
+            <table class="table">
+              <thead>
+                <tr>
+                  <th>Producto</th>
+                  <th class="text-center">Cantidad</th>
+                  <th class="text-center">Stock</th>
+                  <th class="text-right">P. unit.</th>
+                  <th class="text-right">Total</th>
+                  <th></th>
+                </tr>
+              </thead>
+              <tbody>
+                @for (line of lines(); track lineKey(line)) {
+                  <tr>
+                    <td>
+                      {{ line.name }}
+                      @if (line.menuId) {
+                        <span class="badge ml-1 bg-sky-100 text-sky-700">Menú</span>
+                      }
+                      @if (isBoxProduct(line)) {
+                        <span class="block text-[11px] text-slate-400">
+                          Precio por unidad (caja de {{ boxUnitsOf(line) }})
+                        </span>
+                      }
+                    </td>
+                    <td>
+                      <div class="flex items-center justify-center gap-1">
+                        <button type="button" class="btn-ghost btn-sm" (click)="decLine(line)">
+                          −
+                        </button>
+                        <input
+                          type="number"
+                          class="input w-16 px-2 py-1 text-center"
+                          min="1"
+                          [(ngModel)]="line.quantity"
+                          (ngModelChange)="onQuantityChange(line)"
+                        />
+                        <button type="button" class="btn-ghost btn-sm" (click)="incLine(line)">
+                          +
+                        </button>
+                      </div>
+                    </td>
+                    <td class="text-center">
+                      <span
+                        class="badge"
+                        [class]="
+                          line.quantity > line.stock && line.stock > 0
+                            ? 'bg-rose-100 text-rose-700'
+                            : 'bg-slate-100 text-slate-600'
+                        "
+                      >
+                        {{ line.stock }}
+                      </span>
+                    </td>
+                    <td class="text-right">
+                      <input
+                        type="number"
+                        class="input w-24 px-2 py-1 text-right"
+                        min="0"
+                        [(ngModel)]="line.unitPrice"
+                      />
+                    </td>
+                    <td class="text-right"><app-money [amount]="lineTotal(line)" alignEnd="true" /></td>
+                    <td class="text-right">
+                      <button
+                        type="button"
+                        class="btn-ghost btn-sm text-rose-600"
+                        (click)="removeLine(lineKey(line))"
+                      >
+                        <app-icon name="trash" size="h-4 w-4" />
+                      </button>
+                    </td>
+                  </tr>
+                } @empty {
+                  <tr>
+                    <td colspan="6" class="text-center text-sm text-slate-400">
+                      Sin líneas. Busca o toca un producto del inventario.
+                    </td>
+                  </tr>
+                }
+              </tbody>
+            </table>
+            </div>
+          </div>
+
+          @if (formError()) {
+            <p class="field-error">{{ formError() }}</p>
+          }
+
+          <div>
+            <label class="label">Notas</label>
+            <textarea class="input" rows="2" [(ngModel)]="form.notes"></textarea>
+          </div>
+        </div>
+
+        <div class="space-y-3 rounded-xl border border-slate-200 bg-slate-50 p-4">
+          <div class="flex justify-between text-sm">
+            <span class="text-slate-500">Subtotal</span>
+            <app-money [amount]="subtotal" alignEnd="true" />
+          </div>
+          <div>
+            <label class="label">Descuento</label>
+            <input type="number" class="input" min="0" [(ngModel)]="form.discount" />
+          </div>
+          <div>
+            <label class="label">IGV (%)</label>
+            <div class="flex gap-2">
+              <input type="number" class="input" min="0" [(ngModel)]="form.taxRate" />
+              @for (preset of taxRatePresets; track preset) {
+                <button type="button" class="btn-secondary btn-sm" (click)="setTaxRate(preset)">
+                  {{ preset }}%
+                </button>
+              }
+            </div>
+          </div>
+          <div class="flex justify-between text-sm">
+            <span class="text-slate-500">IGV</span>
+            <app-money [amount]="tax" alignEnd="true" />
+          </div>
+          <div>
+            <label class="label">Propina (%) — opcional</label>
+            <div class="flex flex-wrap gap-2">
+              <input
+                type="number"
+                class="input w-20"
+                min="0"
+                max="100"
+                [(ngModel)]="form.tipRate"
+              />
+              @for (preset of tipRatePresets; track preset) {
+                <button
+                  type="button"
+                  class="btn-secondary btn-sm"
+                  (click)="setTipRate(preset)"
+                >
+                  {{ preset === 0 ? 'Sin propina' : preset + '%' }}
+                </button>
+              }
+            </div>
+          </div>
+          @if (tipAmount > 0) {
+            <div class="flex justify-between text-sm">
+              <span class="text-slate-500">Propina</span>
+              <app-money [amount]="tipAmount" alignEnd="true" />
+            </div>
+          }
+          @if (isDeliveryOrder) {
+            <div class="rounded-lg border border-slate-200 bg-white p-3">
+              <label class="label">Costo de delivery ({{ form.deliveryFeeCurrency }}) — opcional</label>
+              <input
+                type="number"
+                class="input"
+                min="0"
+                [(ngModel)]="form.deliveryFee"
+                placeholder="0.00"
+              />
+              <app-rate-conversions
+                [amount]="form.deliveryFee"
+                [currency]="form.deliveryFeeCurrency"
+              />
+              <p class="mt-1 text-xs text-slate-400">
+                El delivery no paga IGV: se suma al final del total del pedido.
+              </p>
+            </div>
+          }
+          @if (deliveryFeeAmount > 0) {
+            <div class="flex justify-between text-sm">
+              <span class="text-slate-500">Delivery</span>
+              <app-money [amount]="deliveryFeeAmount" alignEnd="true" />
+            </div>
+          }
+          <div class="flex justify-between border-t border-slate-200 pt-2 text-base font-semibold">
+            <span>Total</span>
+            <app-money [amount]="total" alignEnd="true" strong />
+          </div>
+          <app-rate-conversions
+            [amount]="amountInDisplay(total)"
+            [currency]="moneyBaseCode()"
+          />
+
+          <div class="border-t border-slate-200 pt-3">
+            <label class="flex items-center gap-2 text-sm font-medium text-slate-700">
+              <input
+                type="checkbox"
+                class="h-4 w-4 rounded border-slate-300"
+                [(ngModel)]="chargeNow"
+                [disabled]="!cashOpen()"
+              />
+              Cobrar ahora (venta de mostrador)
+            </label>
+
+            @if (!cashOpen()) {
+              <p class="mt-1 text-xs text-amber-700">
+                Abre una caja para poder cobrar la venta.
+              </p>
+            } @else if (chargeNow) {
+              <div class="mt-2 space-y-2 rounded-lg border border-slate-200 bg-white p-3">
+                <div class="grid grid-cols-2 gap-2">
+                  <div>
+                    <label class="label">Método de pago</label>
+                    <select class="input" [(ngModel)]="chargeMethod">
+                      @for (option of paymentMethodOptions; track option.value) {
+                        <option [value]="option.value">{{ option.label }}</option>
+                      }
+                    </select>
+                  </div>
+                  <app-currency-select
+                    id="charge-currency"
+                    label="Moneda del pago"
+                    [value]="chargeCurrency"
+                    [rateKey]="chargeRateKey()"
+                    (valueChange)="onChargeCurrencyChange($event)"
+                  />
+                </div>
+
+                <p class="text-xs text-slate-500">
+                  Se cobrará
+                  <span class="font-semibold">
+                    {{ amountIn(chargeTotal, chargeCurrency) }}
+                  </span>
+                  (total del pedido)@if (chargeRateLabel(); as label) { · tasa {{ label }} }.
+                </p>
+                <app-rate-conversions
+                  [amount]="chargeTotal"
+                  [currency]="chargeCurrency"
+                  [rateKey]="chargeRateKey()"
+                />
+
+                @if (chargeMethod === 'CASH') {
+                  <div class="grid grid-cols-2 gap-2">
+                    <div>
+                      <label class="label">Efectivo recibido</label>
+                      <input
+                        type="number"
+                        class="input"
+                        min="0"
+                        [(ngModel)]="receivedAmount"
+                        placeholder="0.00"
+                      />
+                    </div>
+                    <div>
+                      <label class="label">Vuelto</label>
+                      <p class="input bg-slate-50 font-semibold text-slate-700">
+                        {{ amountIn(change, chargeCurrency) }}
+                      </p>
+                    </div>
+                  </div>
+                  <div class="flex flex-wrap gap-2">
+                    <button type="button" class="btn-secondary btn-sm" (click)="setReceived(0)">
+                      Exacto
+                    </button>
+                    @for (extra of [10, 20, 50]; track extra) {
+                      <button
+                        type="button"
+                        class="btn-secondary btn-sm"
+                        (click)="setReceived(extra)"
+                      >
+                        +{{ extra }}
+                      </button>
+                    }
+                  </div>
+                }
+              </div>
+            }
+          </div>
+        </div>
+      </div>
+    </ng-template>
+
+    <ng-template #createFooter>
+      <div class="flex w-full items-center justify-between gap-2">
+        <p class="text-xs text-slate-500">
+          Stock y totales se validan contra el inventario antes de registrar la venta.
+        </p>
+        <div class="flex gap-2">
+          <button type="button" class="btn-secondary" (click)="closeCreate()">Cancelar</button>
+          <button
+            type="button"
+            class="btn-primary"
+            [disabled]="saving() || lines().length === 0"
+            (click)="submitCreate()"
+          >
+            {{ saving() ? 'Procesando…' : createButtonLabel }}
+          </button>
+        </div>
+      </div>
+    </ng-template>
+
+
+    <app-dialog
+      [open]="detailOpen()"
+      [variant]="dialogView()"
+      [title]="'Pedido ' + (detailOrder()?.code || '')"
+      size="lg"
+      [body]="detailBody"
+      [footer]="detailFooter"
+      (closed)="closeDetail()"
+    />
+
+    <ng-template #detailBody>
+      @if (detailOrder(); as order) {
+        <div class="grid gap-4 sm:grid-cols-2">
+          <div class="space-y-1 text-sm">
+            <p><span class="text-slate-500">Cliente:</span> {{ order.customer?.name || 'Cliente general' }}</p>
+            <p><span class="text-slate-500">Tipo:</span> {{ typeLabels[order.type] }}</p>
+            <p><span class="text-slate-500">Mesa:</span> {{ order.tableNumber || '—' }}</p>
+            <p><span class="text-slate-500">Creado:</span> {{ dateTime(order.createdAt) }}</p>
+          </div>
+          <div class="space-y-1 text-sm sm:text-right">
+            <p>
+              <span class="badge" [class]="statusClasses[order.status]">
+                {{ statusLabels[order.status] }}
+              </span>
+            </p>
+            <p>
+              <span class="badge" [class]="paymentStatusClasses[order.paymentStatus]">
+                {{ paymentStatusLabels[order.paymentStatus] }}
+              </span>
+            </p>
+            @if (order.notes) {
+              <p class="text-slate-500">{{ order.notes }}</p>
+            }
+          </div>
+        </div>
+
+        <div class="mt-4 table-wrap rounded-lg border border-slate-200">
+          <table class="table">
+            <thead>
+              <tr>
+                <th>Producto</th>
+                <th class="text-center">Cant.</th>
+                <th class="text-right">P. unit.</th>
+                <th class="text-right">Total</th>
+                @if (canAddItems(order)) {
+                  <th></th>
+                }
+              </tr>
+            </thead>
+            <tbody>
+              @for (item of order.items ?? []; track item.id) {
+                <tr>
+                  <td>{{ item.name }}</td>
+                  <td class="text-center">
+                    @if (canAddItems(order)) {
+                      <div class="flex items-center justify-center gap-1">
+                        <button
+                          type="button"
+                          class="btn-ghost btn-sm"
+                          title="Quitar una unidad"
+                          [disabled]="itemBusyId() === item.id || item.quantity <= 1"
+                          (click)="changeItemQuantity(order, item, item.quantity - 1)"
+                        >
+                          −
+                        </button>
+                        <span class="min-w-6 font-medium">{{ item.quantity }}</span>
+                        <button
+                          type="button"
+                          class="btn-ghost btn-sm"
+                          title="Agregar una unidad"
+                          [disabled]="itemBusyId() === item.id"
+                          (click)="changeItemQuantity(order, item, item.quantity + 1)"
+                        >
+                          +
+                        </button>
+                      </div>
+                    } @else {
+                      {{ item.quantity }}
+                    }
+                  </td>
+                  <td class="text-right">
+                    <app-money
+                      [amount]="item.unitPrice"
+                      [entered]="item.unitPriceEntered"
+                      [currency]="saleCurrency(order)"
+                      [displayRateKey]="saleDisplayKey(order)"
+                      alignEnd="true"
+                    />
+                  </td>
+                  <td class="text-right">
+                    <app-money
+                      [amount]="item.total"
+                      [entered]="itemEnteredTotal(item)"
+                      [currency]="saleCurrency(order)"
+                      [displayRateKey]="saleDisplayKey(order)"
+                      alignEnd="true"
+                    />
+                  </td>
+                  @if (canAddItems(order)) {
+                    <td class="text-right">
+                      <button
+                        type="button"
+                        class="btn-ghost btn-sm text-rose-600"
+                        title="Quitar del pedido"
+                        [disabled]="itemBusyId() === item.id"
+                        (click)="removeItem(order, item)"
+                      >
+                        <app-icon name="trash" size="h-4 w-4" />
+                      </button>
+                    </td>
+                  }
+                </tr>
+              } @empty {
+                <tr>
+                  <td
+                    [attr.colspan]="canAddItems(order) ? 5 : 4"
+                    class="text-center text-sm text-slate-400"
+                  >
+                    Sin ítems.
+                  </td>
+                </tr>
+              }
+            </tbody>
+          </table>
+        </div>
+
+        <div class="mt-4 grid gap-4 sm:grid-cols-2">
+          <div>
+            <p class="label">Pagos</p>
+            @if ((order.payments?.length ?? 0) === 0) {
+              <p class="text-sm text-slate-400">Sin pagos registrados.</p>
+            } @else {
+              <ul class="space-y-1 text-sm">
+                @for (payment of order.payments ?? []; track payment.id) {
+                  <li class="flex justify-between gap-2 rounded-lg bg-slate-50 px-3 py-2">
+                    <span>
+                      {{ methodLabels[payment.method] }} · {{ dateTime(payment.createdAt) }}
+                      <span class="badge ml-1 bg-slate-200 text-slate-700">
+                        {{ payment.currency || baseCurrency.code }}
+                      </span>
+                      @if (payment.rateKey) {
+                        <span class="badge ml-1" [class]="rateMetaOf(payment.rateKey).badge">
+                          {{ rateMetaOf(payment.rateKey).shortLabel }}
+                        </span>
+                      }
+                    </span>
+                    <span class="text-right">
+                      <span class="block font-medium">
+                        {{ amountIn(payment.amount, payment.currency) }}
+                      </span>
+                      @if (payment.currency && payment.currency !== baseCurrency.code) {
+                        <span class="block text-[10px] text-slate-400">
+                          = {{ orderMoney(payment.baseAmount) }}
+                          @if (payment.exchangeRate) {
+                            · × {{ payment.exchangeRate }}
+                          }
+                        </span>
+                      }
+                      @if (payment.parts?.length) {
+                        <span class="mt-1 block text-[10px] text-slate-500">
+                          @for (part of payment.parts; track $index) {
+                            <span class="mr-2 inline-block">
+                              {{ methodLabels[part.method] || part.method }}:
+                              {{ amountIn(part.amount, part.currency) }}
+                            </span>
+                          }
+                        </span>
+                      }
+                      @if (payment.change?.length) {
+                        <span class="block text-[10px] font-medium text-rose-600">
+                          Vuelto:
+                          @for (line of payment.change; track $index) {
+                            <span class="mr-2 inline-block">
+                              {{ methodLabels[line.method] || line.method }}
+                              {{ amountIn(line.amount, line.currency) }}
+                            </span>
+                          }
+                        </span>
+                      }
+                      @if (ratesHistoryHint(payment); as hint) {
+                        <span class="block text-[10px] text-slate-400">
+                          Tasas del día: {{ hint }}
+                        </span>
+                      }
+                    </span>
+                  </li>
+                }
+              </ul>
+            }
+          </div>
+          <div class="space-y-1 text-sm">
+            <div class="flex justify-between">
+              <span class="text-slate-500">Subtotal</span>
+              <app-money
+                [amount]="order.subtotal"
+                [entered]="saleEntered(order, 'subtotal')"
+                [currency]="saleCurrency(order)"
+                [displayRateKey]="saleDisplayKey(order)"
+                alignEnd="true"
+              />
+            </div>
+            <div class="flex justify-between">
+              <span class="text-slate-500">Descuento</span>
+              <app-money
+                [amount]="-order.discount"
+                [entered]="saleDiscount(order)"
+                [currency]="saleCurrency(order)"
+                [displayRateKey]="saleDisplayKey(order)"
+                alignEnd="true"
+              />
+            </div>
+            <div class="flex justify-between">
+              <span class="text-slate-500">IGV</span>
+              <app-money
+                [amount]="order.tax"
+                [entered]="saleEntered(order, 'tax')"
+                [currency]="saleCurrency(order)"
+                [displayRateKey]="saleDisplayKey(order)"
+                alignEnd="true"
+              />
+            </div>
+            @if (order.tip > 0) {
+              <div class="flex justify-between">
+                <span class="text-slate-500">Propina</span>
+                <app-money
+                  [amount]="order.tip"
+                  [entered]="saleEntered(order, 'tip')"
+                  [currency]="saleCurrency(order)"
+                  [displayRateKey]="saleDisplayKey(order)"
+                  alignEnd="true"
+                />
+              </div>
+            }
+            @if (order.deliveryFee > 0) {
+              <div class="flex justify-between">
+                <span class="text-slate-500">Delivery</span>
+                <app-money
+                  [amount]="order.deliveryFee"
+                  [entered]="saleEntered(order, 'deliveryFee')"
+                  [currency]="saleCurrency(order)"
+                  [displayRateKey]="saleDisplayKey(order)"
+                  alignEnd="true"
+                />
+              </div>
+            }
+            <div class="flex justify-between border-t border-slate-200 pt-1 text-base font-semibold">
+              <span>Total</span>
+              <app-money
+                [amount]="order.total"
+                [entered]="saleEntered(order, 'total')"
+                [currency]="saleCurrency(order)"
+                [displayRateKey]="saleDisplayKey(order)"
+                alignEnd="true"
+                strong
+              />
+            </div>
+            <app-rate-conversions
+              [amount]="saleEntered(order, 'total') ?? orderDisplayAmount(order.total)"
+              [currency]="saleCurrency(order) ?? moneyBaseCode()"
+            />
+            <div class="flex justify-between"><span class="text-slate-500">Pagado</span><app-money displayRateKey="BCV_USD" [amount]="order.paidAmount" alignEnd="true" /></div>
+            <div class="flex justify-between font-semibold text-brand-700">
+              <span>Saldo</span>
+              <app-money
+                [amount]="balance(order)"
+                [entered]="saleBalance(order)"
+                [currency]="saleCurrency(order)"
+                [displayRateKey]="saleDisplayKey(order)"
+                alignEnd="true"
+                strong
+              />
+            </div>
+          </div>
+        </div>
+      }
+    </ng-template>
+
+    <ng-template #detailFooter>
+      <div class="flex w-full justify-end gap-2">
+        @if (detailOrder(); as order) {
+          @if (canAddItems(order)) {
+            <button type="button" class="btn-primary" (click)="openAdd(order)">
+              <app-icon name="plus" size="h-4 w-4" />
+              Agregar productos
+            </button>
+          }
+        }
+        <button type="button" class="btn-secondary" (click)="closeDetail()">Cerrar</button>
+      </div>
+    </ng-template>
+
+    <app-dialog
+      [open]="addOpen()"
+      [variant]="dialogView()"
+      [title]="'Agregar productos a ' + (addOrder()?.code || '')"
+      size="xl"
+      [body]="addBody"
+      [footer]="addFooter"
+      (closed)="closeAdd()"
+    />
+
+    <ng-template #addBody>
+      <div class="space-y-4">
+        <p class="rounded-lg bg-slate-50 px-3 py-2 text-xs text-slate-500">
+          Los productos que ya están en el pedido se suman en su línea. El stock se
+          descuenta y los totales se recalculan al guardar.
+        </p>
+
+        <div class="space-y-2">
+          <div class="flex flex-wrap items-center justify-between gap-2">
+            <div class="flex rounded-lg border border-slate-200 p-0.5">
+              <button
+                type="button"
+                class="rounded-md px-3 py-1 text-sm font-medium transition"
+                [class]="lineKind() === 'products' ? 'bg-brand-600 text-white' : 'text-slate-600 hover:bg-slate-100'"
+                (click)="lineKind.set('products')"
+              >
+                Productos
+              </button>
+              <button
+                type="button"
+                class="rounded-md px-3 py-1 text-sm font-medium transition"
+                [class]="lineKind() === 'menus' ? 'bg-brand-600 text-white' : 'text-slate-600 hover:bg-slate-100'"
+                (click)="lineKind.set('menus')"
+              >
+                Menús
+              </button>
+            </div>
+            <label class="flex items-center gap-2 text-xs font-medium text-slate-500">
+              <input
+                type="checkbox"
+                class="h-4 w-4 rounded border-slate-300"
+                [(ngModel)]="onlyAvailable"
+              />
+              Solo con stock
+            </label>
+          </div>
+
+          <div class="flex gap-2">
+            <div class="relative flex-1">
+              <span class="pointer-events-none absolute inset-y-0 left-3 flex items-center text-slate-400">
+                <app-icon name="search" size="h-4 w-4" />
+              </span>
+              <input
+                class="input pl-9"
+                placeholder="Buscar por nombre o código (SKU) y presionar Enter…"
+                [(ngModel)]="productSearch"
+                (keyup.enter)="addBySearch()"
+              />
+            </div>
+            <button type="button" class="btn-secondary" (click)="addBySearch()">
+              Agregar
+            </button>
+          </div>
+
+          @if (lineKind() === 'menus') {
+            @if (filteredMenus.length === 0) {
+              <p class="rounded-lg bg-slate-50 px-3 py-2 text-xs text-slate-500">
+                No hay menús que coincidan con la búsqueda.
+              </p>
+            } @else {
+              <div class="grid max-h-56 gap-2 overflow-y-auto pr-1 sm:grid-cols-2 xl:grid-cols-3">
+                @for (menu of filteredMenus; track menu.id) {
+                  <button
+                    type="button"
+                    class="flex min-w-0 items-center justify-between gap-2 rounded-lg border border-slate-200 bg-white px-3 py-2 text-left transition hover:border-brand-300 hover:bg-brand-50 disabled:cursor-not-allowed disabled:opacity-50"
+                    [disabled]="!menu.available"
+                    (click)="addMenu(menu)"
+                  >
+                    <span class="min-w-0">
+                      <span class="block truncate text-sm font-medium text-slate-800">{{ menu.name }}</span>
+                      <span class="block text-xs text-slate-400">{{ menu.code }}</span>
+                    </span>
+                    <span class="flex shrink-0 flex-col items-end gap-1">
+                      <app-money [amount]="menu.price" />
+                      <span
+                        class="badge"
+                        [title]="menuUnavailableReason(menu) ?? ''"
+                        [class]="menu.available ? 'bg-emerald-100 text-emerald-700' : 'bg-rose-100 text-rose-700'"
+                      >
+                        {{ menuStockLabel(menu) }}
+                      </span>
+                    </span>
+                  </button>
+                }
+              </div>
+            }
+          } @else {
+
+          @if (filteredProducts.length === 0) {
+            <p class="rounded-lg bg-slate-50 px-3 py-2 text-xs text-slate-500">
+              No hay productos que coincidan con la búsqueda.
+            </p>
+          } @else {
+            <div class="grid max-h-56 gap-2 overflow-y-auto pr-1 sm:grid-cols-2 xl:grid-cols-3">
+              @for (product of filteredProducts; track product.id) {
+                <div
+                  class="flex items-center gap-2 rounded-lg border border-slate-200 bg-white px-3 py-2 transition hover:border-brand-300 hover:bg-brand-50"
+                >
+                  <button
+                    type="button"
+                    class="flex min-w-0 flex-1 items-center justify-between gap-2 text-left disabled:cursor-not-allowed disabled:opacity-50"
+                    [disabled]="product.stock <= 0"
+                    [title]="
+                      isBoxProduct(product)
+                        ? 'Agregar 1 unidad suelta (' + money(unitPriceOf(product)) + ')'
+                        : 'Agregar al pedido'
+                    "
+                    (click)="addProduct(product)"
+                  >
+                    <span class="min-w-0">
+                      <span class="block truncate text-sm font-medium text-slate-800">
+                        {{ product.name }}
+                      </span>
+                      <span class="block text-xs text-slate-400">{{ product.sku }}</span>
+                      <span class="flex items-center gap-1 text-xs text-slate-500">
+                        <app-money [amount]="unitPriceOf(product)" />
+                        <span>/ {{ soldUnitLabel(product) }}</span>
+                      </span>
+                      @if (isBoxProduct(product)) {
+                        <span class="block text-[11px] text-slate-400">
+                          Caja de {{ boxUnitsOf(product) }} = {{ money(boxCharge(product)) }}
+                        </span>
+                      }
+                    </span>
+                    @if (product.price > 0) {
+                      <span
+                        class="badge shrink-0"
+                        [class]="
+                          product.stock <= 0
+                            ? 'bg-rose-100 text-rose-700'
+                            : 'bg-emerald-100 text-emerald-700'
+                        "
+                      >
+                        {{ product.stock }} {{ soldUnitLabel(product) }}
+                      </span>
+                    } @else {
+                      <span class="badge shrink-0 bg-amber-100 text-amber-700">Sin precio</span>
+                    }
+                  </button>
+                  @if (isBoxProduct(product)) {
+                    <button
+                      type="button"
+                      class="btn-secondary btn-sm shrink-0"
+                      [disabled]="product.stock < boxUnitsOf(product)"
+                      [title]="'Agregar una caja completa (' + boxUnitsOf(product) + ') por ' + money(boxCharge(product))"
+                      (click)="addBox(product)"
+                    >
+                      Caja
+                    </button>
+                  }
+                </div>
+              }
+            </div>
+          }
+          }
+        </div>
+
+        <div class="space-y-2">
+          <div class="flex items-center justify-between">
+            <label class="label mb-0">Productos a agregar</label>
+            @if (lines().length > 0) {
+              <button
+                type="button"
+                class="btn-ghost btn-sm text-rose-600"
+                (click)="clearLines()"
+              >
+                <app-icon name="trash" size="h-4 w-4" />
+                Vaciar
+              </button>
+            }
+          </div>
+          <div class="table-wrap rounded-lg border border-slate-200">
+            <table class="table">
+              <thead>
+                <tr>
+                  <th>Producto</th>
+                  <th class="text-center">Cantidad</th>
+                  <th class="text-center">Stock</th>
+                  <th class="text-right">P. unit.</th>
+                  <th class="text-right">Total</th>
+                  <th></th>
+                </tr>
+              </thead>
+              <tbody>
+                @for (line of lines(); track lineKey(line)) {
+                  <tr>
+                    <td>
+                      {{ line.name }}
+                      @if (line.menuId) {
+                        <span class="badge ml-1 bg-sky-100 text-sky-700">Menú</span>
+                      }
+                      @if (isBoxProduct(line)) {
+                        <span class="block text-[11px] text-slate-400">
+                          Precio por unidad (caja de {{ boxUnitsOf(line) }})
+                        </span>
+                      }
+                    </td>
+                    <td>
+                      <div class="flex items-center justify-center gap-1">
+                        <button type="button" class="btn-ghost btn-sm" (click)="decLine(line)">
+                          −
+                        </button>
+                        <input
+                          type="number"
+                          class="input w-16 px-2 py-1 text-center"
+                          min="1"
+                          [(ngModel)]="line.quantity"
+                          (ngModelChange)="onQuantityChange(line)"
+                        />
+                        <button type="button" class="btn-ghost btn-sm" (click)="incLine(line)">
+                          +
+                        </button>
+                      </div>
+                    </td>
+                    <td class="text-center">
+                      <span
+                        class="badge"
+                        [class]="
+                          line.quantity > line.stock && line.stock > 0
+                            ? 'bg-rose-100 text-rose-700'
+                            : 'bg-slate-100 text-slate-600'
+                        "
+                      >
+                        {{ line.stock }}
+                      </span>
+                    </td>
+                    <td class="text-right">
+                      <input
+                        type="number"
+                        class="input w-24 px-2 py-1 text-right"
+                        min="0"
+                        [(ngModel)]="line.unitPrice"
+                      />
+                    </td>
+                    <td class="text-right"><app-money [amount]="lineTotal(line)" alignEnd="true" /></td>
+                    <td class="text-right">
+                      <button
+                        type="button"
+                        class="btn-ghost btn-sm text-rose-600"
+                        (click)="removeLine(lineKey(line))"
+                      >
+                        <app-icon name="trash" size="h-4 w-4" />
+                      </button>
+                    </td>
+                  </tr>
+                } @empty {
+                  <tr>
+                    <td colspan="6" class="text-center text-sm text-slate-400">
+                      Sin líneas. Busca o toca un producto del inventario.
+                    </td>
+                  </tr>
+                }
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        @if (formError()) {
+          <p class="field-error">{{ formError() }}</p>
+        }
+      </div>
+    </ng-template>
+
+    <ng-template #addFooter>
+      <div class="flex w-full flex-wrap items-center justify-between gap-3">
+        <span class="text-sm text-slate-500">
+          Subtotal: <app-money [amount]="subtotal" alignEnd="true" />
+        </span>
+        <span class="flex gap-2">
+          <button type="button" class="btn-secondary" (click)="closeAdd()">Cancelar</button>
+          <button
+            type="button"
+            class="btn-primary"
+            [disabled]="saving() || lines().length === 0"
+            (click)="submitAdd()"
+          >
+            <app-icon name="plus" size="h-4 w-4" />
+            Agregar al pedido
+          </button>
+        </span>
+      </div>
+    </ng-template>
+
+    <app-dialog
+      [open]="payOpen()"
+      [variant]="dialogView()"
+      [title]="'Cobrar ' + (payOrder()?.code || '')"
+      [body]="payBody"
+      [footer]="payFooter"
+      (closed)="closePay()"
+    />
+
+    <ng-template #payBody>
+      @if (payOrder(); as order) {
+        <div class="space-y-3">
+          <div class="rounded-lg bg-slate-50 px-3 py-2 text-sm">
+            <div class="flex justify-between">
+              <span class="text-slate-500">Total</span>
+              <app-money
+                [amount]="order.total"
+                [entered]="saleEntered(order, 'total')"
+                [currency]="saleCurrency(order)"
+                [displayRateKey]="saleDisplayKey(order)"
+                alignEnd="true"
+              />
+            </div>
+            @if (order.deliveryFee > 0) {
+              <div class="flex justify-between">
+                <span class="text-slate-500">Delivery (incluido)</span>
+                <app-money
+                  [amount]="order.deliveryFee"
+                  [entered]="saleEntered(order, 'deliveryFee')"
+                  [currency]="saleCurrency(order)"
+                  [displayRateKey]="saleDisplayKey(order)"
+                  alignEnd="true"
+                />
+              </div>
+            }
+            <div class="flex justify-between"><span class="text-slate-500">Pagado</span><app-money displayRateKey="BCV_USD" [amount]="order.paidAmount" alignEnd="true" /></div>
+            <div class="flex justify-between font-semibold"><span>Saldo pendiente</span><app-money [amount]="balance(order)" alignEnd="true" strong /></div>
+          </div>
+          <div class="grid grid-cols-2 gap-2">
+            <div>
+              <label class="label">Método de pago</label>
+              <select class="input" [(ngModel)]="payForm.method">
+                @for (option of paymentMethodOptions; track option.value) {
+                  <option [value]="option.value">{{ option.label }}</option>
+                }
+              </select>
+            </div>
+            <app-currency-select
+              id="pay-currency"
+              label="Moneda del pago"
+              [value]="payForm.currency"
+              [rateKey]="chargeRateKey()"
+              (valueChange)="onPayCurrencyChange($event)"
+            />
+          </div>
+          <div>
+            <label class="label">Monto ({{ payForm.currency }})</label>
+            <input
+              type="number"
+              class="input"
+              min="0"
+              [attr.max]="balanceIn(payForm.currency)"
+              [(ngModel)]="payForm.amount"
+            />
+            <div class="mt-2 flex flex-wrap gap-2">
+              <button type="button" class="btn-secondary btn-sm" (click)="setPayAmount(balanceIn(payForm.currency))">
+                Saldo completo ({{ amountIn(balanceIn(payForm.currency), payForm.currency) }})
+              </button>
+              <button type="button" class="btn-secondary btn-sm" (click)="setPayAmount(payForm.amount / 2)">
+                Mitad
+              </button>
+            </div>
+            <app-rate-conversions
+              [amount]="payForm.amount"
+              [currency]="payForm.currency"
+              [rateKey]="chargeRateKey()"
+            />
+            <p class="mt-1 text-xs text-slate-400">
+              Saldo pendiente:
+              <span class="font-medium">{{ amountIn(payDisplayBalance, moneyBaseCode()) }}</span>
+              @if (payForm.currency !== moneyBaseCode() && payBaseHint) {
+                <span> · {{ payBaseHint }}</span>
+              }
+            </p>
+          </div>
+
+          @if (payForm.method === 'CASH') {
+            <div class="grid grid-cols-2 gap-2">
+              <div>
+                <label class="label">Efectivo recibido ({{ payForm.currency }})</label>
+                <input
+                  type="number"
+                  class="input"
+                  min="0"
+                  [(ngModel)]="payForm.received"
+                  placeholder="0.00"
+                />
+              </div>
+              <div>
+                <label class="label">Vuelto</label>
+                <p class="input bg-slate-50 font-semibold text-slate-700">
+                  {{ amountIn(payChange, payForm.currency) }}
+                </p>
+              </div>
+            </div>
+            <div class="flex flex-wrap gap-2">
+              <button type="button" class="btn-secondary btn-sm" (click)="setPayReceived(0)">
+                Exacto
+              </button>
+              @for (extra of [10, 20, 50]; track extra) {
+                <button type="button" class="btn-secondary btn-sm" (click)="setPayReceived(extra)">
+                  +{{ extra }}
+                </button>
+              }
+            </div>
+          }
+
+          <div>
+            <label class="label">Nota</label>
+            <input class="input" [(ngModel)]="payForm.note" placeholder="Opcional" />
+          </div>
+          <p class="flex items-center gap-2 text-xs text-slate-500">
+            <app-icon name="info" size="h-4 w-4" />
+            Todo cobro se registra contra la sesión de caja abierta; el efectivo incrementa el arqueo
+            esperado.
+          </p>
+        </div>
+      }
+    </ng-template>
+
+    <ng-template #payFooter>
+      <div class="flex w-full justify-end gap-2">
+        <button type="button" class="btn-secondary" (click)="closePay()">Cancelar</button>
+        <button type="button" class="btn-primary" [disabled]="saving()" (click)="submitPay()">
+          {{ saving() ? 'Procesando…' : 'Registrar pago' }}
+        </button>
+      </div>
+    </ng-template>
+
+    <!-- Autorización del administrador para que un cajero cancele -->
+    <app-dialog
+      [open]="cancelOpen()"
+      [variant]="dialogView()"
+      title="Autorización para cancelar"
+      subtitle="El administrador recibió un código por Telegram."
+      size="sm"
+      [body]="cancelBody"
+      [footer]="cancelFooter"
+      (closed)="closeCancellation()"
+    />
+
+    <ng-template #cancelBody>
+      <div class="space-y-4">
+        <div class="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
+          <p class="font-semibold">Pedido {{ cancelOrder()?.code }}</p>
+          <p class="mt-1 text-xs">
+            Pide al administrador el código de 8 letras que le llegó por Telegram.
+            Vence a los 10 minutos y solo sirve una vez.
+          </p>
+          @if (cancelExpiresAt()) {
+            <p class="mt-1 text-xs">Vence: {{ dateTime(cancelExpiresAt()) }}</p>
+          }
+        </div>
+
+        <div>
+          <label class="label" for="cancel-otp">Código de autorización</label>
+          <input
+            id="cancel-otp"
+            class="input text-center font-mono text-xl font-bold uppercase tracking-[0.35em]"
+            maxlength="8"
+            autocomplete="one-time-code"
+            placeholder="ABCDEFGH"
+            [ngModel]="cancelCode()"
+            (ngModelChange)="setCancelCode($event)"
+          />
+          <p class="mt-1 text-xs text-slate-500">
+            8 letras mayúsculas. Sin el código, el pedido no se puede cancelar.
+          </p>
+        </div>
+      </div>
+    </ng-template>
+
+    <ng-template #cancelFooter>
+      <div class="flex w-full flex-wrap justify-end gap-2">
+        <button type="button" class="btn-secondary" (click)="closeCancellation()">
+          Volver
+        </button>
+        <button
+          type="button"
+          class="btn-secondary"
+          [disabled]="cancelSending()"
+          (click)="resendCancellationCode()"
+        >
+          Reenviar código
+        </button>
+        <button
+          type="button"
+          class="btn-danger"
+          [disabled]="cancelCode().length !== 8 || cancelSending()"
+          (click)="submitCancellation()"
+        >
+          {{ cancelSending() ? 'Cancelando…' : 'Cancelar pedido' }}
+        </button>
+      </div>
+    </ng-template>
+  

@@ -18,11 +18,7 @@ import { ToastHostComponent } from './shared/components/toast-host.component';
   standalone: true,
   imports: [RouterOutlet, ToastHostComponent, ConfirmHostComponent],
   changeDetection: ChangeDetectionStrategy.OnPush,
-  template: `
-    <router-outlet />
-    <app-toast-host />
-    <app-confirm-host />
-  `,
+  templateUrl: './app.component.html',
 })
 export class AppComponent {
   constructor() {

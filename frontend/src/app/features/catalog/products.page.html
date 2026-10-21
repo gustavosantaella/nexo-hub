@@ -1,0 +1,486 @@
+    <app-page-header
+      title="Productos"
+      subtitle="Catálogo de productos, precios y control de stock"
+      icon="box"
+    >
+      @if (auth.canManage()) {
+        <button type="button" class="btn-primary" (click)="openCreate()">
+          <app-icon name="plus" size="h-4 w-4" />
+          Nuevo producto
+        </button>
+      }
+    </app-page-header>
+
+    <section class="card">
+      <div class="card-header">
+        <div class="flex flex-wrap items-center gap-2">
+          <div class="relative w-56">
+            <span class="pointer-events-none absolute left-3 top-2.5 text-slate-400">
+              <app-icon name="search" size="h-4 w-4" />
+            </span>
+            <input
+              class="input pl-9"
+              placeholder="Buscar por nombre, SKU…"
+              [(ngModel)]="search"
+              (keyup.enter)="applyFilters()"
+            />
+          </div>
+          <select
+            class="input w-44"
+            [ngModel]="categoryId"
+            (ngModelChange)="onCategoryChange($event)"
+          >
+            <option value="">Todas las categorías</option>
+            @for (category of categoryOptions(); track category.id) {
+              <option [value]="category.id">{{ categoryOptionLabel(category) }}</option>
+            }
+          </select>
+          <select
+            class="input w-44"
+            [ngModel]="supplierId"
+            (ngModelChange)="onSupplierChange($event)"
+          >
+            <option value="">Todos los proveedores</option>
+            @for (supplier of supplierOptions(); track supplier.id) {
+              <option [value]="supplier.id">{{ supplier.name }}</option>
+            }
+          </select>
+          <label class="flex items-center gap-2 text-sm text-slate-600">
+            <input
+              type="checkbox"
+              class="h-4 w-4"
+              [ngModel]="onlyActive"
+              (ngModelChange)="onActiveChange($event)"
+            />
+            Solo activos
+          </label>
+          <button type="button" class="btn-secondary" (click)="applyFilters()">Buscar</button>
+          <button type="button" class="btn-ghost btn-sm" (click)="resetFilters()">Limpiar</button>
+        </div>
+      </div>
+
+      @if (loading()) {
+        <app-loader />
+      } @else if (items().length === 0) {
+        <app-empty-state
+          title="Sin productos"
+          message="Ajusta los filtros o registra tu primer producto para empezar a vender."
+          icon="box"
+        />
+      } @else {
+        <div class="table-wrap">
+          <table class="table">
+            <thead>
+              <tr>
+                <th>SKU</th>
+                <th class="cursor-pointer select-none" (click)="sort('name')">
+                  <span class="inline-flex items-center gap-1">
+                    Nombre
+                    <app-icon [name]="sortIcon('name')" size="h-3.5 w-3.5" />
+                  </span>
+                </th>
+                <th>Categoría</th>
+                <th>Proveedor</th>
+                <th class="cursor-pointer select-none text-right" (click)="sort('price')">
+                  <span class="inline-flex items-center gap-1">
+                    Precio
+                    <app-icon [name]="sortIcon('price')" size="h-3.5 w-3.5" />
+                  </span>
+                </th>
+                <th class="text-right">Costo</th>
+                <th class="cursor-pointer select-none text-right" (click)="sort('stock')">
+                  <span class="inline-flex items-center gap-1">
+                    Stock
+                    <app-icon [name]="sortIcon('stock')" size="h-3.5 w-3.5" />
+                  </span>
+                </th>
+                <th class="text-center">Estado</th>
+                <th class="text-right">Acciones</th>
+              </tr>
+            </thead>
+            <tbody>
+              @for (item of items(); track item.id) {
+                <tr>
+                  <td class="font-mono text-xs text-slate-500">{{ item.sku }}</td>
+                  <td>
+                    <div class="flex items-center gap-3">
+                      <span
+                        class="flex h-9 w-9 shrink-0 items-center justify-center overflow-hidden rounded-lg border border-slate-200 bg-slate-50"
+                      >
+                        @if (item.imageUrl) {
+                          <img [src]="item.imageUrl" alt="" class="h-full w-full object-cover" />
+                        } @else {
+                          <app-icon name="image" size="h-4 w-4" class="text-slate-300" />
+                        }
+                      </span>
+                      <span class="font-medium text-slate-900">{{ item.name }}</span>
+                    </div>
+                  </td>
+                  <td class="text-slate-500">{{ item.category?.name || '—' }}</td>
+                  <td class="text-slate-500">{{ item.supplier?.name || '—' }}</td>
+                  <td class="text-right">
+                    <app-money
+                      [amount]="item.price"
+                      alignEnd="true"
+                      [entered]="item.priceEntered"
+                      [currency]="item.priceCurrency"
+                      [rateKey]="item.priceRateKey"
+                    />
+                    @if (priceHint(item); as hint) {
+                      <span class="block text-[11px] text-slate-400">{{ hint }}</span>
+                    }
+                    @if (isBoxProduct(item)) {
+                      <span class="block text-[11px] text-slate-400">
+                        Caja de {{ boxUnitsOf(item) }} =
+                        <app-money
+                          [amount]="unitPriceOf(item)"
+                          [entered]="unitPriceEnteredOf(item)"
+                          [currency]="item.unitPriceCurrency"
+                          [rateKey]="unitPriceRateKeyOf(item)"
+                        />
+                        / {{ soldUnitLabel(item) }}
+                      </span>
+                    }
+                  </td>
+                  <td class="text-right text-slate-500">
+                    <app-money
+                      [amount]="item.cost"
+                      alignEnd="true"
+                      [entered]="item.costEntered"
+                      [currency]="item.costCurrency"
+                      [rateKey]="item.costRateKey"
+                    />
+                    @if (isBoxProduct(item)) {
+                      <span class="block text-[11px] text-slate-400">
+                        Unidad:
+                        <app-money
+                          [amount]="item.unitCost"
+                          [entered]="item.unitCostEntered"
+                          [currency]="item.unitCostCurrency"
+                          [rateKey]="item.unitCostRateKey"
+                        />
+                      </span>
+                    }
+                  </td>
+                  <td class="text-right">
+                    <span class="inline-flex items-center gap-2">
+                      <span title="{{ stockLabel(item) }}">
+                        {{ quantity(item.stock) }} {{ soldUnitLabel(item) }}
+                        @if (isBoxProduct(item)) {
+                          &middot; {{ stockLabel(item) }}
+                        }
+                      </span>
+                      @if (isLowStock(item)) {
+                        <span
+                          class="badge bg-rose-100 text-rose-700"
+                          title="Stock por debajo del mínimo"
+                        >
+                          Bajo
+                        </span>
+                      }
+                    </span>
+                  </td>
+                  <td class="text-center">
+                    <span
+                      class="badge"
+                      [class]="item.active ? 'bg-emerald-100 text-emerald-700' : 'bg-slate-200 text-slate-600'"
+                    >
+                      {{ item.active ? 'Activo' : 'Inactivo' }}
+                    </span>
+                  </td>
+                  <td>
+                    <div class="flex justify-end gap-1">
+                      @if (auth.canManage()) {
+                        <button
+                          type="button"
+                          class="btn-ghost btn-sm"
+                          (click)="openEdit(item)"
+                          title="Editar"
+                        >
+                          <app-icon name="edit" size="h-4 w-4" />
+                        </button>
+                        <button
+                          type="button"
+                          class="btn-ghost btn-sm text-rose-600"
+                          (click)="remove(item)"
+                          title="Desactivar"
+                        >
+                          <app-icon name="trash" size="h-4 w-4" />
+                        </button>
+                      }
+                    </div>
+                  </td>
+                </tr>
+              }
+            </tbody>
+          </table>
+        </div>
+
+        <app-pagination
+          [meta]="meta()"
+          (pageChange)="changePage($event)"
+          (limitChange)="changeLimit($event)"
+        />
+      }
+    </section>
+    <app-modal
+      [open]="modalOpen()"
+      [title]="editing() ? 'Editar producto' : 'Nuevo producto'"
+      subtitle="Precios, stock y clasificación del producto"
+      size="lg"
+      (closed)="closeModal()"
+    >
+      <form class="space-y-4" (ngSubmit)="save()" #productForm="ngForm">
+        <div class="grid grid-cols-1 gap-4 sm:grid-cols-2">
+          <div>
+            <label class="label" for="prod-sku">SKU</label>
+            <input
+              id="prod-sku"
+              name="sku"
+              class="input"
+              [(ngModel)]="form.sku"
+              placeholder="Ej. BEB-001"
+            />
+            <p class="mt-1 text-xs text-slate-400">Se genera automáticamente si lo dejas vacío.</p>
+          </div>
+          <div>
+            <label class="label" for="prod-name">Nombre *</label>
+            <input
+              id="prod-name"
+              name="name"
+              class="input"
+              required
+              minlength="2"
+              [(ngModel)]="form.name"
+              placeholder="Ej. Inca Kola 500 ml"
+            />
+          </div>
+          <div class="sm:col-span-2">
+            <label class="label" for="prod-desc">Descripción</label>
+            <textarea
+              id="prod-desc"
+              name="description"
+              class="input"
+              rows="2"
+              [(ngModel)]="form.description"
+              placeholder="Detalle opcional del producto"
+            ></textarea>
+          </div>
+          <div class="sm:col-span-2">
+            <span class="label">Foto para el punto de venta</span>
+            <div class="flex flex-wrap items-center gap-3">
+              <div
+                class="flex h-20 w-20 shrink-0 items-center justify-center overflow-hidden rounded-xl border border-dashed border-slate-300 bg-slate-50"
+              >
+                @if (form.imageUrl) {
+                  <img
+                    [src]="form.imageUrl"
+                    alt="Foto del producto"
+                    class="h-full w-full object-cover"
+                  />
+                } @else {
+                  <app-icon name="image" size="h-7 w-7" class="text-slate-400" />
+                }
+              </div>
+              <div class="flex flex-col gap-2">
+                <div class="flex flex-wrap gap-2">
+                  <label class="btn-secondary btn-sm cursor-pointer" for="prod-image">
+                    <app-icon name="image" size="h-4 w-4" />
+                    {{ imageReading() ? 'Leyendo…' : 'Subir foto' }}
+                  </label>
+                  <input
+                    id="prod-image"
+                    type="file"
+                    class="hidden"
+                    accept="image/png,image/jpeg,image/webp"
+                    (change)="onImageSelected($event)"
+                  />
+                  @if (form.imageUrl) {
+                    <button type="button" class="btn-ghost btn-sm text-rose-600" (click)="clearImage()">
+                      <app-icon name="trash" size="h-4 w-4" />
+                      Quitar
+                    </button>
+                  }
+                </div>
+                <input
+                  name="imageUrl"
+                  class="input w-72"
+                  placeholder="…o pega la URL de la imagen"
+                  [(ngModel)]="form.imageUrl"
+                />
+              </div>
+            </div>
+            <p class="mt-1 text-xs text-slate-400">
+              Se reduce a {{ productImageMaxSize }} px de ancho para que la grilla del cajero cargue
+              rápido.
+            </p>
+            @if (imageError(); as error) {
+              <p class="mt-1 text-xs text-rose-600">{{ error }}</p>
+            }
+          </div>
+          <div>
+            <app-currency-amount-input
+              id="prod-price"
+              label="Precio de venta"
+              [required]="true"
+              [amount]="form.price"
+              [currency]="form.priceCurrency"
+              [rateKey]="form.priceRateKey"
+              (amountChange)="form.price = $event"
+              (currencyChange)="form.priceCurrency = $event"
+              (rateKeyChange)="form.priceRateKey = $event"
+            />
+          </div>
+          <div>
+            <app-currency-amount-input
+              id="prod-cost"
+              label="Costo de la presentación"
+              [amount]="form.cost"
+              [currency]="form.costCurrency"
+              [rateKey]="form.costRateKey"
+              hint="Lo que te cuesta comprar esta presentación (caja, paquete o unidad)."
+              (amountChange)="onCostChange($event)"
+              (currencyChange)="onCostCurrencyChange($event)"
+              (rateKeyChange)="onCostRateKeyChange($event)"
+            />
+          </div>
+          @if (isBoxForm) {
+            <div>
+              <app-currency-amount-input
+                id="prod-unit-price"
+                label="Precio de venta unitario (por unidad suelta)"
+                [amount]="form.unitPrice"
+                [currency]="form.unitPriceCurrency"
+                [rateKey]="form.unitPriceRateKey"
+                hint="Precio al que se vende una unidad suelta al abrir la caja. Déjalo en 0 para repartir el precio de la presentación entre sus unidades."
+                (amountChange)="onUnitPriceChange($event)"
+                (currencyChange)="onUnitPriceCurrencyChange($event)"
+                (rateKeyChange)="onUnitPriceRateKeyChange($event)"
+              />
+              @if (unitPriceReference; as reference) {
+                <p class="mt-1 text-[11px] text-slate-400">
+                  Referencia: {{ moneyIn(reference.amount, reference.currency) }} por unidad (precio
+                  de la presentación ÷ {{ reference.units }}); se guarda lo que escribas arriba.
+                </p>
+              }
+            </div>
+          }
+          @if (editing()) {
+            <div>
+              <label class="label" for="prod-stock">Stock actual</label>
+              <input id="prod-stock" class="input" [value]="form.stock" disabled />
+              <p class="mt-1 text-xs text-slate-400">
+                El stock se ajusta desde Inventario (movimientos).
+              </p>
+            </div>
+          } @else {
+            <div>
+              <label class="label" for="prod-stock-new">Stock inicial (genera movimiento IN)</label>
+              <input
+                id="prod-stock-new"
+                name="stock"
+                type="number"
+                min="0"
+                step="0.001"
+                class="input"
+                [(ngModel)]="form.stock"
+              />
+            </div>
+          }
+          <div>
+            <label class="label" for="prod-min">Stock mínimo</label>
+            <input
+              id="prod-min"
+              name="minStock"
+              type="number"
+              min="0"
+              step="0.001"
+              class="input"
+              [(ngModel)]="form.minStock"
+            />
+          </div>
+          <div>
+            <label class="label" for="prod-unit">Unidad</label>
+            <select
+              id="prod-unit"
+              name="unit"
+              class="input"
+              [ngModel]="form.unit"
+              (ngModelChange)="onUnitChange($event)"
+            >
+              @for (option of unitOptions; track option.value) {
+                <option [value]="option.value">{{ option.label }}</option>
+              }
+            </select>
+          </div>
+          @if (showPackUnits) {
+            <div>
+              <label class="label" for="prod-units-per-box">{{ packUnitsLabel }}</label>
+              <input
+                id="prod-units-per-box"
+                name="unitsPerBox"
+                type="number"
+                min="1"
+                step="1"
+                class="input"
+                [(ngModel)]="form.unitsPerBox"
+              />
+              <p class="mt-1 text-[11px] text-slate-400">
+                El precio de arriba es el de la presentación; el stock se lleva en unidades sueltas.
+                Deja 1 si el producto se vende suelto.
+              </p>
+              @if (boxPreview; as box) {
+                <p class="mt-1 text-[11px] font-medium text-brand-600">
+                  {{ box.unitLabel }} de {{ box.units }} → la unidad suelta se vende a
+                  {{ moneyIn(box.unitPrice, box.currency) }}
+                </p>
+              }
+            </div>
+          }
+          <div>
+            <label class="label" for="prod-category">Categoría</label>
+            <select id="prod-category" name="categoryId" class="input" [(ngModel)]="form.categoryId">
+              <option value="">Sin categoría</option>
+              @for (category of categoryOptions(); track category.id) {
+                <option [value]="category.id">{{ categoryOptionLabel(category) }}</option>
+              }
+            </select>
+          </div>
+          <div>
+            <label class="label" for="prod-supplier">Proveedor</label>
+            <select id="prod-supplier" name="supplierId" class="input" [(ngModel)]="form.supplierId">
+              <option value="">Sin proveedor</option>
+              @for (supplier of supplierOptions(); track supplier.id) {
+                <option [value]="supplier.id">{{ supplier.name }}</option>
+              }
+            </select>
+          </div>
+        </div>
+
+        @if (margin; as m) {
+          <p class="rounded-lg bg-emerald-50 px-3 py-2 text-xs text-emerald-700">
+            Margen estimado:
+            <strong><app-money [amount]="m.amount" /></strong>
+            ({{ m.percent }}% sobre el precio de venta).
+          </p>
+        }
+
+        <div class="flex flex-wrap items-center gap-5">
+          <label class="flex items-center gap-2 text-sm text-slate-600">
+            <input type="checkbox" name="trackStock" class="h-4 w-4" [(ngModel)]="form.trackStock" />
+            Controlar stock
+          </label>
+          <label class="flex items-center gap-2 text-sm text-slate-600">
+            <input type="checkbox" name="active" class="h-4 w-4" [(ngModel)]="form.active" />
+            Producto activo
+          </label>
+        </div>
+
+        <div modalFooter class="flex w-full justify-end gap-2">
+          <button type="button" class="btn-secondary" (click)="closeModal()">Cancelar</button>
+          <button type="submit" class="btn-primary" [disabled]="saving() || productForm.invalid">
+            {{ saving() ? 'Guardando…' : 'Guardar' }}
+          </button>
+        </div>
+      </form>
+    </app-modal>

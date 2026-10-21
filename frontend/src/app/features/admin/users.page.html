@@ -1,0 +1,232 @@
+    <app-page-header title="Usuarios" [subtitle]="subtitle()" icon="user-cog">
+      @if (auth.isAdmin()) {
+        <button type="button" class="btn-primary" (click)="openCreate()">
+          <app-icon name="plus" size="h-4 w-4" />
+          Nuevo usuario
+        </button>
+      }
+    </app-page-header>
+
+    <section class="card">
+      <div class="card-header">
+        <div class="flex w-full max-w-sm items-center gap-2">
+          <div class="relative flex-1">
+            <span class="pointer-events-none absolute left-3 top-2.5 text-slate-400">
+              <app-icon name="search" size="h-4 w-4" />
+            </span>
+            <input
+              class="input pl-9"
+              placeholder="Buscar por nombre, cédula o correo…"
+              [(ngModel)]="search"
+              (keyup.enter)="applySearch()"
+            />
+          </div>
+          <button type="button" class="btn-secondary" (click)="applySearch()">Buscar</button>
+        </div>
+      </div>
+
+      @if (loading()) {
+        <app-loader />
+      } @else if (items().length === 0) {
+        <app-empty-state
+          title="Sin usuarios"
+          message="Agrega al personal de esta empresa y asígnale su rol."
+          icon="user-cog"
+        />
+      } @else {
+        <div class="table-wrap">
+          <table class="table">
+            <thead>
+              <tr>
+                <th>Nombre</th>
+                <th>Cédula</th>
+                <th>Correo</th>
+                <th>Teléfono</th>
+                <th class="text-center">Rol</th>
+                <th class="text-center">Estado</th>
+                <th>Último acceso</th>
+                <th class="text-right">Acciones</th>
+              </tr>
+            </thead>
+            <tbody>
+              @for (item of items(); track item.id) {
+                <tr>
+                  <td class="font-medium text-slate-900">
+                    {{ item.name }}
+                    @if (isSelf(item)) {
+                      <span class="badge ml-1 bg-brand-50 text-brand-700">Tú</span>
+                    }
+                  </td>
+                  <td class="text-slate-500">{{ item.documentId || '—' }}</td>
+                  <td class="text-slate-500">{{ item.email }}</td>
+                  <td class="text-slate-500">{{ item.phone || '—' }}</td>
+                  <td class="text-center">
+                    <span class="badge" [class]="roleClasses[item.role]">
+                      {{ roleLabel(item) }}
+                    </span>
+                  </td>
+                  <td class="text-center">
+                    <span
+                      class="badge"
+                      [class]="
+                        item.active
+                          ? 'bg-emerald-100 text-emerald-700'
+                          : 'bg-slate-200 text-slate-600'
+                      "
+                    >
+                      {{ item.active ? 'Activo' : 'Inactivo' }}
+                    </span>
+                  </td>
+                  <td class="text-slate-500">{{ dateTime(item.lastLoginAt) }}</td>
+                  <td>
+                    <div class="flex justify-end gap-1">
+                      <button
+                        type="button"
+                        class="btn-ghost btn-sm"
+                        (click)="openEdit(item)"
+                        title="Editar"
+                      >
+                        <app-icon name="edit" size="h-4 w-4" />
+                      </button>
+                      <button
+                        type="button"
+                        class="btn-ghost btn-sm text-rose-600"
+                        [disabled]="isSelf(item)"
+                        [title]="
+                          isSelf(item)
+                            ? 'No puedes quitarte a ti mismo'
+                            : 'Quitar de la empresa'
+                        "
+                        (click)="remove(item)"
+                      >
+                        <app-icon name="trash" size="h-4 w-4" />
+                      </button>
+                    </div>
+                  </td>
+                </tr>
+              }
+            </tbody>
+          </table>
+        </div>
+
+        <app-pagination
+          [meta]="meta()"
+          (pageChange)="changePage($event)"
+          (limitChange)="changeLimit($event)"
+        />
+      }
+    </section>
+    <app-modal
+      [open]="modalOpen()"
+      [title]="editing() ? 'Editar usuario' : 'Nuevo usuario'"
+      [subtitle]="'Miembro de ' + companyName()"
+      size="lg"
+      (closed)="closeModal()"
+    >
+      <form class="space-y-4" (ngSubmit)="save()" #userForm="ngForm">
+        <div class="grid grid-cols-1 gap-4 sm:grid-cols-2">
+          <div>
+            <label class="label" for="user-email">Correo *</label>
+            <input
+              id="user-email"
+              name="email"
+              type="email"
+              class="input"
+              required
+              [(ngModel)]="form.email"
+              placeholder="usuario@empresa.com"
+              autocomplete="off"
+            />
+          </div>
+          <div>
+            <label class="label" for="user-name">Nombre *</label>
+            <input
+              id="user-name"
+              name="name"
+              class="input"
+              required
+              minlength="2"
+              [(ngModel)]="form.name"
+              placeholder="Nombre y apellido"
+            />
+          </div>
+          <div>
+            <label class="label" for="user-document">Cédula</label>
+            <input
+              id="user-document"
+              name="documentId"
+              class="input"
+              [(ngModel)]="form.documentId"
+              placeholder="Ej. V-12345678"
+            />
+          </div>
+          <div>
+            <label class="label" for="user-phone">Teléfono</label>
+            <input
+              id="user-phone"
+              name="phone"
+              type="tel"
+              class="input"
+              [(ngModel)]="form.phone"
+              placeholder="Ej. 987 654 321"
+            />
+          </div>
+          <div>
+            <label class="label" for="user-role">Rol en esta empresa</label>
+            <select id="user-role" name="role" class="input" [(ngModel)]="form.role">
+              @for (option of roleOptions; track option.value) {
+                <option [value]="option.value">{{ option.label }}</option>
+              }
+            </select>
+          </div>
+          <div>
+            <label class="label" for="user-password">
+              Contraseña{{ editing() ? '' : ' *' }}
+            </label>
+            <div class="relative">
+              <input
+                id="user-password"
+                name="password"
+                class="input pr-24"
+                [type]="showPassword ? 'text' : 'password'"
+                [required]="!editing()"
+                [minlength]="minPasswordLength"
+                [(ngModel)]="form.password"
+                placeholder="Mínimo 6 caracteres"
+                autocomplete="new-password"
+              />
+              <button
+                type="button"
+                class="absolute right-2 top-1.5 rounded-md px-2 py-1 text-xs font-semibold text-brand-700 hover:bg-brand-50"
+                (click)="showPassword = !showPassword"
+              >
+                {{ showPassword ? 'Ocultar' : 'Mostrar' }}
+              </button>
+            </div>
+            @if (editing()) {
+              <p class="mt-1 text-xs text-slate-400">
+                Déjala vacía para conservar la contraseña actual.
+              </p>
+            } @else {
+              <p class="mt-1 text-xs text-slate-400">
+                Si el correo ya existe, se agrega a esta empresa. Solo asigna una
+                contraseña cuando sea un correo nuevo.
+              </p>
+            }
+          </div>
+        </div>
+
+        <label class="flex items-center gap-2 text-sm text-slate-600">
+          <input type="checkbox" name="active" class="h-4 w-4" [(ngModel)]="form.active" />
+          Activo en esta empresa
+        </label>
+
+        <div modalFooter class="flex w-full justify-end gap-2">
+          <button type="button" class="btn-secondary" (click)="closeModal()">Cancelar</button>
+          <button type="submit" class="btn-primary" [disabled]="saving() || userForm.invalid">
+            {{ saving() ? 'Guardando…' : 'Guardar' }}
+          </button>
+        </div>
+      </form>
+    </app-modal>
+  
