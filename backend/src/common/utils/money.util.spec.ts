@@ -34,23 +34,29 @@ describe('money.util', () => {
       expect(Object.is(round2(-0.0001), 0)).toBe(true);
     });
 
-    it('conserva el redondeo historico de round2 (medio hacia arriba)', () => {
-      expect(toCents(1.005)).toBe(101);
+    it('recorta a centavos sin redondear (nunca hacia arriba)', () => {
+      expect(toCents(1.005)).toBe(100);
+      expect(toCents(1.009)).toBe(100);
       expect(toCents(1.004)).toBe(100);
+      expect(toCents(17.5685)).toBe(1756);
+      // El ruido del punto flotante no resta un centavo.
+      expect(toCents(17.56)).toBe(1756);
+      expect(toCents(0.07)).toBe(7);
+      // Las tasas si se redondean (`round2`), porque no son dinero.
       expect(round2(1.005)).toBe(1.01);
       expect(round2(1.004)).toBe(1);
     });
 
-    it('round2 es exactamente centavos / 100', () => {
-      for (const value of [0, 0.1, 0.3, 12.345, 194.34, -7.999, 1234.567]) {
-        expect(round2(value)).toBe(fromCents(toCents(value)));
+    it('round2 sigue redondeando a 2 decimales (solo para tasas)', () => {
+      for (const value of [0.1, 0.3, 0.105, 194.34, 7.999, 1234.567]) {
+        expect(round2(value)).toBe(Math.round(value * 100) / 100);
       }
     });
   });
 
   describe('toMoney', () => {
-    it('normaliza cualquier entrada a un monto de 2 decimales', () => {
-      expect(toMoney('12.345')).toBe(12.35);
+    it('normaliza cualquier entrada a un monto de 2 decimales, recortando', () => {
+      expect(toMoney('12.345')).toBe(12.34);
       expect(toMoney(null)).toBe(0);
       expect(toMoney(Number.NaN)).toBe(0);
     });
@@ -97,9 +103,10 @@ describe('money.util', () => {
     });
 
     it('compara montos de forma exacta (a precision de centavo)', () => {
-      // 1.005 redondea a 1.01 (medio hacia arriba), asi que a centavos son el
-      // mismo monto; 1.004 si queda por debajo de 1.01.
-      expect(compareMoney(1.005, 1.01)).toBe(0);
+      // 1.005 se recorta a 1.00 (nunca hacia arriba), asi que queda por debajo
+      // de 1.01; el centavo se cobra y se compara tal cual se lee.
+      expect(compareMoney(1.005, 1.01)).toBe(-1);
+      expect(compareMoney(1.009, 1.01)).toBe(-1);
       expect(compareMoney(1.004, 1.01)).toBe(-1);
       expect(compareMoney(1.01, 1.01)).toBe(0);
       expect(compareMoney(1.02, 1.01)).toBe(1);

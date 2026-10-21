@@ -799,6 +799,10 @@ model CashMovement {
   currency      String   @default("USD") // Moneda en que entro/salio el dinero
   exchangeRate  Float? // Bolivares por 1 unidad de `currency` (tasa usada)
   baseAmount    Int      @default(0) // Equivalente en USD (moneda base del sistema)
+  // Unidades de `currency` por 1 USD usadas al valorar el movimiento (null en
+  // registros anteriores o cuando el llamador fijo `baseAmount`). Permite que el
+  // arqueo sume con precision completa y recorte una sola vez al final.
+  baseRate      Float?
   description   String?
   referenceType String? // ORDER | EXPENSE | PAYABLE | RECEIVABLE | MANUAL
   referenceId   String?

@@ -22,9 +22,11 @@ import { buildPaginatedResult } from '../../common/utils/pagination.util';
 import { buildCode } from '../../common/utils/code.util';
 import {
   compareMoney,
+  fromCents,
   money,
   moneyFieldsFromCents,
   moneyFieldsToCents,
+  toCents,
   toMoney,
 } from '../../common/utils/money.util';
 import { OPENING_LINE_MONEY_FIELDS } from '../../common/constants/money-columns';
@@ -51,6 +53,12 @@ export interface MovementLike {
   /** Equivalente en USD (moneda base); 0 en registros anteriores. */
   baseAmount?: number | null;
   /**
+   * Tasa exacta con la que se valoro el movimiento: unidades de `currency` por
+   * 1 USD. El arqueo la usa para sumar sin perder decimales; `null` solo en
+   * registros anteriores a este campo.
+   */
+  baseRate?: number | null;
+  /**
    * Propina incluida en el movimiento, en la moneda base. El movimiento guarda
    * el cobro completo (consumo + propina), asi que este monto lo calcula
    * `withTips` a partir del pedido cobrado.
@@ -61,7 +69,27 @@ export interface MovementLike {
   referenceId?: string | null;
 }
 
-/** Totales de un movimiento, en la moneda original y en la moneda base. */
+/** Totales de un metodo de pago dentro de una moneda. */
+export interface CurrencyMethodTotal {
+  method: string;
+  /** Montos en la moneda de la fila. */
+  in: number;
+  out: number;
+  net: number;
+  /** Los mismos montos expresados en USD (moneda base). */
+  baseIn: number;
+  baseOut: number;
+  baseNet: number;
+}
+
+/**
+ * Totales de un movimiento, en la moneda original y en la moneda base.
+ *
+ * Ademas del total general, cada moneda guarda los agregados que pinta el
+ * arqueo (efectivo, ventas, propinas y vueltos). Con ellos la pantalla suma en
+ * la moneda en que se cobro: el equivalente en USD se guarda redondeado a
+ * centavos, asi que reconvertirlo pintaba Bs 15.520,00 como Bs 15.521,27.
+ */
 export interface CurrencyBreakdown {
   currency: string;
   in: number;
@@ -71,6 +99,22 @@ export interface CurrencyBreakdown {
   baseIn: number;
   baseOut: number;
   baseNet: number;
+  /** Efectivo (metodo CASH) que entro y salio en esta moneda. */
+  cashIn: number;
+  cashOut: number;
+  baseCashIn: number;
+  baseCashOut: number;
+  /** Ventas brutas (categoria SALE) cobradas en esta moneda, con propina. */
+  sales: number;
+  /** Propina incluida en esos cobros, en esta moneda. */
+  tips: number;
+  /** Vueltos entregados (categoria CHANGE) en esta moneda. */
+  change: number;
+  baseSales: number;
+  baseTips: number;
+  baseChange: number;
+  /** Desglose de esta moneda por metodo de pago. */
+  methods: CurrencyMethodTotal[];
 }
 
 /** Una parte del fondo inicial: monto contado en su moneda + equivalente en USD. */
@@ -80,6 +124,11 @@ export interface OpeningLine {
   amount: number;
   /** Bolivares por 1 unidad de `currency` (tasa usada al abrir). */
   rate: number | null;
+  /**
+   * Unidades de `currency` por 1 USD (`amount / baseRate` = USD exactos).
+   * `null` en aperturas anteriores a este campo; ahi se usa `baseAmount`.
+   */
+  baseRate?: number | null;
   /** Equivalente en USD (moneda base) de `amount`. */
   baseAmount: number;
 }
@@ -103,6 +152,53 @@ interface OpeningFund {
 }
 
 /**
+ * Entrada del desglose por moneda mientras se recorre el turno: los totales
+ * por metodo se acumulan en un mapa y se pasan a lista al terminar.
+ */
+type CurrencyEntry = Omit<CurrencyBreakdown, 'methods'> & {
+  methods: Map<string, { in: number; out: number; baseIn: number; baseOut: number }>;
+};
+
+/** Entrada vacia del desglose por moneda. */
+function emptyCurrencyEntry(currency: string): CurrencyEntry {
+  return {
+    currency,
+    in: 0,
+    out: 0,
+    net: 0,
+    baseIn: 0,
+    baseOut: 0,
+    baseNet: 0,
+    cashIn: 0,
+    cashOut: 0,
+    baseCashIn: 0,
+    baseCashOut: 0,
+    sales: 0,
+    tips: 0,
+    change: 0,
+    baseSales: 0,
+    baseTips: 0,
+    baseChange: 0,
+    methods: new Map(),
+  };
+}
+
+/**
+ * Recorta centavos a un entero SIN redondear (hacia cero).
+ *
+ * El arqueo suma los equivalentes en centavos con toda su precision y recorta
+ * una sola vez al final: redondear movimiento por movimiento producia un centavo
+ * de mas en el esperado frente a lo que pinta la pantalla. La tolerancia
+ * relativa evita que el ruido del punto flotante pierda un centavo
+ * (`658.9999999998` -> 659).
+ */
+function truncCents(value: number): number {
+  if (!Number.isFinite(value)) return 0;
+  const truncated = Math.trunc(value + Math.abs(value) * 1e-9);
+  return truncated === 0 ? 0 : truncated;
+}
+
+/**
  * Arqueo de caja.
  *
  * Todos los totales agregados (`cashIn`, `totalOut`, `expectedCash`, ...) se
@@ -115,6 +211,12 @@ export interface CashBreakdown {
   cashIn: number;
   /** Efectivo que salio de la caja (solo metodo CASH). */
   cashOut: number;
+  /**
+   * Fondo inicial en USD valorizado con su tasa exacta y recortado a centavos
+   * (no el total ya redondeado de la apertura). Es la parte del esperado que el
+   * cajero puede contar en el cajon.
+   */
+  openingCash: number;
   /** Efectivo que deberia haber en la caja: apertura + cashIn - cashOut. */
   expectedCash: number;
   /** Totales por todos los metodos. */
@@ -179,13 +281,30 @@ export class CashService {
   }
 
   /**
+   * Equivalente en USD (moneda base) de un movimiento, con toda su precision y
+   * expresado en centavos.
+   *
+   * Con `baseRate` (unidades de la moneda por 1 USD) se recalcula desde el monto
+   * original, sin perder los decimales que el redondeo de `baseAmount` descarta:
+   * Bs 15.520,00 al BCV son 17,5685 USD, no 17,57. Sin tasa (registros
+   * anteriores o montos ajustados al saldo) vale el `baseAmount` guardado, que
+   * es el valor contable del movimiento.
+   */
+  private baseCentsOf(row: MovementLike): number {
+    const amountCents = toCents(row.amount);
+    const rate = Number(row.baseRate ?? 0);
+    if (Number.isFinite(rate) && rate > 0) return amountCents / rate;
+    const base = toCents(row.baseAmount ?? 0);
+    return base > 0 ? base : amountCents;
+  }
+
+  /**
    * Equivalente en USD (moneda base) de un movimiento.
-   * Los registros anteriores al soporte multimoneda no tienen `baseAmount`,
-   * por lo que su `amount` ya estaba expresado en dolares.
+   * Los registros anteriores al soporte multimoneda no tienen `baseAmount` ni
+   * `baseRate`, por lo que su `amount` ya estaba expresado en dolares.
    */
   private baseOf(row: MovementLike): number {
-    const base = toMoney(row.baseAmount ?? 0);
-    return base > 0 ? base : toMoney(row.amount);
+    return fromCents(this.baseCentsOf(row));
   }
 
   // =========================================================================
@@ -224,14 +343,40 @@ export class CashService {
       if (!currency) continue;
       const amount = toMoney(item.amount);
       const rate = Number(item.rate);
+      const baseRate = Number(item.baseRate);
       lines.push({
         currency,
         amount,
         rate: Number.isFinite(rate) && rate > 0 ? rate : null,
+        baseRate: Number.isFinite(baseRate) && baseRate > 0 ? baseRate : null,
         baseAmount: toMoney(item.baseAmount ?? amount),
       });
     }
     return lines;
+  }
+
+  /**
+   * Centavos exactos del fondo inicial.
+   *
+   * Se valoriza linea por linea con la tasa a la que se conto el fondo
+   * (`amount / baseRate`) en vez de usar `openingAmount`, que ya viene redondeado
+   * a centavos: un fondo de Bs 100.000,00 al BCV son 113,1976 USD y el arqueo
+   * tiene que compararlo contra el conteo del cierre con esa misma precision,
+   * no con 113,20. Las aperturas antiguas (sin `baseRate`) usan su equivalente
+   * guardado y, si no hay desglose, el total de la sesion.
+   */
+  private openingCentsOf(openingAmount: number, lines: OpeningLine[]): number {
+    if (lines.length === 0) return toCents(openingAmount);
+    let cents = 0;
+    for (const line of lines) {
+      const amountCents = toCents(line.amount);
+      const rate = Number(line.baseRate ?? 0);
+      cents +=
+        Number.isFinite(rate) && rate > 0
+          ? amountCents / rate
+          : toCents(line.baseAmount);
+    }
+    return cents;
   }
 
   /** Serializa el desglose del fondo con los montos en centavos. */
@@ -317,6 +462,7 @@ export class CashService {
             currency,
             amount,
             rate: conversion.exchangeRate,
+            baseRate: conversion.unitsPerBase,
             baseAmount: conversion.baseAmount,
           },
         ],
@@ -334,6 +480,7 @@ export class CashService {
         currency: conversion.currency,
         amount: line.amount,
         rate: conversion.exchangeRate,
+        baseRate: conversion.unitsPerBase,
         baseAmount: conversion.baseAmount,
       });
     }
@@ -354,8 +501,12 @@ export class CashService {
     /** Desglose del fondo guardado en la sesion (`CashSession.openingLines`). */
     openingLines?: unknown,
   ): CashBreakdown {
-    const opening = toMoney(openingAmount);
     const fundLines = this.openingLinesOf(openingLines);
+    const openingCents = this.openingCentsOf(openingAmount, fundLines);
+    // Los agregados en moneda base se acumulan en CENTAVOS SIN REDONDEAR: cada
+    // movimiento aporta su equivalente exacto y se recorta una sola vez al
+    // final, igual que la pantalla. Redondear movimiento por movimiento dejaba
+    // el esperado un centavo por encima de lo que se ve en el arqueo.
     let cashIn = 0;
     let cashOut = 0;
     let totalIn = 0;
@@ -370,90 +521,142 @@ export class CashService {
 
     const methods = new Map<string, { in: number; out: number }>();
     const categories = new Map<string, { in: number; out: number }>();
-    const currencies = new Map<string, CurrencyBreakdown>();
+    const currencies = new Map<string, CurrencyEntry>();
 
     for (const m of movements) {
       const currency = this.currencyOf(m);
-      // `amount`: moneda original · `base`: equivalente en USD (moneda base).
+      // `amount`: moneda original · `base`: equivalente en USD exacto (centavos).
       const amount = toMoney(m.amount);
-      const base = this.baseOf(m);
+      const base = this.baseCentsOf(m);
       const isIn = m.type === CashMovementType.IN;
       const isCash = m.paymentMethod === PaymentMethod.CASH;
       const side = isIn ? 'in' : 'out';
 
       if (isIn) {
-        totalIn = money.add(totalIn, base);
-        if (isCash) cashIn = money.add(cashIn, base);
+        totalIn += base;
+        if (isCash) cashIn += base;
       } else {
-        totalOut = money.add(totalOut, base);
-        if (isCash) cashOut = money.add(cashOut, base);
+        totalOut += base;
+        if (isCash) cashOut += base;
       }
 
       if (isIn && m.category === CashMovementCategory.SALE) {
-        salesTotal = money.add(salesTotal, base);
+        salesTotal += base;
         // La propina entra dentro del cobro: se separa de la venta.
-        tipsTotal = money.add(tipsTotal, this.tipOf(m));
+        tipsTotal += toCents(this.tipOf(m));
       }
       if (!isIn && m.category === CashMovementCategory.CHANGE) {
-        changeTotal = money.add(changeTotal, base);
+        changeTotal += base;
       }
 
       const methodEntry = methods.get(m.paymentMethod) ?? { in: 0, out: 0 };
-      methodEntry[side] = money.add(methodEntry[side], base);
+      methodEntry[side] += base;
       methods.set(m.paymentMethod, methodEntry);
 
       const catEntry = categories.get(m.category) ?? { in: 0, out: 0 };
-      catEntry[side] = money.add(catEntry[side], base);
+      catEntry[side] += base;
       categories.set(m.category, catEntry);
 
-      const entry = currencies.get(currency) ?? {
-        currency,
+      // Propina que lleva dentro el cobro, en la moneda del movimiento. La
+      // propina se guarda en USD (moneda base): aqui se reparte en la moneda en
+      // que se cobro para poder sumarla sin reconvertir.
+      const tipBase =
+        isIn && m.category === CashMovementCategory.SALE ? this.tipOf(m) : 0;
+      const tip =
+        tipBase > 0 && base > 0
+          ? money.div(money.mul(tipBase, amount), fromCents(base))
+          : 0;
+
+      const entry = currencies.get(currency) ?? emptyCurrencyEntry(currency);
+      entry[side] = money.add(entry[side], amount);
+      entry[side === 'in' ? 'baseIn' : 'baseOut'] += base;
+      if (isCash) {
+        entry[side === 'in' ? 'cashIn' : 'cashOut'] = money.add(
+          entry[side === 'in' ? 'cashIn' : 'cashOut'],
+          amount,
+        );
+        entry[side === 'in' ? 'baseCashIn' : 'baseCashOut'] += base;
+      }
+      if (isIn && m.category === CashMovementCategory.SALE) {
+        entry.sales = money.add(entry.sales, amount);
+        entry.tips = money.add(entry.tips, tip);
+        entry.baseSales += base;
+        entry.baseTips += toCents(tipBase);
+      }
+      if (!isIn && m.category === CashMovementCategory.CHANGE) {
+        entry.change = money.add(entry.change, amount);
+        entry.baseChange += base;
+      }
+      const currencyMethod = entry.methods.get(m.paymentMethod) ?? {
         in: 0,
         out: 0,
-        net: 0,
         baseIn: 0,
         baseOut: 0,
-        baseNet: 0,
       };
-      entry[side] = money.add(entry[side], amount);
-      entry[side === 'in' ? 'baseIn' : 'baseOut'] = money.add(
-        entry[side === 'in' ? 'baseIn' : 'baseOut'],
-        base,
-      );
+      currencyMethod[side] = money.add(currencyMethod[side], amount);
+      currencyMethod[side === 'in' ? 'baseIn' : 'baseOut'] += base;
+      entry.methods.set(m.paymentMethod, currencyMethod);
       entry.net = money.sub(entry.in, entry.out);
-      entry.baseNet = money.sub(entry.baseIn, entry.baseOut);
       currencies.set(currency, entry);
     }
 
-    const expectedCash = money.sub(money.add(opening, cashIn), cashOut);
-    const net = money.sub(totalIn, totalOut);
+    /** Centavos acumulados -> monto, recortando una sola vez. */
+    const truncate = (cents: number): number => fromCents(truncCents(cents));
 
     return {
-      cashIn,
-      cashOut,
-      expectedCash,
-      totalIn,
-      totalOut,
-      net,
+      cashIn: truncate(cashIn),
+      cashOut: truncate(cashOut),
+      openingCash: truncate(openingCents),
+      expectedCash: truncate(openingCents + cashIn - cashOut),
+      totalIn: truncate(totalIn),
+      totalOut: truncate(totalOut),
+      net: truncate(totalIn - totalOut),
       // Ventas netas: se descuentan la propina (que viene dentro del cobro) y los
       // vueltos entregados. `cashIn`/`totalIn` conservan el bruto para que el
       // arqueo cuadre con el dinero que fisicamente paso por el cajon.
-      salesTotal: money.sub(money.sub(salesTotal, tipsTotal), changeTotal),
-      tipsTotal,
+      salesTotal: truncate(salesTotal - tipsTotal - changeTotal),
+      tipsTotal: truncate(tipsTotal),
       movementCount: movements.length,
       byMethod: [...methods.entries()].map(([method, v]) => ({
         method,
-        in: v.in,
-        out: v.out,
-        net: money.sub(v.in, v.out),
+        in: truncate(v.in),
+        out: truncate(v.out),
+        net: truncate(v.in - v.out),
       })),
       byCategory: [...categories.entries()].map(([category, v]) => ({
         category,
-        in: v.in,
-        out: v.out,
-        net: money.sub(v.in, v.out),
+        in: truncate(v.in),
+        out: truncate(v.out),
+        net: truncate(v.in - v.out),
       })),
-      byCurrency: [...currencies.values()],
+      byCurrency: [...currencies.values()].map(({ methods: byMethod, ...entry }) => {
+        const baseIn = truncate(entry.baseIn);
+        const baseOut = truncate(entry.baseOut);
+        return {
+          ...entry,
+          baseIn,
+          baseOut,
+          baseNet: money.sub(baseIn, baseOut),
+          baseCashIn: truncate(entry.baseCashIn),
+          baseCashOut: truncate(entry.baseCashOut),
+          baseSales: truncate(entry.baseSales),
+          baseTips: truncate(entry.baseTips),
+          baseChange: truncate(entry.baseChange),
+          methods: [...byMethod.entries()].map(([method, v]) => {
+            const methodBaseIn = truncate(v.baseIn);
+            const methodBaseOut = truncate(v.baseOut);
+            return {
+              method,
+              in: v.in,
+              out: v.out,
+              net: money.sub(v.in, v.out),
+              baseIn: methodBaseIn,
+              baseOut: methodBaseOut,
+              baseNet: money.sub(methodBaseIn, methodBaseOut),
+            };
+          }),
+        };
+      }),
       openingByCurrency: fundLines,
       openingMixed: fundLines.length > 1,
     };
@@ -471,7 +674,8 @@ export class CashService {
   private tipOf(row: MovementLike): number {
     const tip = toMoney(row.tipAmount ?? 0);
     if (tip <= 0) return 0;
-    const base = this.baseOf(row);
+    // El tope se recorta: la propina nunca puede sobre-cobrar el movimiento.
+    const base = fromCents(truncCents(this.baseCentsOf(row)));
     return compareMoney(tip, base) > 0 ? base : tip;
   }
 
@@ -738,7 +942,14 @@ export class CashService {
         entered,
         currency || BASE_CURRENCY_CODE,
       );
-      countedAmount = conversion.baseAmount;
+      // El conteo se lleva a USD como el arqueo: se valoriza con la tasa y se
+      // recorta (nunca hacia arriba). Redondear el conteo dejaba el cierre con
+      // un centavo de sobrante cuando el cajero contaba exactamente lo esperado.
+      const unitsPerBase = Number(conversion.unitsPerBase ?? 0);
+      countedAmount =
+        Number.isFinite(unitsPerBase) && unitsPerBase > 0
+          ? fromCents(truncCents(toCents(entered) / unitsPerBase))
+          : conversion.baseAmount;
       countedRate = conversion.exchangeRate;
       countedCurrency = conversion.currency;
     }
@@ -863,6 +1074,15 @@ export class CashService {
       input.baseAmount === null || input.baseAmount === undefined
         ? conversion.baseAmount
         : toMoney(input.baseAmount);
+    // Tasa exacta para valorar el movimiento en la moneda base: se guarda
+    // SIEMPRE, aunque el llamador haya ajustado `baseAmount` a un saldo.
+    //
+    // `baseAmount` es el valor contable del cobro (p. ej. el precio en USD del
+    // pedido, recortado al centavo) y no lo que fisicamente entro al cajon. El
+    // arqueo necesita el dinero real: Bs 15.520,00 al BCV son 17,5686 USD, no
+    // los 17,56 del precio. Con la tasa guardada el turno suma sin perder
+    // decimales y recorta una sola vez al final, igual que la pantalla.
+    const baseRate = conversion.unitsPerBase;
 
     const sessionId =
       input.sessionId ?? (await this.getOpenSessionOrThrow(companyId, tx)).id;
@@ -891,6 +1111,7 @@ export class CashService {
         currency: conversion.currency,
         exchangeRate: conversion.exchangeRate,
         baseAmount,
+        baseRate,
         description: input.description,
         referenceType: input.referenceType,
         referenceId: input.referenceId,

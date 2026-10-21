@@ -259,7 +259,7 @@ describe('NotificationsService', () => {
     expect(message).toContain('<b>Equivalencias:</b>');
     expect(message).toContain('• Dólares (tasa personalizada): $4.03');
     expect(message).toContain('• Dólares (BCV): $4.16');
-    expect(message).toContain('• Euros (BCV): €3.72');
+    expect(message).toContain('• Euros (BCV): €3.71');
   });
 
   it('en un pago en USD muestra equivalencias en bolívares y EUR', async () => {
@@ -280,7 +280,7 @@ describe('NotificationsService', () => {
     expect(message).not.toContain('Saldo');
     expect(message).toContain('• Bolívares (tasa personalizada): Bs 90550.00');
     expect(message).toContain('• Bolívares (BCV): Bs 87679.76');
-    expect(message).toContain('• Euros (BCV): €89.29');
+    expect(message).toContain('• Euros (BCV): €89.28');
   });
 
   it('sin tasa personalizada solo muestra las equivalencias disponibles', async () => {
@@ -304,7 +304,7 @@ describe('NotificationsService', () => {
     const message = telegram.sendMessage.mock.calls[0][1] as string;
     expect(message).not.toContain('tasa personalizada');
     expect(message).toContain('• Dólares (BCV): $4.16');
-    expect(message).toContain('• Euros (BCV): €3.72');
+    expect(message).toContain('• Euros (BCV): €3.71');
   });
 
 

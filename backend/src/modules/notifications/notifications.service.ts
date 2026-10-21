@@ -9,6 +9,7 @@ import {
 import { ConfigService } from '@nestjs/config';
 import { compare, hash } from 'bcryptjs';
 import { randomInt } from 'crypto';
+import { truncMoney } from '../../common/utils/money.util';
 import type { RateHistory } from '../rates/rates.service';
 import type { UpdateNotificationSettingsDto } from './dto/update-notification-settings.dto';
 import {
@@ -141,14 +142,19 @@ export function randomUppercaseCode(length = CODE_LENGTH): string {
   return code;
 }
 
-/** Formato corto de montos en la moneda base (USD). */
+/**
+ * Formato corto de montos en la moneda base (USD).
+ *
+ * Recorta (no redondea): el aviso tiene que decir el mismo monto que la
+ * pantalla, que tambien recorta a 2 decimales.
+ */
 function usd(value: number): string {
-  return `$${Number(value ?? 0).toFixed(2)}`;
+  return `$${truncMoney(value).toFixed(2)}`;
 }
 
-/** Monto con dos decimales para las equivalencias del aviso. */
+/** Monto con dos decimales para las equivalencias del aviso (recortado). */
 function amount(value: number): string {
-  return Number(value ?? 0).toFixed(2);
+  return truncMoney(value).toFixed(2);
 }
 
 /** Tasa de una clave de la foto tomada al momento del cobro. */
@@ -523,7 +529,7 @@ export class NotificationsService implements OnModuleInit, OnModuleDestroy {
       '💳 <b>Venta / cobro registrado</b>',
       '',
       `<b>Pedido:</b> ${escapeHtml(sale.orderCode)}`,
-      `<b>Cobrado ahora:</b> ${escapeHtml(sale.paymentCurrency)} ${sale.paidNow.toFixed(2)}`,
+      `<b>Cobrado ahora:</b> ${escapeHtml(sale.paymentCurrency)} ${amount(sale.paidNow)}`,
       ...(equivalents.length > 0
         ? ['<b>Equivalencias:</b>', ...equivalents]
         : []),

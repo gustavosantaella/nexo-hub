@@ -10,6 +10,7 @@ import {
   moneyLoaded,
   moneyLoadedCompact,
   number,
+  payableAmount,
   setDisplayCurrency,
   truncate,
 } from './format';
@@ -33,6 +34,22 @@ describe('format (valores abreviados)', () => {
       const usd = 15_520 / 883.4;
       expect(truncate(usd, 2)).not.toBe(usd);
       expect(usd * 883.4).toBeCloseTo(15_520, 8);
+    });
+  });
+
+  describe('payableAmount', () => {
+    it('devuelve el monto que se cobra: el visible, recortado a la moneda', () => {
+      // Bs 15.520,00 al BCV (883,3963) son 17,56855... USD: se cobran $ 17,56.
+      expect(payableAmount(15_520 / 883.3963, 'USD')).toBe(17.56);
+      // En bolivares se cobran los bolivares completos, sin perder el centavo.
+      expect(payableAmount(15_520, 'VES')).toBe(15_520);
+      expect(payableAmount(0.7 * 3, 'USD')).toBe(2.1);
+    });
+
+    it('nunca redondea hacia arriba', () => {
+      expect(payableAmount(17.999, 'USD')).toBe(17.99);
+      expect(payableAmount(1.239, 'VES')).toBe(1.23);
+      expect(payableAmount(null, 'USD')).toBe(0);
     });
   });
 

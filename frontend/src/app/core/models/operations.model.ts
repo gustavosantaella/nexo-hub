@@ -298,6 +298,12 @@ export interface CashMovement {
   currency: string;
   /** Bolivares por 1 unidad de `currency` al momento del registro. */
   exchangeRate?: number | null;
+  /**
+   * Unidades de `currency` por 1 USD al momento del registro. El arqueo valora
+   * el movimiento con esta tasa (`amount / baseRate`), no con el equivalente ya
+   * recortado a centavos.
+   */
+  baseRate?: number | null;
   /** Equivalente en USD (moneda base del sistema). */
   baseAmount: number;
   description?: string | null;
@@ -311,6 +317,19 @@ export interface CashMovement {
   createdBy?: { id: string; name: string } | null;
 }
 
+/** Totales de un método de pago dentro de una moneda. */
+export interface CurrencyMethodTotal {
+  method: string;
+  /** Montos en la moneda de la fila. */
+  in: number;
+  out: number;
+  net: number;
+  /** Los mismos montos expresados en USD (moneda base). */
+  baseIn: number;
+  baseOut: number;
+  baseNet: number;
+}
+
 /** Efectivo de una moneda: montos originales + su equivalente en USD. */
 export interface CurrencyBreakdown {
   currency: string;
@@ -320,6 +339,22 @@ export interface CurrencyBreakdown {
   baseIn: number;
   baseOut: number;
   baseNet: number;
+  /** Efectivo (método CASH) que entró y salió en esta moneda. */
+  cashIn: number;
+  cashOut: number;
+  baseCashIn: number;
+  baseCashOut: number;
+  /** Ventas brutas (categoría SALE) cobradas en esta moneda, con propina. */
+  sales: number;
+  /** Propina incluida en esos cobros, en esta moneda. */
+  tips: number;
+  /** Vueltos entregados (categoría CHANGE) en esta moneda. */
+  change: number;
+  baseSales: number;
+  baseTips: number;
+  baseChange: number;
+  /** Desglose de esta moneda por método de pago. */
+  methods: CurrencyMethodTotal[];
 }
 
 /** Una parte del fondo inicial: monto contado en su moneda + equivalente en USD. */
@@ -329,6 +364,11 @@ export interface CashOpeningLine {
   amount: number;
   /** Bolívares por 1 unidad de `currency` (tasa usada al abrir). */
   rate?: number | null;
+  /**
+   * Unidades de `currency` por 1 USD con las que se valorizó el fondo
+   * (`amount / baseRate`). Falta en aperturas antiguas.
+   */
+  baseRate?: number | null;
   /** Equivalente en USD (moneda base) de `amount`. */
   baseAmount: number;
 }
@@ -341,6 +381,8 @@ export interface CashOpeningLine {
 export interface CashSummary {
   cashIn: number;
   cashOut: number;
+  /** Fondo inicial valorizado con su tasa y recortado a centavos (USD). */
+  openingCash?: number;
   expectedCash: number;
   totalIn: number;
   totalOut: number;

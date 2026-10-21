@@ -595,7 +595,8 @@ describe('RatesService', () => {
     it('expresa un monto de la moneda base en otra moneda', async () => {
       const { service } = buildService({ fetchImpl: fetchMock });
 
-      await expect(service.toCurrencyAmount(COMPANY_ID, 2, 'VES')).resolves.toBe(1753.6);
+      // 2 x 876,7976 = 1.753,5952 Bs: se recorta, no se redondea hacia arriba.
+      await expect(service.toCurrencyAmount(COMPANY_ID, 2, 'VES')).resolves.toBe(1753.59);
     });
 
     /**
@@ -684,11 +685,11 @@ describe('RatesService', () => {
     it('re-expresa un monto en bolivares con la misma tasa elegida', async () => {
       const { service } = buildService({ fetchImpl: fetchMock });
 
-      // 10 USD al cambio del euro: 10 x 982,00454402 = 9.820,05 Bs. Con la tasa
-      // activa habrian sido 8.767,98 Bs.
+      // 10 USD al cambio del euro: 10 x 982,00454402 = 9.820,0454 Bs -> 9.820,04
+      // (se recorta). Con la tasa activa habrian sido 8.767,97 Bs.
       await expect(
         service.toCurrencyAmount(COMPANY_ID, 10, 'VES', 'BCV_EUR'),
-      ).resolves.toBe(9820.05);
+      ).resolves.toBe(9820.04);
     });
   });
 

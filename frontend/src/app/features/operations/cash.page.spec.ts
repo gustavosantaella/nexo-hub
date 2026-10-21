@@ -11,6 +11,7 @@ import type {
   CashMovement,
   CashSession,
   CashSummary,
+  CurrencyBreakdown,
 } from '../../core/models/operations.model';
 import type {
   CurrencyRateOption,
@@ -388,6 +389,432 @@ describe('CashPage (fondo inicial multimoneda)', () => {
     expect(closing).toContain('Ventas (sin propinas)');
     expect(closing).toContain('Total cobrado por ventas');
     expect(page.closeDifference).toBe(0);
+  });
+
+  it('muestra en las tarjetas del arqueo el monto exacto, sin abreviar', () => {
+    const page = mount();
+    // El cajero ve los precios en dólares: los montos no se abrevian.
+    setDisplayCurrency(null);
+    page.session.set(session({ status: 'OPEN', openingAmount: 0 }));
+    page.summary.set({
+      cashIn: 1_250,
+      cashOut: 0,
+      expectedCash: 1_250,
+      totalIn: 1_250,
+      totalOut: 0,
+      net: 1_250,
+      salesTotal: 1_250,
+      tipsTotal: 0,
+      movementCount: 1_250,
+      byMethod: [],
+      byCategory: [],
+      byCurrency: [],
+    });
+    fixture.detectChanges();
+
+    const cards = fixture.nativeElement.querySelectorAll('app-stat-card');
+    expect(cards.length).toBe(7);
+
+    const text = fixture.nativeElement.textContent as string;
+    // Monto exacto (no "$ 1.3k" ni "1.3k") y cantidad tal cual.
+    expect(text).toContain('$ 1,250.00');
+    expect(text).not.toContain('$ 1.3k');
+    expect(text).toContain('1,250');
+    expect(text).not.toContain('1.3k');
+  });
+
+  it('achica el monto exacto de las tarjetas cuando el cajero ve bolívares', () => {
+    const page = mount();
+    setDisplayCurrency({
+      code: 'VES',
+      label: 'Bolívares',
+      symbol: 'Bs',
+      decimals: 2,
+      bsPerUnit: 1,
+      bsPerUsd: BS_PER_USD,
+    });
+    page.session.set(session({ status: 'OPEN', openingAmount: 0 }));
+    page.summary.set({
+      cashIn: 1_250,
+      cashOut: 0,
+      expectedCash: 1_250,
+      totalIn: 1_250,
+      totalOut: 0,
+      net: 1_250,
+      salesTotal: 1_250,
+      tipsTotal: 0,
+      movementCount: 1,
+      byMethod: [],
+      byCategory: [],
+      byCurrency: [],
+    });
+    fixture.detectChanges();
+
+    // 1 250 USD al BCV (905) = Bs 1.131.250,00: el monto completo y en letra
+    // menor, porque en una tarjeta de siete por fila no cabe a 2xl.
+    const amounts = Array.from<HTMLElement>(
+      fixture.nativeElement.querySelectorAll('app-stat-card app-money'),
+    );
+    const income = amounts.find((node) => node.textContent?.includes('1,131,250.00'));
+    expect(income).toBeTruthy();
+    expect(income?.classList).toContain('text-base');
+    expect(income?.classList).not.toContain('text-2xl');
+  });
+
+  it('pinta el equivalente del desglose por moneda a la tasa del BCV', () => {
+    const page = mount();
+    // La vitrina está en 970 Bs por dólar y el BCV en 905: el equivalente del
+    // arqueo debe salir a la tasa oficial, como las tarjetas y las tablas.
+    setDisplayCurrency({
+      code: 'VES',
+      label: 'Bolívares',
+      symbol: 'Bs',
+      decimals: 2,
+      bsPerUnit: 1,
+      bsPerUsd: 970,
+    });
+    page.session.set(session({ status: 'OPEN', openingAmount: 0 }));
+    page.summary.set({
+      cashIn: 20,
+      cashOut: 0,
+      expectedCash: 20,
+      totalIn: 20,
+      totalOut: 0,
+      net: 20,
+      salesTotal: 20,
+      tipsTotal: 0,
+      movementCount: 1,
+      byMethod: [],
+      byCategory: [],
+      byCurrency: [
+        {
+          currency: 'USD',
+          in: 20,
+          out: 0,
+          net: 20,
+          baseIn: 20,
+          baseOut: 0,
+          baseNet: 20,
+          cashIn: 20,
+          cashOut: 0,
+          baseCashIn: 20,
+          baseCashOut: 0,
+          sales: 20,
+          tips: 0,
+          change: 0,
+          baseSales: 20,
+          baseTips: 0,
+          baseChange: 0,
+          methods: [
+            {
+              method: 'CASH',
+              in: 20,
+              out: 0,
+              net: 20,
+              baseIn: 20,
+              baseOut: 0,
+              baseNet: 20,
+            },
+          ],
+        },
+      ],
+    });
+    page.openClose();
+    fixture.detectChanges();
+
+    const text = fixture.nativeElement.textContent as string;
+    // 20 USD * 905 (BCV), no 20 USD * 970 (vitrina).
+    expect(text).toContain('Bs 18,100.00 equivalente');
+    expect(text).not.toContain('Bs 19,400.00 equivalente');
+  });
+
+  /**
+   * El efectivo esperado es el número con el que se cierra la caja: el backend
+   * acumula cada movimiento con su equivalente exacto y recorta una sola vez, así
+   * que la pantalla lo pinta tal cual (convertido a la moneda que se ve) en vez de
+   * rehacer la suma por moneda. Rehacerla dejaba la tarjeta un centavo por encima
+   * del cierre (41,72 contra 41,71) y el cajero veía una diferencia que no existe.
+   *
+   * La fila del desglose sí conserva los bolívares que entraron al cajón: esos son
+   * los billetes que se cuentan, no su equivalente contable.
+   */
+  it('pinta los totales del arqueo tal como los cierra el backend', () => {
+    const page = mount();
+    setDisplayCurrency({
+      code: 'VES',
+      label: 'Bolívares',
+      symbol: 'Bs',
+      decimals: 2,
+      bsPerUnit: 1,
+      bsPerUsd: 970,
+    });
+
+    const ves: CurrencyBreakdown = {
+      currency: 'VES',
+      in: 15_520,
+      out: 0,
+      net: 15_520,
+      baseIn: 17.57,
+      baseOut: 0,
+      baseNet: 17.57,
+      cashIn: 15_520,
+      cashOut: 0,
+      baseCashIn: 17.57,
+      baseCashOut: 0,
+      sales: 15_520,
+      tips: 0,
+      change: 0,
+      baseSales: 17.57,
+      baseTips: 0,
+      baseChange: 0,
+      methods: [
+        {
+          method: 'CASH',
+          in: 15_520,
+          out: 0,
+          net: 15_520,
+          baseIn: 17.57,
+          baseOut: 0,
+          baseNet: 17.57,
+        },
+      ],
+    };
+
+    page.session.set(session({ status: 'OPEN', openingAmount: 0 }));
+    page.summary.set({
+      cashIn: 17.57,
+      cashOut: 0,
+      expectedCash: 17.57,
+      totalIn: 17.57,
+      totalOut: 0,
+      net: 17.57,
+      salesTotal: 17.57,
+      tipsTotal: 0,
+      movementCount: 1,
+      byMethod: [{ method: 'CASH', in: 17.57, out: 0, net: 17.57 }],
+      byCategory: [],
+      byCurrency: [ves],
+    });
+    page.movItems.set([
+      {
+        id: 'mv1',
+        sessionId: 's1',
+        type: 'IN',
+        category: 'SALE',
+        paymentMethod: 'CASH',
+        amount: 15_520,
+        currency: 'VES',
+        baseAmount: 17.57,
+        createdAt: '2026-10-13T10:00:00.000Z',
+      } satisfies CashMovement,
+    ]);
+    fixture.detectChanges();
+
+    // Las tarjetas y los totales salen del arqueo del backend, al BCV (905).
+    const expectedInBs = 17.57 * BS_PER_USD;
+    expect(page.cashInDisplay).toBeCloseTo(expectedInBs, 6);
+    expect(page.expectedCashDisplay).toBeCloseTo(expectedInBs, 6);
+    expect(page.salesTotalDisplay).toBeCloseTo(expectedInBs, 6);
+    expect(page.byMethodRows[0].inDisplay).toBeCloseTo(expectedInBs, 6);
+    // El desglose por moneda sigue en los bolívares cobrados.
+    expect(page.currencyNetDisplay(ves)).toBe(15_520);
+
+    // Con los montos en dólares (el admin) la tarjeta es el centavo exacto con el
+    // que se cierra la caja: la diferencia del cierre queda en 0.
+    setDisplayCurrency(null);
+    fixture.detectChanges();
+
+    expect(page.cashInDisplay).toBe(17.57);
+    expect(page.expectedCashDisplay).toBe(17.57);
+    expect(page.salesTotalDisplay).toBe(17.57);
+    expect(page.byMethodRows[0].inDisplay).toBe(17.57);
+    expect(page.expectedCashDisplay).toBe(page.expectedCash);
+
+    page.closeForm.countedAmount = page.expectedCash;
+    expect(page.closeDifference).toBe(0);
+
+    const inUsd = fixture.nativeElement.textContent as string;
+    expect(inUsd).toContain('$ 17.57');
+    // La línea del desglose mantiene los bolívares que entraron al cajón.
+    expect(inUsd).toContain('Bs 15,520.00');
+  });
+
+  it('cierra la tarjeta con el total del backend aunque el desglose sume un centavo mas', () => {
+    const page = mount();
+    setDisplayCurrency(null);
+
+    // Tres cobros en bolivares: cada equivalente guardado se redondeo al
+    // registrar el cobro (6,59 + 17,57 + 17,56 = 41,72), pero el turno vale
+    // 41,71 USD. La pantalla pinta el total que cierra el backend, no la suma
+    // del desglose; asi el cierre queda en cero.
+    const ves = (amount: number, base: number): CurrencyBreakdown => ({
+      currency: 'VES',
+      in: amount,
+      out: 0,
+      net: amount,
+      baseIn: base,
+      baseOut: 0,
+      baseNet: base,
+      cashIn: amount,
+      cashOut: 0,
+      baseCashIn: base,
+      baseCashOut: 0,
+      sales: amount,
+      tips: 0,
+      change: 0,
+      baseSales: base,
+      baseTips: 0,
+      baseChange: 0,
+      methods: [
+        { method: 'CASH', in: amount, out: 0, net: amount, baseIn: base, baseOut: 0, baseNet: base },
+      ],
+    });
+
+    page.session.set(session({ status: 'OPEN', openingAmount: 0 }));
+    page.summary.set({
+      cashIn: 41.71,
+      cashOut: 0,
+      expectedCash: 41.71,
+      totalIn: 41.71,
+      totalOut: 0,
+      net: 41.71,
+      salesTotal: 41.71,
+      tipsTotal: 0,
+      movementCount: 3,
+      byMethod: [{ method: 'CASH', in: 41.71, out: 0, net: 41.71 }],
+      byCategory: [],
+      byCurrency: [ves(5_820, 6.59), ves(15_520, 17.57), ves(15_510, 17.56)],
+    });
+    fixture.detectChanges();
+
+    expect(page.byMethodRows[0].inDisplay).toBe(41.71);
+    expect(page.cashInDisplay).toBe(41.71);
+    expect(page.expectedCashDisplay).toBe(41.71);
+    expect(page.salesTotalDisplay).toBe(41.71);
+
+    page.closeForm.countedAmount = page.expectedCash;
+    expect(page.closeDifference).toBe(0);
+  });
+
+  /**
+   * El desglose por moneda y la tarjeta del efectivo tienen que dar el mismo
+   * número: el neto de cada moneda es el que ya recortó el backend una sola vez.
+   */
+  it('valora el neto por moneda con el equivalente exacto del backend', () => {
+    const page = mount();
+    setDisplayCurrency(null);
+
+    const row = (
+      currency: string,
+      amount: number,
+      base: number,
+    ): CurrencyBreakdown => ({
+      currency,
+      in: amount,
+      out: 0,
+      net: amount,
+      baseIn: base,
+      baseOut: 0,
+      baseNet: base,
+      cashIn: amount,
+      cashOut: 0,
+      baseCashIn: base,
+      baseCashOut: 0,
+      sales: amount,
+      tips: 0,
+      change: 0,
+      baseSales: base,
+      baseTips: 0,
+      baseChange: 0,
+      methods: [
+        { method: 'CASH', in: amount, out: 0, net: amount, baseIn: base, baseOut: 0, baseNet: base },
+      ],
+    });
+
+    // Dos ventas de Bs 15.520,00 y un cobro de $ 6,59 al BCV 883,3963: el turno
+    // vale 41,72 USD (35,13 en bolívares + 6,59 en dólares).
+    page.session.set(session({ status: 'OPEN', openingAmount: 0 }));
+    page.summary.set({
+      cashIn: 41.72,
+      cashOut: 0,
+      expectedCash: 41.72,
+      totalIn: 41.72,
+      totalOut: 0,
+      net: 41.72,
+      salesTotal: 41.72,
+      tipsTotal: 0,
+      movementCount: 3,
+      byMethod: [{ method: 'CASH', in: 41.72, out: 0, net: 41.72 }],
+      byCategory: [],
+      byCurrency: [row('VES', 31_040, 35.13), row('USD', 6.59, 6.59)],
+    });
+
+    const [ves, usd] = page.byCurrency;
+    expect(page.currencyNetDisplay(ves)).toBe(35.13);
+    expect(page.currencyNetDisplay(usd)).toBe(6.59);
+    expect(page.currencyNetDisplay(ves)! + page.currencyNetDisplay(usd)!).toBe(41.72);
+    expect(page.byMethodRows[0].inDisplay).toBe(41.72);
+    expect(page.cashInDisplay).toBe(41.72);
+  });
+
+  it('valora cada movimiento con la tasa con la que se registró', () => {
+    const page = mount();
+    setDisplayCurrency(null);
+
+    // Bs 15.520,00 al BCV de la venta (883,3963) son 17,5686 USD. La fila tiene
+    // que usar esa tasa, no la del día, y no el precio recortado del pedido.
+    expect(
+      page.movementDisplay({
+        id: 'mv1',
+        sessionId: 's1',
+        type: 'IN',
+        category: 'SALE',
+        paymentMethod: 'CASH',
+        amount: 15_520,
+        currency: 'VES',
+        baseAmount: 17.56,
+        baseRate: 883.3963,
+        createdAt: '2026-10-21T15:26:00.000Z',
+      }),
+    ).toBeCloseTo(17.5686, 4);
+  });
+
+  /**
+   * El conteo del cierre se compara contra el esperado en USD: si el cajero
+   * cuenta en bolívares hay que llevarlo a dólares con la tasa y recortarlo,
+   * igual que el backend; antes se restaban centavos a dólares.
+   */
+  it('lleva el conteo en bolívares a USD antes de calcular la diferencia', () => {
+    const page = mount();
+    setDisplayCurrency(null);
+
+    page.summary.set({
+      cashIn: 41.72,
+      cashOut: 0,
+      expectedCash: 41.72,
+      totalIn: 41.72,
+      totalOut: 0,
+      net: 41.72,
+      salesTotal: 41.72,
+      tipsTotal: 0,
+      movementCount: 3,
+      byMethod: [{ method: 'CASH', in: 41.72, out: 0, net: 41.72 }],
+      byCategory: [],
+      byCurrency: [],
+    });
+
+    // 37.757 Bs al BCV 905 son 41,7204 USD: el conteo se recorta a 41,72 y
+    // cierra sin diferencia.
+    page.closeForm.countedAmount = 37_757;
+    page.closeForm.countedCurrency = 'VES';
+    expect(page.countedBase).toBe(41.72);
+    expect(page.closeDifference).toBe(0);
+
+    // Contar solo los bolívares deja faltante (el efectivo en dólares tambien
+    // forma parte del esperado), en dólares y no en bolívares.
+    page.closeForm.countedAmount = 31_040;
+    expect(page.countedBase).toBe(34.29);
+    expect(page.closeDifference).toBe(-7.43);
   });
 
   it('deja las propinas en cero cuando el turno no cobró ninguna', () => {

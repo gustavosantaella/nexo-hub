@@ -49,6 +49,58 @@ describe('StatCardComponent (tarjeta de indicador)', () => {
     expect(root.querySelector<HTMLElement>('app-money')?.classList).toContain('text-2xl');
   });
 
+  it('pinta el monto exacto cuando la tarjeta no abrevia', () => {
+    fixture.componentRef.setInput('compact', false);
+    const root = render(1_250_000);
+
+    expect(root.textContent).toContain('$ 1,250,000.00');
+    expect(root.textContent).not.toContain('$ 1.3m');
+    // Sin abreviatura no hace falta el tooltip y sigue reservando una linea.
+    expect(root.querySelector('app-money span')?.hasAttribute('title')).toBe(false);
+    expect(root.querySelector<HTMLElement>('app-money')?.classList).toContain(
+      'overflow-hidden',
+    );
+  });
+
+  it('pinta lo cobrado en la moneda mostrada, no su equivalente en dólares', () => {
+    // Caja: Bs 15.520,00 cobrados = $ 17,57 guardados; a la tasa del BCV ese
+    // dólar redondeado vuelve como Bs 15,900.85 y la tarjeta mentiría.
+    setDisplayCurrency({
+      code: 'VES',
+      label: 'Bolívares',
+      symbol: 'Bs',
+      decimals: 2,
+      bsPerUnit: 1,
+      bsPerUsd: 905,
+    });
+    fixture.componentRef.setInput('compact', false);
+    fixture.componentRef.setInput('entered', 15_520);
+    fixture.componentRef.setInput('currency', 'VES');
+    fixture.componentRef.setInput('displayRateKey', 'BCV_USD');
+    const root = render(17.57);
+
+    expect(root.textContent).toContain('Bs 15,520.00');
+    expect(root.textContent).not.toContain('Bs 15,900.85');
+  });
+
+  it('achica el monto exacto para que quepa en una tarjeta angosta', () => {
+    fixture.componentRef.setInput('compact', false);
+    const root = render(1_250_000_000);
+    const host = root.querySelector<HTMLElement>('app-money');
+
+    expect(root.textContent).toContain('$ 1,250,000,000.00');
+    expect(host?.classList).toContain('text-sm');
+    expect(host?.classList).not.toContain('text-2xl');
+  });
+
+  it('no abrevia las cantidades cuando la tarjeta no abrevia', () => {
+    fixture.componentRef.setInput('compact', false);
+    const root = render(12_500, false);
+
+    expect(valueNode(root)?.textContent?.trim()).toBe('12,500');
+    expect(valueNode(root)?.hasAttribute('title')).toBe(false);
+  });
+
   it('abrevia las cantidades y las separa por miles', () => {
     const root = render(12_500, false);
     const value = valueNode(root);

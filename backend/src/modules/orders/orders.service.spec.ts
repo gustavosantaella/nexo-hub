@@ -799,6 +799,7 @@ describe('OrdersService.create (costo de delivery)', () => {
         currency: 'VES',
         exchangeRate: 36.5,
         baseAmount: 7.4,
+        unitsPerBase: 36.5,
       })),
     };
     const { service, tx } = createService(null, rates);
@@ -961,6 +962,7 @@ describe('OrdersService.update (costo de delivery)', () => {
       currency: 'VES',
       exchangeRate: 36.5,
       baseAmount: 7.4,
+      unitsPerBase: 36.5,
     })),
   };
 
@@ -1038,6 +1040,7 @@ describe('OrdersService.addPayment (tasa de cobro del cajero)', () => {
       currency: 'VES',
       exchangeRate: 36.5,
       baseAmount: 100,
+      unitsPerBase: 36.5,
     })),
     /** Sin tasa de cobro el saldo que se puede cobrar es el del pedido. */
     chargeBalance: jest.fn(async (_companyId: string, balance: number) => balance),
@@ -1261,6 +1264,7 @@ describe('OrdersService.addPayment (tasa de cobro del cajero)', () => {
         currency: 'USD',
         exchangeRate: null,
         baseAmount: 100,
+        unitsPerBase: 1,
       })),
     };
     const { service, tx } = createService(order(), posRates, cash);
@@ -1293,8 +1297,18 @@ describe('OrdersService.addPayment (tasa de cobro del cajero)', () => {
       resolvePayment: jest.fn(
         async (_companyId: string, amount: number, currency: string) =>
           currency === 'VES'
-            ? { currency: 'VES', exchangeRate: 40, baseAmount: amount / 40 }
-            : { currency: 'USD', exchangeRate: null, baseAmount: amount },
+            ? {
+                currency: 'VES',
+                exchangeRate: 40,
+                baseAmount: amount / 40,
+                unitsPerBase: 40,
+              }
+            : {
+                currency: 'USD',
+                exchangeRate: null,
+                baseAmount: amount,
+                unitsPerBase: 1,
+              },
       ),
       chargeBalance: jest.fn(async (_companyId: string, balance: number) => balance),
     };
@@ -1398,6 +1412,7 @@ describe('OrdersService.addPayment (tasa de cobro del cajero)', () => {
         currency: 'USD',
         exchangeRate: null,
         baseAmount: 130,
+        unitsPerBase: 1,
       })),
       chargeBalance: jest.fn(async () => 110),
     };

@@ -21,7 +21,7 @@ import {
 import { BASE_CURRENCY, MIXED_CURRENCY_CODE } from '../../core/constants/currency';
 import { CurrencySelectComponent } from '../../shared/components/currency-select.component';
 import { RateConversionsComponent } from '../../shared/components/rate-conversions.component';
-import { RatesService } from '../../core/services/rates.service';
+import { RatesService, BCV_USD_RATE_KEY } from '../../core/services/rates.service';
 import { CashService } from '../../core/services/cash.service';
 import { PreferencesService } from '../../core/services/preferences.service';
 import { ToastService } from '../../core/services/toast.service';
@@ -31,10 +31,10 @@ import {
   dateTime,
   displayBaseCode,
   displayBaseLabel,
-  money,
   moneyIn,
   rate,
   sumMoney,
+  truncate,
 } from '../../core/utils/format';
 import { EmptyStateComponent, LoaderComponent } from '../../shared/components/feedback.component';
 import { IconComponent } from '../../shared/components/icon.component';
@@ -86,8 +86,6 @@ export class CashPage implements OnInit {
 
   readonly dateTime = dateTime;
   readonly moneyIn = moneyIn;
-  /** Monto (guardado en USD) en la moneda base con la que se muestran los montos. */
-  readonly money = money;
   /** Código de la moneda base con la que se muestran los montos (USD por defecto). */
   readonly moneyBaseCode = displayBaseCode;
   /** Nombre de esa moneda: los equivalentes que pinta la pantalla van en ella. */
@@ -363,6 +361,258 @@ export class CashPage implements OnInit {
   }
 
   /**
+   * Equivalente contable de un monto en la moneda de visualización.
+   *
+   * Va a la tasa del **BCV**, la misma de las tarjetas y los desgloses del
+   * arqueo (`displayRateKey="BCV_USD"`). Con `money()` salía a la tasa de
+   * vitrina y el mismo monto aparecía con dos valores distintos en la pantalla.
+   *
+   * La cuenta sale del monto original (los bolívares que entraron al cajón), no
+   * del equivalente en USD guardado: ese se redondea a centavos, así que
+   * reconvertirlo pintaba Bs 15.520,00 como Bs 15.521,27.
+   */
+  equivalentInBase(
+    baseAmount: number | null | undefined,
+    amount?: number | null,
+    currency?: string | null,
+  ): string {
+    const converted = this.toDisplay(amount, currency, baseAmount);
+    return moneyIn(converted ?? 0, displayBaseCode());
+  }
+
+  /** `true` cuando la moneda indicada es la que se está mostrando. */
+  isDisplayCurrency(currency?: string | null): boolean {
+    const code = String(currency ?? BASE_CURRENCY.code)
+      .trim()
+      .toUpperCase();
+    return !!code && code === displayBaseCode();
+  }
+
+  /**
+   * Monto del movimiento en la moneda de visualización.
+   *
+   * La moneda del movimiento conserva su monto físico (los bolívares que entraron
+   * al cajón). Las demás se valoran con la tasa con la que se registró el
+   * movimiento (`baseRate`), no con la del día: así el listado no cambia cuando
+   * el BCV publica una tasa nueva y el total coincide con el arqueo.
+   */
+  movementDisplay(movement: CashMovement): number | null {
+    const sign = movement.type === 'IN' ? 1 : -1;
+    const amount = sign * Number(movement.amount ?? 0);
+    if (this.isDisplayCurrency(movement.currency)) return amount;
+    const baseRate = Number(movement.baseRate ?? 0);
+    const base =
+      Number.isFinite(baseRate) && baseRate > 0
+        ? amount / baseRate
+        : this.rates.toBase(amount, movement.currency, BCV_USD_RATE_KEY);
+    if (base === null) return null;
+    return this.rates.fromBase(base, displayBaseCode(), BCV_USD_RATE_KEY);
+  }
+
+  /**
+   * Neto de una fila del desglose por moneda, en la moneda de visualización.
+   *
+   * La moneda que se está mostrando conserva su monto físico; las demás usan el
+   * equivalente que ya calculó el backend (recortado una vez por moneda). Rehacer
+   * la cuenta desde los montos originales a la tasa del día dejaba el neto en
+   * bolívares en 35,13 mientras el total del método decía 35,12.
+   */
+  currencyNetDisplay(row: CurrencyBreakdown): number | null {
+    if (this.isDisplayCurrency(row.currency)) return Number(row.net ?? 0);
+    return this.aggregateDisplay(row.baseNet);
+  }
+
+  /**
+   * Lleva un monto de su moneda original a la moneda de visualización.
+   *
+   * `amount` es lo que realmente entró o salió (en `currency`) y `baseAmount` su
+   * equivalente guardado en USD, que solo se usa como respaldo cuando falta el
+   * original. La cuenta va a la tasa del BCV, la misma del arqueo: así el monto
+   * se pinta completo aunque el dólar guardado esté redondeado a centavos.
+   */
+  private toDisplay(
+    amount: number | null | undefined,
+    currency: string | null | undefined,
+    baseAmount?: number | null,
+  ): number | null {
+    const value = Number(amount);
+    if (amount != null && Number.isFinite(value)) {
+      if (this.isDisplayCurrency(currency)) return value;
+      const base = this.rates.toBase(value, currency, BCV_USD_RATE_KEY);
+      if (base !== null) {
+        return this.rates.fromBase(base, displayBaseCode(), BCV_USD_RATE_KEY);
+      }
+    }
+    if (baseAmount == null) return null;
+    return this.rates.fromBase(baseAmount, displayBaseCode(), BCV_USD_RATE_KEY);
+  }
+
+  /** Efectivo que entró al cajón, en la moneda de visualización. */
+  get cashInDisplay(): number | null {
+    return this.cashInDisplayOf(this.summary());
+  }
+
+  /** Efectivo que entró al cajón de un arqueo cualquiera. */
+  cashInDisplayOf(summary: CashSummary | null | undefined): number | null {
+    return this.aggregateDisplay(summary?.cashIn);
+  }
+
+  /** Efectivo que salió del cajón, en la moneda de visualización. */
+  get cashOutDisplay(): number | null {
+    return this.cashOutDisplayOf(this.summary());
+  }
+
+  /** Efectivo que salió del cajón de un arqueo cualquiera. */
+  cashOutDisplayOf(summary: CashSummary | null | undefined): number | null {
+    return this.aggregateDisplay(summary?.cashOut);
+  }
+
+  /** Fondo inicial en la moneda de visualización (lo contado al abrir). */
+  get openingDisplay(): number | null {
+    return this.openingDisplayOf(this.session(), this.summary());
+  }
+
+  /**
+   * Fondo inicial de una sesión en la moneda de visualización.
+   *
+   * Se valoriza línea por línea con la tasa con la que se contó el fondo
+   * (`amount / baseRate`), igual que el arqueo. `openingAmount` es el total ya
+   * redondeado al centavo: un fondo de Bs 5.000,00 al BCV son 5,5555 USD y la
+   * tarjeta no puede decir 5,56 si el efectivo esperado usa 5,55.
+   */
+  openingDisplayOf(
+    session: CashSession | null | undefined,
+    summary: CashSummary | null | undefined,
+  ): number | null {
+    if (summary?.openingCash != null) return this.aggregateDisplay(summary.openingCash);
+    const lines = summary?.openingByCurrency ?? session?.openingLines ?? [];
+    const rated = lines.filter((line) => Number(line.baseRate ?? 0) > 0);
+    if (lines.length > 0 && rated.length === lines.length) {
+      return this.aggregateDisplay(
+        sumMoney(
+          rated.map(
+            (line) => Number(line.amount ?? 0) / Number(line.baseRate ?? 1),
+          ),
+        ),
+      );
+    }
+    const opening = session?.openingAmount;
+    if (opening != null) return this.aggregateDisplay(opening);
+    if (lines.length === 0) return 0;
+    return this.aggregateDisplay(
+      sumMoney(lines.map((line) => Number(line.baseAmount ?? 0))),
+    );
+  }
+
+  /** Efectivo esperado en el cajón, en la moneda de visualización. */
+  get expectedCashDisplay(): number | null {
+    return this.expectedCashDisplayOf(this.session(), this.summary());
+  }
+
+  /**
+   * Efectivo esperado de una sesión en la moneda de visualización.
+   *
+   * Es el número con el que se cierra la caja (`summary.expectedCash`, que el
+   * backend recorta una sola vez desde los centavos sin redondear) y el que
+   * guarda la sesión ya cerrada (`expectedAmount`). Sumar aquí el desglose por
+   * moneda a la tasa del día volvía a introducir el centavo que este número
+   * acababa de quitar: la tarjeta decía 41,72 y el cierre 41,71.
+   */
+  expectedCashDisplayOf(
+    session: CashSession | null | undefined,
+    summary: CashSummary | null | undefined,
+  ): number | null {
+    const expected = session?.expectedAmount ?? summary?.expectedCash;
+    if (expected != null) return this.aggregateDisplay(expected);
+    return this.openingDisplayOf(session, summary);
+  }
+
+  /** Propinas del turno en la moneda de visualización. */
+  get tipsTotalDisplay(): number | null {
+    return this.tipsTotalDisplayOf(this.summary());
+  }
+
+  /** Propinas de un arqueo cualquiera en la moneda de visualización. */
+  tipsTotalDisplayOf(summary: CashSummary | null | undefined): number | null {
+    return this.aggregateDisplay(summary?.tipsTotal);
+  }
+
+  /** Ventas del turno (sin propinas ni vueltos) en la moneda de visualización. */
+  get salesTotalDisplay(): number | null {
+    return this.salesTotalDisplayOf(this.summary());
+  }
+
+  /** Ventas de un arqueo cualquiera en la moneda de visualización. */
+  salesTotalDisplayOf(
+    summary: CashSummary | null | undefined,
+  ): number | null {
+    return this.aggregateDisplay(summary?.salesTotal);
+  }
+
+  /** Ventas + propinas (lo cobrado por ventas) en la moneda de visualización. */
+  get salesGrossDisplay(): number | null {
+    return this.salesGrossDisplayOf(this.summary());
+  }
+
+  /** Ventas + propinas de un arqueo cualquiera en la moneda de visualización. */
+  salesGrossDisplayOf(summary: CashSummary | null | undefined): number | null {
+    if (!summary) return null;
+    return this.aggregateDisplay(
+      sumMoney([summary.salesTotal, summary.tipsTotal]),
+    );
+  }
+
+  /** Desglose por método con el total exacto en la moneda de visualización. */
+  get byMethodRows(): {
+    method: string;
+    in: number;
+    out: number;
+    net: number;
+    inDisplay: number | null;
+    outDisplay: number | null;
+    netDisplay: number | null;
+  }[] {
+    const summary = this.summary();
+    return (summary?.byMethod ?? []).map((row) => ({
+      ...row,
+      inDisplay: this.methodDisplay(summary, row.method, 'in'),
+      outDisplay: this.methodDisplay(summary, row.method, 'out'),
+      netDisplay: this.methodDisplay(summary, row.method, 'net'),
+    }));
+  }
+
+  /**
+   * Total de un método en la moneda de visualización.
+   *
+   * Sale del total del método que calcula el backend (`byMethod`, en USD), no de
+   * sumar el desglose por moneda: es el mismo número que descuenta el arqueo.
+   */
+  private methodDisplay(
+    summary: CashSummary | null | undefined,
+    method: string,
+    field: 'in' | 'out' | 'net',
+  ): number | null {
+    const row = (summary?.byMethod ?? []).find((line) => line.method === method);
+    if (!row) return null;
+    return this.aggregateDisplay(row[field]);
+  }
+
+  /**
+   * Lleva un total del arqueo (siempre en USD, la moneda base contable) a la
+   * moneda de visualización.
+   *
+   * Los agregados se pintan tal como los calcula el backend: cada movimiento
+   * entra con su equivalente exacto y el total se recorta una sola vez. Rehacer
+   * esa suma en el navegador —a la tasa del día y con el `baseAmount` guardado—
+   * dejaba la tarjeta del efectivo esperado un centavo por encima del número con
+   * el que se cierra la caja (41,72 contra 41,71).
+   */
+  private aggregateDisplay(amount: number | null | undefined): number | null {
+    if (amount == null) return null;
+    return this.rates.fromBase(amount, displayBaseCode(), BCV_USD_RATE_KEY);
+  }
+
+  /**
    * Abre la caja con el fondo contado en una o varias monedas. Si no se indica
    * ningún monto se confirma la apertura sin fondo (fondo 0).
    */
@@ -483,8 +733,26 @@ export class CashPage implements OnInit {
     this.closeOpen.set(false);
   }
 
+  /**
+   * Conteo del cierre llevado a USD (moneda base).
+   *
+   * Se valoriza con la tasa del día y se recorta igual que el backend: el
+   * conteo se guarda en USD para compararlo contra el arqueo esperado, que
+   * también está en USD. Antes la diferencia restaba centavos de bolívares a
+   * dólares (contar Bs 31.040,00 mostraba una diferencia de miles).
+   */
+  get countedBase(): number {
+    const counted = Number(this.closeForm.countedAmount) || 0;
+    if (counted <= 0) return 0;
+    const currency = this.closeForm.countedCurrency || BASE_CURRENCY.code;
+    const base = this.rates.toBase(counted, currency, BCV_USD_RATE_KEY);
+    return truncate(base ?? counted, 2);
+  }
+
+  /** Diferencia del arqueo (contado − esperado), recortada y sin redondear. */
   get closeDifference(): number {
-    return Number(this.closeForm.countedAmount) - this.expectedCash;
+    const difference = truncate(this.countedBase - this.expectedCash, 2);
+    return difference === 0 ? 0 : difference; // evita pintar "-0.00"
   }
 
   submitClose(): void {

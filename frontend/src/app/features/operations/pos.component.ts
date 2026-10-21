@@ -70,6 +70,7 @@ import {
   moneyIn,
   moneyLoaded,
   mulMoney,
+  payableAmount,
   rate,
   sumMoney,
 } from '../../core/utils/format';
@@ -1725,12 +1726,16 @@ export class PosComponent implements OnInit, OnDestroy {
    *
    * La tasa personalizada solo infla el precio que se muestra en bolívares; el
    * cobro (en Bs, USD o cualquier otra moneda) sale siempre del monto en USD a la
-   * tasa BCV.
+   * tasa BCV. Se recorta a los decimales de la moneda: el cajero cobra el monto
+   * que lee (Bs 15.520,00 al BCV -> `$ 17,56`, no `$ 17,57`).
    */
   get chargeAmount(): number {
     const bill = this.bill;
-    return this.rates.saleChargeAmount(
-      sumMoney([bill.total, -bill.paid]),
+    return payableAmount(
+      this.rates.saleChargeAmount(
+        sumMoney([bill.total, -bill.paid]),
+        this.charge.currency,
+      ),
       this.charge.currency,
     );
   }
@@ -1859,7 +1864,10 @@ export class PosComponent implements OnInit, OnDestroy {
 
   /** Atajo de mostrador: efectivo recibido = monto a cobrar + incremento. */
   setReceived(extra: number): void {
-    this.charge.received = sumMoney([this.chargeAmount, extra]);
+    this.charge.received = payableAmount(
+      sumMoney([this.chargeAmount, extra]),
+      this.charge.currency,
+    );
   }
 
   /**
@@ -1877,9 +1885,14 @@ export class PosComponent implements OnInit, OnDestroy {
     const paid = sumMoney(
       parts.map((part) => this.chargeIn(part.amount, part.currency, currency)),
     );
-    const target = this.rates.saleChargeAmount(this.bill.balance, currency);
-    const amount = sumMoney([paid, -target]);
-    if (amount <= 0.005) return null;
+    // El vuelto se calcula contra lo que realmente se cobra (recortado a los
+    // decimales de la moneda), no contra la conversion con fracciones de centavo.
+    const target = payableAmount(
+      this.rates.saleChargeAmount(this.bill.balance, currency),
+      currency,
+    );
+    const amount = payableAmount(sumMoney([paid, -target]), currency);
+    if (amount <= 0) return null;
     return { method: source.method, currency, amount };
   }
 
@@ -2275,9 +2288,12 @@ export class PosComponent implements OnInit, OnDestroy {
     const currency = mixed ? BASE_CURRENCY.code : this.charge.currency || BASE_CURRENCY.code;
     // El cobro se calcula desde el saldo en USD con la tasa oficial del BCV. Al
     // crear la venta se conserva el monto visible antes del redondeo.
-    const amount = mixed
-      ? this.mixedAppliedBase
-      : visibleCharge ?? this.rates.chargeAmount(this.balance(order), currency);
+    const amount = payableAmount(
+      mixed
+        ? this.mixedAppliedBase
+        : visibleCharge ?? this.rates.chargeAmount(this.balance(order), currency),
+      currency,
+    );
 
     if (!(amount > 0)) {
       this.toast.info(`El pedido ${order.code} ya está pagado en su totalidad`);
@@ -2300,7 +2316,7 @@ export class PosComponent implements OnInit, OnDestroy {
           parts: this.charge.parts
             .filter((part) => Number(part.amount) > 0)
             .map((part) => ({
-              amount: Number(part.amount),
+              amount: payableAmount(Number(part.amount), part.currency),
               method: part.method,
               currency: part.currency,
               ...chargeRate(),
@@ -2308,7 +2324,7 @@ export class PosComponent implements OnInit, OnDestroy {
           change: this.charge.changes
             .filter((line) => Number(line.amount) > 0)
             .map((line) => ({
-              amount: Number(line.amount),
+              amount: payableAmount(Number(line.amount), line.currency),
               method: line.method,
               currency: line.currency,
               ...chargeRate(),
@@ -2349,9 +2365,15 @@ export class PosComponent implements OnInit, OnDestroy {
    */
   private singlePaymentPayload(amount: number, currency: string, rateKey: string | null) {
     const method = this.charge.method;
-    const received = Number(this.charge.received) || 0;
-    const tendered = method === 'CASH' && received > amount ? received : amount;
-    const change = method === 'CASH' ? Math.max(0, sumMoney([tendered, -amount])) : 0;
+    const received = payableAmount(Number(this.charge.received) || 0, currency);
+    const tendered = payableAmount(
+      method === 'CASH' && received > amount ? received : amount,
+      currency,
+    );
+    const change =
+      method === 'CASH'
+        ? payableAmount(Math.max(0, sumMoney([tendered, -amount])), currency)
+        : 0;
     return {
       amount,
       method,

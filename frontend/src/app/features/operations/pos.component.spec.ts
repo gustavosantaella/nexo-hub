@@ -1210,9 +1210,9 @@ describe('PosComponent (vista de cajero)', () => {
     pos.addProduct(PRODUCTS[0]);
 
     // 30 USD de catálogo se ven como Bs 28.500,00 (personalizada 950); al
-    // valorarlos al BCV son $ 32,504651...: eso cobra el cajero, con la
-    // precisión completa (la vista recorta a 2 decimales).
-    expect(pos.chargeAmount).toBeCloseTo(28500 / 876.7976, 8);
+    // valorarlos al BCV son $ 32,504651..., pero el cajero cobra el monto que
+    // lee en pantalla: $ 32,50 (se recorta, nunca se redondea hacia arriba).
+    expect(pos.chargeAmount).toBe(32.5);
     // Pagando en bolívares se cobra el precio de vitrina completo.
     pos.charge.currency = 'VES';
     expect(pos.chargeAmount).toBe(28500);
@@ -1236,11 +1236,11 @@ describe('PosComponent (vista de cajero)', () => {
 
     const payRequest = http.expectOne(`${API}/orders/o1/payments`);
     expect(payRequest.request.body).toEqual({
-      amount: 28500 / 876.7976,
+      amount: 32.5,
       method: 'CASH',
       currency: 'USD',
       rateKey: 'BCV_USD',
-      parts: [{ amount: 28500 / 876.7976, method: 'CASH', currency: 'USD' }],
+      parts: [{ amount: 32.5, method: 'CASH', currency: 'USD' }],
       change: [],
     });
     payRequest.flush(

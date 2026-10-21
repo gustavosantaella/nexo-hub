@@ -39,6 +39,7 @@ import {
   moneyFieldsToCents,
   toCents,
   toMoney,
+  truncMoney,
 } from '../../common/utils/money.util';
 import { normalizeNullableId } from '../../common/utils/normalize.util';
 import { buildPaginatedResult } from '../../common/utils/pagination.util';
@@ -893,7 +894,10 @@ export class OrdersService {
           );
         }
         const catalogUnitPrice = toMoney(line.unitPrice ?? recipe.price);
-        const unitPrice = toMoney(money.mul(catalogUnitPrice, sale.factor));
+        // El precio de vitrina se valoriza en USD recortando (nunca redondeando
+        // hacia arriba): Bs 5.820,00 al cambio de 970 son $ 6,5882 y el cliente
+        // paga $ 6,58, no $ 6,59.
+        const unitPrice = truncMoney(catalogUnitPrice * sale.factor);
         return {
           productId: null,
           menuId: recipe.id,
@@ -918,7 +922,8 @@ export class OrdersService {
         );
       }
       const catalogUnitPrice = toMoney(line.unitPrice ?? product.price);
-      const unitPrice = toMoney(money.mul(catalogUnitPrice, sale.factor));
+      // Misma regla que los menus: se valoriza en USD recortando, no redondeando.
+      const unitPrice = truncMoney(catalogUnitPrice * sale.factor);
       return {
         productId: product.id,
         menuId: null,

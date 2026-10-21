@@ -40,6 +40,7 @@ import {
   money,
   moneyIn,
   mulMoney,
+  payableAmount,
   rate,
   sumMoney,
 } from '../../core/utils/format';
@@ -803,13 +804,15 @@ export class OrdersPage implements OnInit {
   submitPay(): void {
     const order = this.payOrder();
     if (!order || this.saving()) return;
-    const amount = Number(this.payForm.amount);
+    const currency = this.payForm.currency || BASE_CURRENCY.code;
+    // Lo cobrado es un monto pagable: se recorta a los decimales de la moneda
+    // (nunca se redondea hacia arriba).
+    const amount = payableAmount(Number(this.payForm.amount), currency);
     if (!(amount > 0)) {
       this.toast.error('El monto debe ser mayor a 0');
       return;
     }
 
-    const currency = this.payForm.currency || BASE_CURRENCY.code;
     if (
       currency !== BASE_CURRENCY.code &&
       this.rates.bsPerUnit(currency) === null
@@ -837,11 +840,15 @@ export class OrdersPage implements OnInit {
     const rateKey = this.rates.chargeKeyFor(currency);
     // Una sola forma de pago: se envia el efectivo RECIBIDO y el vuelto como
     // lineas separadas para que la caja muestre ambos movimientos.
-    const received = Number(this.payForm.received) || 0;
-    const tendered =
-      this.payForm.method === 'CASH' && received > amount ? received : amount;
+    const received = payableAmount(Number(this.payForm.received) || 0, currency);
+    const tendered = payableAmount(
+      this.payForm.method === 'CASH' && received > amount ? received : amount,
+      currency,
+    );
     const change =
-      this.payForm.method === 'CASH' ? Math.max(0, sumMoney([tendered, -amount])) : 0;
+      this.payForm.method === 'CASH'
+        ? payableAmount(Math.max(0, sumMoney([tendered, -amount])), currency)
+        : 0;
     this.orders
       .pay(order.id, {
         amount,
@@ -1007,10 +1014,13 @@ export class OrdersPage implements OnInit {
    * Total del pedido expresado en la moneda del cobro, con la **tasa de cobro** de
    * la empresa: el cajero cobra el total que lee en pantalla (en su moneda de
    * precios) pasado a la moneda con la que paga el cliente.
+   *
+   * Se recorta a los decimales de la moneda: se cobra el monto visible
+   * (Bs 15.520,00 al BCV -> `$ 17,56`), nunca una fraccion de centavo.
    */
   get chargeTotal(): number {
-    return this.rates.saleChargeAmount(
-      this.total,
+    return payableAmount(
+      this.rates.saleChargeAmount(this.total, this.chargeCurrency),
       this.chargeCurrency,
     );
   }
@@ -1327,14 +1337,22 @@ export class OrdersPage implements OnInit {
     // El monto se envia en la moneda del cobro; el backend guarda ademas el
     // equivalente en USD y lo valida contra el saldo. Se conserva el monto visible
     // antes de crear el pedido para no perder los bolívares exactos de la vitrina.
-    const amount = visibleCharge ?? this.rates.chargeAmount(order.total, currency);
+    const amount = payableAmount(
+      visibleCharge ?? this.rates.chargeAmount(order.total, currency),
+      currency,
+    );
     const rateKey = this.rates.chargeKeyFor(currency);
     // Igual que en el cobro de un pedido abierto: se envia lo recibido y el
     // vuelto para que la caja registre ambos movimientos.
-    const received = Number(this.receivedAmount) || 0;
-    const tendered = this.chargeMethod === 'CASH' && received > amount ? received : amount;
+    const received = payableAmount(Number(this.receivedAmount) || 0, currency);
+    const tendered = payableAmount(
+      this.chargeMethod === 'CASH' && received > amount ? received : amount,
+      currency,
+    );
     const change =
-      this.chargeMethod === 'CASH' ? Math.max(0, sumMoney([tendered, -amount])) : 0;
+      this.chargeMethod === 'CASH'
+        ? payableAmount(Math.max(0, sumMoney([tendered, -amount])), currency)
+        : 0;
 
     this.orders
       .pay(order.id, {

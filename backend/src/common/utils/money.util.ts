@@ -7,11 +7,17 @@
  * ocurre en la frontera de Prisma (`./money-codec.ts`), no en cada llamada.
  *
  * Internamente toda operacion se calcula con enteros de centavos para que no
- * exista error de redondeo (0.1 + 0.2 !== 0.3). Los montos que reciben estas
- * funciones son decimales con 2 cifras, igual que antes.
+ * exista error de redondeo (0.1 + 0.2 !== 0.3).
  *
- * Regla: los valores se normalizan siempre a 2 decimales antes de guardarse o
- * compararse.
+ * REGLA: el dinero NUNCA se redondea. Los montos viajan y se calculan con toda
+ * su precision (una venta de Bs 15.520,00 al BCV vale 17,5685... USD, no 17,57)
+ * y al guardarlos se RECORTAN a centavos (nunca hacia arriba). Solo la vista
+ * decide cuantos decimales ensenar, tambien recortando. Redondear hacia arriba
+ * en cualquiera de las dos puntas hacia que el mismo dinero valiera un centavo
+ * mas en caja que en el pedido.
+ *
+ * La unica excepcion es `round2`, que sigue redondeando a 2 decimales porque se
+ * usa para normalizar TASAS (no montos).
  */
 
 /** Decimales del dinero (2) y su factor de escala a centavos (100). */
@@ -22,13 +28,25 @@ export const MONEY_SCALE = 100;
 export const MONEY_EPSILON = 0.005;
 
 /**
- * Monto (decimal) -> centavos enteros.
- * Conserva exactamente el redondeo historico de `round2` (medio hacia arriba).
+ * Margen (en centavos) para que el ruido del punto flotante no reste un centavo
+ * al recortar: `17.56 * 100` da `1755.9999999999998` y debe valer 1756.
+ *
+ * Es una millonesima de centavo: jamas cambia el resultado de un recorte real.
+ */
+const CENTS_EPSILON = 1e-6;
+
+/**
+ * Monto (decimal) -> centavos enteros, RECORTANDO (nunca hacia arriba).
+ *
+ * Es la frontera de almacenamiento: lo que se guarda nunca supera el monto
+ * calculado. Bs 15.520,00 al BCV (17,5685 USD) se guarda como 1756 centavos y
+ * se muestra 17,56 en todas las pantallas.
  */
 export function toCents(value: unknown): number {
   const parsed = typeof value === 'string' ? Number(value) : (value as number);
   if (!Number.isFinite(parsed)) return 0;
-  const cents = Math.round((parsed as number + Number.EPSILON) * MONEY_SCALE);
+  const scaled = (parsed as number) * MONEY_SCALE;
+  const cents = Math.trunc(scaled + Math.sign(scaled) * CENTS_EPSILON);
   return cents === 0 ? 0 : cents; // normaliza "-0"
 }
 
@@ -37,22 +55,39 @@ export function fromCents(cents: number): number {
   return cents / MONEY_SCALE;
 }
 
-/** Redondea un numero a 2 decimales de forma segura. */
+/**
+ * Redondea un numero a 2 decimales de forma segura.
+ *
+ * Solo para TASAS y valores que no son dinero (el dinero se recorta con
+ * `toCents`/`truncMoney`): medio centavo hacia arriba.
+ */
 export function round2(value: number): number {
   if (!Number.isFinite(value)) return 0;
+  const cents = Math.round((value + Number.EPSILON) * MONEY_SCALE);
+  return cents === 0 ? 0 : fromCents(cents); // normaliza "-0"
+}
+
+/**
+ * Recorta un monto a 2 decimales SIN redondear (hacia cero).
+ *
+ * Es el mismo recorte que aplica la frontera de almacenamiento (`toCents`): el
+ * valor guardado nunca supera al calculado (`17,5685` -> `17,56`). El nombre se
+ * conserva porque los servicios lo usan para dejar explicita la regla al valuar
+ * precios escritos en otra moneda.
+ */
+export function truncMoney(value: unknown): number {
   return fromCents(toCents(value));
 }
 
-/** Normaliza cualquier entrada (string, null, undefined) a un monto valido. */
+/** Normaliza cualquier entrada (string, null, undefined) a un monto valido, recortando. */
 export function toMoney(value: unknown): number {
-  const parsed = typeof value === 'string' ? Number(value) : (value as number);
-  return round2(Number.isFinite(parsed) ? (parsed as number) : 0);
+  return fromCents(toCents(value));
 }
 
-/** Redondea una cantidad de centavos (resultado de un producto/division). */
-function roundCents(value: number): number {
+/** Recorta una cantidad de centavos (resultado de un producto/division). */
+function truncCents(value: number): number {
   if (!Number.isFinite(value)) return 0;
-  const cents = Math.round(value + Number.EPSILON);
+  const cents = Math.trunc(value + Math.sign(value) * CENTS_EPSILON);
   return cents === 0 ? 0 : cents;
 }
 
@@ -60,9 +95,9 @@ export const money = {
   add: (a: number, b: number): number => fromCents(toCents(a) + toCents(b)),
   sub: (a: number, b: number): number => fromCents(toCents(a) - toCents(b)),
   mul: (a: number, b: number, factor = 1): number =>
-    fromCents(roundCents(toCents(a) * b * factor)),
+    fromCents(truncCents(toCents(a) * b * factor)),
   div: (a: number, b: number): number =>
-    b === 0 ? 0 : fromCents(roundCents(toCents(a) / b)),
+    b === 0 ? 0 : fromCents(truncCents(toCents(a) / b)),
   sum: (values: number[]): number =>
     fromCents(values.reduce((acc, v) => acc + toCents(v), 0)),
 };

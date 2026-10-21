@@ -115,6 +115,10 @@ export class MoneyComponent {
   private displayWithRate(): string | null {
     const key = String(this.displayRateKey ?? '').trim();
     if (!key) return null;
+    // Lo que se cobró en la moneda que se está mostrando manda: reconvertir el
+    // equivalente en dólares (guardado redondeado a centavos) pintaba Bs
+    // 15.521,27 para un cobro de Bs 15.520,00.
+    if (moneyLoaded(this.entered, this.currency) !== null) return null;
     const code = displayBaseCode();
     const value =
       code === 'USD'
@@ -134,9 +138,10 @@ export class MoneyComponent {
    */
   get conversions(): RateConversion[] {
     const forced = String(this.displayRateKey ?? '').trim() as RateKey | '';
+    const source = this.conversionAmount;
     const items = this.rates.convertsBase()
-      ? this.rates.conversionLines(this.amount, forced || null)
-      : this.rates.conversions(this.amount);
+      ? this.rates.conversionLines(source, forced || null)
+      : this.rates.conversions(source);
     const exact = this.loadedRate;
     const resolved = exact
       ? items.map((item) =>
@@ -156,6 +161,31 @@ export class MoneyComponent {
         ? bsCompact(item.amount)
         : moneyInCompact(item.amount, item.code),
     }));
+  }
+
+  /**
+   * Monto, en la moneda base contable (USD), con el que se calculan las
+   * conversiones.
+   *
+   * Cuando el monto visible es el que se cobró (`entered`), está en la moneda
+   * que se muestra y se pinta con una tasa forzada (`displayRateKey`), se usa
+   * ese: el equivalente guardado en dólares viene redondeado a centavos, así que
+   * reconvertirlo pintaba Bs 15.521,27 debajo de un cobro de Bs 15.520,00.
+   */
+  private get conversionAmount(): number {
+    const saved = Number(this.amount ?? 0);
+    // Sin una tasa forzada el monto cargado puede estar valorado a otra tasa (la
+    // del local): las conversiones siguen saliendo del equivalente contable.
+    const key = String(this.displayRateKey ?? '').trim();
+    if (!key) return saved;
+    const amount = Number(this.entered ?? 0);
+    const code = String(this.currency ?? '').trim().toUpperCase();
+    if (this.entered == null || !Number.isFinite(amount) || amount === 0) {
+      return saved;
+    }
+    if (code !== displayBaseCode()) return saved;
+    const base = this.rates.toBase(amount, code, key as RateKey);
+    return base ?? saved;
   }
 
   /**

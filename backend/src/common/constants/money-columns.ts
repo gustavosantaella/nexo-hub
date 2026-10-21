@@ -68,7 +68,7 @@ export const RATE_COLUMNS = {
   PayablePayment: ['exchangeRate'],
   AccountReceivable: ['exchangeRate'],
   ReceivablePayment: ['exchangeRate'],
-  CashMovement: ['exchangeRate'],
+  CashMovement: ['exchangeRate', 'baseRate'],
   CashSession: ['openingRate', 'countedRate'],
 } as const;
 

@@ -68,6 +68,21 @@ export function truncate(value: number | null | undefined, digits = 2): number {
 }
 
 /**
+ * Monto que se puede cobrar/pagar en `currency`: el que se lee en pantalla,
+ * recortado a los decimales de la moneda (nunca redondeado hacia arriba).
+ *
+ * Los montos se calculan con toda su precision (Bs 15.520,00 al BCV son
+ * 17,5685 USD) pero nadie paga fracciones de centavo: el cobro viaja como el
+ * monto visible (`17,56`) y asi la caja, el pedido y la pantalla dicen lo mismo.
+ */
+export function payableAmount(
+  value: number | null | undefined,
+  code?: string | null,
+): number {
+  return truncate(value, currencyMeta(code).decimals);
+}
+
+/**
  * Monto guardado en dólares (moneda base contable) con su símbolo, valor y
  * decimales ya expresados en la moneda de visualización.
  */

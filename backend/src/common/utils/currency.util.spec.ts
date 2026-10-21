@@ -16,6 +16,7 @@ describe('currency.util', () => {
         currency: 'USD',
         exchangeRate: 876.7976,
         baseAmount: 50,
+        unitsPerBase: 1,
       });
     });
 
@@ -25,6 +26,8 @@ describe('currency.util', () => {
       expect(result?.currency).toBe('VES');
       expect(result?.exchangeRate).toBe(1);
       expect(result?.baseAmount).toBe(1);
+      // Unidades de bolivares por 1 USD: con ella el arqueo suma sin redondear.
+      expect(result?.unitsPerBase).toBe(876.7976);
     });
 
     it('convierte una moneda con tasa propia pasando por el bolivar', () => {
@@ -34,6 +37,8 @@ describe('currency.util', () => {
       expect(result?.currency).toBe('COP');
       expect(result?.exchangeRate).toBe(0.22);
       expect(result?.baseAmount).toBe(0.25);
+      // 1 USD = 876.7976 / 0.22 = 3985.44 COP.
+      expect(result?.unitsPerBase).toBeCloseTo(876.7976 / 0.22, 6);
     });
 
     it('normaliza el codigo de la moneda y redondea a 2 decimales', () => {
@@ -60,12 +65,14 @@ describe('currency.util', () => {
     });
 
     it('expresa un monto en dolares como bolivares', () => {
-      expect(convertFromBase(2, 'VES', RATES)).toBe(1753.6);
+      // 2 * 876.7976 = 1753.5952 Bs: se recorta (nunca se redondea hacia arriba)
+      // porque es el monto que se lee y se cobra en caja.
+      expect(convertFromBase(2, 'VES', RATES)).toBe(1753.59);
     });
 
     it('expresa un monto en dolares en otra moneda configurada', () => {
-      // 5 USD * 876.7976 = 4383.99 Bs; / 0.22 = 19927.23 COP
-      expect(convertFromBase(5, 'COP', COP_RATES)).toBe(19927.23);
+      // 5 USD * 876.7976 = 4383.99 Bs; / 0.22 = 19927.2181... -> 19927.21 COP
+      expect(convertFromBase(5, 'COP', COP_RATES)).toBe(19927.21);
     });
 
     it('devuelve null cuando falta la tasa', () => {

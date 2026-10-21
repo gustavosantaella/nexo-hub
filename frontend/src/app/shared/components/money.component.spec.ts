@@ -148,6 +148,7 @@ const WITH_CUSTOM: RatesSnapshot = {
     [entered]="entered()"
     [currency]="currency()"
     [rateKey]="rateKey()"
+    [displayRateKey]="displayRateKey()"
   />`,
 })
 class HostComponent {
@@ -157,6 +158,8 @@ class HostComponent {
   readonly entered = signal<number | null>(null);
   readonly currency = signal<string | null>(null);
   readonly rateKey = signal<string | null>(null);
+  /** Tasa forzada para el monto base (la caja y las ventas usan `BCV_USD`). */
+  readonly displayRateKey = signal<string | null>(null);
 }
 
 /** Snapshot con la moneda base en bolívares (los montos se muestran primero en Bs). */
@@ -256,6 +259,30 @@ function withLocalPrice(): RatesSnapshot {
       isDisplayBase: item.code === 'VES',
       source: item.code === 'USD' ? ('CUSTOM' as const) : item.source,
     })),
+  };
+}
+
+/**
+ * Empresa con la moneda base en dólares y el BCV en `bsPerUsd`: el caso del
+ * cobro de Bs 15.520,00, cuyo equivalente en dólares (17,5685) se guarda
+ * redondeado a centavos (17,57).
+ */
+function withUsdBaseAt(bsPerUsd: number): RatesSnapshot {
+  return {
+    ...BCV_ONLY,
+    bcv: { ...BCV, current: { ...BCV.current, usd: bsPerUsd } },
+    custom: null,
+    rates: [{ ...BCV_ONLY.rates[0], rate: bsPerUsd }, BCV_ONLY.rates[1]],
+    activeKey: 'BCV_USD',
+    baseCurrency: {
+      code: 'USD',
+      label: 'Dólares',
+      symbol: '$',
+      decimals: 2,
+      bsPerUnit: bsPerUsd,
+      bsPerUsd,
+    },
+    currencies: currenciesFor(bsPerUsd),
   };
 }
 
@@ -388,6 +415,25 @@ describe('MoneyComponent (montos al cambio)', () => {
     expect(base?.textContent?.trim()).toBe('Bs 1.1b');
     expect(base?.getAttribute('title')).toBe('Bs 1,095,997,000.00');
     expect(text).toContain('USD · BCV $ 1.3m');
+  });
+
+  it('pinta el monto cobrado exacto y no el dólar redondeado a centavos', () => {
+    // Caja: Bs 15.520,00 cobrados al BCV (883,3963) son USD 17,5685 —se ven como
+    // `$ 17.56`, igual que el resto de montos, que se recortan—. La línea en
+    // bolívares vuelve a los 15.520,00 cobrados y no a los 15.521,27 que salían
+    // de reconvertir el equivalente guardado ($ 17,57).
+    load(withUsdBaseAt(883.3963));
+    fixture.componentInstance.amount.set(17.57);
+    fixture.componentInstance.entered.set(15_520 / 883.3963);
+    fixture.componentInstance.currency.set('USD');
+    fixture.componentInstance.displayRateKey.set('BCV_USD');
+    fixture.detectChanges();
+
+    const text = fixture.nativeElement.textContent as string;
+
+    expect(text).toContain('$ 17.56');
+    expect(text).toContain('Bs 15,520.00');
+    expect(text).not.toContain('Bs 15,521.27');
   });
 });
 
@@ -643,6 +689,22 @@ describe('MoneyComponent (monto tal como se cargó)', () => {
     // Se cargó en dólares: no hay nada que recuperar, manda la conversión.
     expect(base?.textContent?.trim()).toBe('Bs 8,767.97');
     expect(text).toContain('USD · BCV $ 10.00');
+  });
+
+  it('con una tasa forzada, manda lo cobrado en esa moneda', () => {
+    load(withLocalPrice());
+    // Caja: Bs 15.520,00 cobrados al BCV son $ 17,57 guardados. Volver a
+    // convertir ese dólar (redondeado a centavos) a la misma tasa da Bs
+    // 15.521,27, un monto que el cajón nunca recibió.
+    fixture.componentInstance.amount.set(17.57);
+    fixture.componentInstance.entered.set(15_520);
+    fixture.componentInstance.currency.set('VES');
+    fixture.componentInstance.displayRateKey.set('BCV_USD');
+    fixture.detectChanges();
+
+    const base = (fixture.nativeElement as HTMLElement).querySelector('app-money span');
+
+    expect(base?.textContent?.trim()).toBe('Bs 15,520.00');
   });
 });
 
