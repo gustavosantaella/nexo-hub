@@ -1,0 +1,40 @@
+/* ==========================================================================
+   Estilos compartidos de las pantallas de acceso (login y registro).
+   Solo decoración: los formularios usan las utilidades y componentes
+   globales (`.input`, `.btn-primary`, `.label`…).
+   ========================================================================== */
+
+/* Rejilla técnica del panel de marca, desvanecida hacia los bordes. */
+.auth-pattern {
+  background-image:
+    linear-gradient(to right, rgb(255 255 255 / 0.055) 1px, transparent 1px),
+    linear-gradient(to bottom, rgb(255 255 255 / 0.055) 1px, transparent 1px);
+  background-size: 44px 44px;
+  -webkit-mask-image: radial-gradient(ellipse 85% 75% at 40% 25%, #000 35%, transparent 100%);
+  mask-image: radial-gradient(ellipse 85% 75% at 40% 25%, #000 35%, transparent 100%);
+}
+
+/* Halos de color que dan profundidad al fondo oscuro. */
+.auth-orb {
+  position: absolute;
+  border-radius: 9999px;
+  filter: blur(90px);
+  opacity: 0.55;
+  pointer-events: none;
+  animation: auth-drift 22s ease-in-out infinite alternate;
+}
+
+@keyframes auth-drift {
+  from {
+    transform: translate3d(0, 0, 0) scale(1);
+  }
+  to {
+    transform: translate3d(18px, -22px, 0) scale(1.08);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .auth-orb {
+    animation: none;
+  }
+}

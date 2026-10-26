@@ -6,6 +6,10 @@ import { AuthService } from '../../core/services/auth.service';
 import { ToastService } from '../../core/services/toast.service';
 import { apiErrorMessage } from '../../core/utils/format';
 import { IconComponent } from '../../shared/components/icon.component';
+import {
+  AuthBrandComponent,
+  type AuthBrandFeature,
+} from './auth-brand.component';
 
 /** Nivel de seguridad de la contrasena usado por la barra indicadora. */
 interface PasswordStrength {
@@ -24,9 +28,10 @@ interface PasswordStrength {
 @Component({
   selector: 'app-register',
   standalone: true,
-  imports: [FormsModule, RouterLink, IconComponent],
+  imports: [FormsModule, RouterLink, IconComponent, AuthBrandComponent],
   changeDetection: ChangeDetectionStrategy.OnPush,
   templateUrl: './register.page.html',
+  styleUrl: './auth-ui.scss',
 })
 
 export class RegisterPage {
@@ -34,8 +39,33 @@ export class RegisterPage {
   private readonly router = inject(Router);
   private readonly toast = inject(ToastService);
 
+  /** Ventajas mostradas en el panel de marca. */
+  readonly brandFeatures: readonly AuthBrandFeature[] = [
+    {
+      icon: 'wallet',
+      title: 'Caja, pedidos e inventario',
+      description: 'Opera desde el primer día con arqueo y control de stock.',
+    },
+    {
+      icon: 'trend-up',
+      title: 'Cuentas por cobrar y pagar',
+      description: 'Finanzas ordenadas y utilidad real por período.',
+    },
+    {
+      icon: 'building',
+      title: 'Varias empresas por usuario',
+      description: 'Administra todos tus locales con una sola cuenta.',
+    },
+    {
+      icon: 'users',
+      title: 'Multi-usuario con roles',
+      description: 'Cada persona ve y hace solo lo que le corresponde.',
+    },
+  ];
+
   readonly submitting = signal(false);
   readonly errorMessage = signal<string | null>(null);
+  readonly capsLock = signal(false);
   readonly year = new Date().getFullYear();
   readonly minPasswordLength = 6;
 
@@ -94,6 +124,11 @@ export class RegisterPage {
   /** Limpia la alerta de error del servidor cuando el usuario corrige los datos. */
   clearError(): void {
     this.errorMessage.set(null);
+  }
+
+  /** Detecta Bloq Mayús en los eventos de teclado del campo de contraseña. */
+  onCapsLock(event: KeyboardEvent): void {
+    this.capsLock.set(event.getModifierState?.('CapsLock') ?? false);
   }
 
   submit(): void {

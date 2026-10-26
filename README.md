@@ -465,7 +465,7 @@ el gateway las enrute al backend.
 
 | Ruta | Pantalla |
 | --- | --- |
-| `/login` | Inicio de sesión (accesos de prueba con un clic) |
+| `/login` | Inicio de sesión con correo y contraseña |
 | `/registro` | Registro de una empresa nueva con su usuario administrador |
 | `/panel` | Panel con KPIs, caja, cobros del día y stock crítico |
 | `/panel/pedidos` | Tablero operativo + historial, creación de pedidos (productos y menús), cobros, y agregar/corregir/quitar productos a un pedido en curso |
