@@ -27,6 +27,12 @@ interface NavGroup {
   items: NavItem[];
 }
 
+/**
+ * Rutas de gestión del local. El cajero solo ve el punto de venta: tanto el
+ * menú como los guards de ruta usan esta lista para impedirle el resto.
+ */
+const MANAGEMENT_ROLES: Role[] = ['ADMIN', 'MANAGER'];
+
 /** Shell del back-office: barra lateral + cabecera + contenido. */
 @Component({
   selector: 'app-main-layout',
@@ -116,26 +122,30 @@ export class MainLayoutComponent {
   readonly user = this.auth.user;
   readonly company = this.auth.company;
   readonly companies = this.auth.companies;
+  /** ADMIN/MANAGER ven los accesos de gestión del shell (tasas, caja). */
+  readonly canManage = this.auth.canManage;
   readonly money = money;
 
   private readonly allGroups: NavGroup[] = [
     {
       title: 'Operación',
       items: [
-        { label: 'Panel', route: '/panel', icon: 'grid' },
-        { label: 'Pedidos', route: '/panel/pedidos', icon: 'receipt' },
-        { label: 'Caja', route: '/panel/caja', icon: 'wallet' },
-        { label: 'Inventario', route: '/panel/inventario', icon: 'box' },
+        // El punto de venta es la única sección que ve el cajero.
+        { label: 'Punto de venta', route: '/panel/caja/pos', icon: 'shopping-cart' },
+        { label: 'Panel', route: '/panel', icon: 'grid', roles: MANAGEMENT_ROLES },
+        { label: 'Pedidos', route: '/panel/pedidos', icon: 'receipt', roles: MANAGEMENT_ROLES },
+        { label: 'Caja', route: '/panel/caja', icon: 'wallet', roles: MANAGEMENT_ROLES },
+        { label: 'Inventario', route: '/panel/inventario', icon: 'box', roles: MANAGEMENT_ROLES },
       ],
     },
     {
       title: 'Catálogo',
       items: [
-        { label: 'Menús', route: '/panel/menus', icon: 'menu' },
-        { label: 'Productos', route: '/panel/productos', icon: 'tag' },
-        { label: 'Categorías', route: '/panel/categorias', icon: 'folder' },
-        { label: 'Proveedores', route: '/panel/proveedores', icon: 'truck' },
-        { label: 'Clientes', route: '/panel/clientes', icon: 'users' },
+        { label: 'Menús', route: '/panel/menus', icon: 'menu', roles: MANAGEMENT_ROLES },
+        { label: 'Productos', route: '/panel/productos', icon: 'tag', roles: MANAGEMENT_ROLES },
+        { label: 'Categorías', route: '/panel/categorias', icon: 'folder', roles: MANAGEMENT_ROLES },
+        { label: 'Proveedores', route: '/panel/proveedores', icon: 'truck', roles: MANAGEMENT_ROLES },
+        { label: 'Clientes', route: '/panel/clientes', icon: 'users', roles: MANAGEMENT_ROLES },
       ],
     },
     // {
@@ -156,7 +166,7 @@ export class MainLayoutComponent {
       title: 'Sistema',
       items: [
         { label: 'Usuarios', route: '/panel/usuarios', icon: 'user-cog', roles: ['ADMIN'] },
-        { label: 'Configuración', route: '/panel/configuracion', icon: 'settings' },
+        { label: 'Configuración', route: '/panel/configuracion', icon: 'settings', roles: MANAGEMENT_ROLES },
       ],
     },
   ];

@@ -1,6 +1,13 @@
 import { Routes } from '@angular/router';
 import { authGuard } from './core/guards/auth.guard';
 import { roleGuard } from './core/guards/role.guard';
+import type { Role } from './core/models/api.model';
+
+/**
+ * Rutas de gestión del local. El cajero solo puede entrar al punto de venta
+ * (`/panel/caja/pos`): todo lo demás lo devuelve el guard a esa vista.
+ */
+const MANAGEMENT_ROLES: Role[] = ['ADMIN', 'MANAGER'];
 
 /**
  * Rutas de la aplicacion. Todo el back-office vive dentro del layout principal
@@ -33,6 +40,7 @@ export const routes: Routes = [
         path: '',
         pathMatch: 'full',
         title: 'Panel · Nexo Hub',
+        canActivate: [roleGuard(MANAGEMENT_ROLES)],
         loadComponent: () =>
           import('./features/dashboard/dashboard.page').then(
             (m) => m.DashboardPage,
@@ -41,6 +49,7 @@ export const routes: Routes = [
       {
         path: 'pedidos',
         title: 'Pedidos · Nexo Hub',
+        canActivate: [roleGuard(MANAGEMENT_ROLES)],
         loadComponent: () =>
           import('./features/operations/orders.page').then((m) => m.OrdersPage),
       },
@@ -55,12 +64,14 @@ export const routes: Routes = [
       {
         path: 'caja',
         title: 'Caja · Nexo Hub',
+        canActivate: [roleGuard(MANAGEMENT_ROLES)],
         loadComponent: () =>
           import('./features/operations/cash.page').then((m) => m.CashPage),
       },
       {
         path: 'inventario',
         title: 'Inventario · Nexo Hub',
+        canActivate: [roleGuard(MANAGEMENT_ROLES)],
         loadComponent: () =>
           import('./features/operations/inventory.page').then(
             (m) => m.InventoryPage,
@@ -69,6 +80,7 @@ export const routes: Routes = [
       {
         path: 'productos',
         title: 'Productos · Nexo Hub',
+        canActivate: [roleGuard(MANAGEMENT_ROLES)],
         loadComponent: () =>
           import('./features/catalog/products.page').then(
             (m) => m.ProductsPage,
@@ -77,12 +89,14 @@ export const routes: Routes = [
       {
         path: 'menus',
         title: 'Menús · Nexo Hub',
+        canActivate: [roleGuard(MANAGEMENT_ROLES)],
         loadComponent: () =>
           import('./features/catalog/menus.page').then((m) => m.MenusPage),
       },
       {
         path: 'categorias',
         title: 'Categorías · Nexo Hub',
+        canActivate: [roleGuard(MANAGEMENT_ROLES)],
         loadComponent: () =>
           import('./features/catalog/categories.page').then(
             (m) => m.CategoriesPage,
@@ -91,6 +105,7 @@ export const routes: Routes = [
       {
         path: 'proveedores',
         title: 'Proveedores · Nexo Hub',
+        canActivate: [roleGuard(MANAGEMENT_ROLES)],
         loadComponent: () =>
           import('./features/catalog/suppliers.page').then(
             (m) => m.SuppliersPage,
@@ -99,6 +114,7 @@ export const routes: Routes = [
       {
         path: 'clientes',
         title: 'Clientes · Nexo Hub',
+        canActivate: [roleGuard(MANAGEMENT_ROLES)],
         loadComponent: () =>
           import('./features/catalog/customers.page').then(
             (m) => m.CustomersPage,
@@ -135,6 +151,7 @@ export const routes: Routes = [
       {
         path: 'configuracion',
         title: 'Configuración · Nexo Hub',
+        canActivate: [roleGuard(MANAGEMENT_ROLES)],
         loadComponent: () =>
           import('./features/settings/settings.page').then(
             (m) => m.SettingsPage,

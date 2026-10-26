@@ -469,7 +469,8 @@ el gateway las enrute al backend.
 | `/registro` | Registro de una empresa nueva con su usuario administrador |
 | `/panel` | Panel con KPIs, caja, cobros del día y stock crítico |
 | `/panel/pedidos` | Tablero operativo + historial, creación de pedidos (productos y menús), cobros, y agregar/corregir/quitar productos a un pedido en curso |
-| `/panel/caja` | Apertura/cierre con arqueo, movimientos e historial de sesiones; incluye el **POS** del cajero, con la grilla de productos y la carta de **menús** |
+| `/panel/caja` | Apertura/cierre con arqueo, movimientos e historial de sesiones; incluye el acceso al **POS** del cajero |
+| `/panel/caja/pos` | **Punto de venta** (vista del `CASHIER`, también accesible para ADMIN/MANAGER desde Caja): grilla de productos, carta de **menús**, cobros y botones para **abrir/cerrar la caja** sin salir del POS |
 | `/panel/inventario` | Niveles de stock (con el desglose *"3 cajas + 5 unidades"*), movimientos en la unidad del negocio (cajas/unidades, kg/g, L/ml) y ajustes |
 | `/panel/menus` | Menús (platos/combos) con su receta de ingredientes, costo, margen y disponibilidad, y sus categorías (con subcategorías opcionales) |
 | `/panel/productos`, `/panel/categorias`, `/panel/proveedores`, `/panel/clientes` | Catálogo (los precios y costos se cargan en la moneda que se elija, con su conversión a las tasas del sistema); en `/panel/categorias` cada categoría puede tener subcategorías |
@@ -478,8 +479,10 @@ el gateway las enrute al backend.
 | `/panel/configuracion` | Por pestañas: **Tasas** (tasas del BCV dólar/euro solo lectura, tasa USDT de referencia solo informativa, tasa personalizada, monedas aceptadas y vista previa), **Apariencia** (modo claro/oscuro y cómo se abren los formularios de caja y pedidos), **Empresa** (datos de la empresa activa y crear otras) y **Mis datos** (perfil y contraseña) |
 | `/panel/usuarios` | Usuarios de la empresa activa (solo ADMIN) |
 
-Todo el back-office vive bajo el prefijo `/panel` (protegido por `authGuard`);
-`/` redirige a `/panel` y cualquier ruta desconocida también.
+Todo el back-office vive bajo el prefijo `/panel` (protegido por `authGuard`).
+El rol `CASHIER` **solo** puede entrar a `/panel/caja/pos`: los guards lo
+devuelven ahí desde cualquier otra ruta y el menú lateral solo le muestra
+*Punto de venta*. `/` redirige a `/panel` y cualquier ruta desconocida también.
 
 La cabecera muestra la **empresa activa** y, cuando el usuario pertenece a más
 de una, un selector para cambiar de empresa sin volver a iniciar sesión.

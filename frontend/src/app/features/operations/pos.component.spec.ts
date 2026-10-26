@@ -1993,6 +1993,98 @@ describe('PosComponent (vista de cajero)', () => {
     expect(tableName!.classList.contains('break-words')).toBeTrue();
     expect(table!.parentElement!.classList.contains('[scrollbar-gutter:stable]')).toBeTrue();
   });
+
+  /**
+   * El cajero cierra su turno desde el POS: el botón cambia según el estado de
+   * la caja y el conteo viaja con la moneda y las notas del cierre.
+   */
+  it('cierra la caja desde el POS con el monto contado', () => {
+    const { fixture, pos } = mount();
+    expect(pos.cashOpen()).toBeTrue();
+    expect(
+      fixture.nativeElement.querySelector('[data-pos-cash-close]'),
+    ).not.toBeNull();
+    expect(fixture.nativeElement.querySelector('[data-pos-cash-open]')).toBeNull();
+
+    pos.startCloseCash();
+    fixture.detectChanges();
+    expect(pos.cashDialog()).toBe('close');
+
+    pos.cashForm = { amount: 90, currency: 'USD', notes: 'cierre de prueba' };
+    pos.submitCash();
+
+    const close = http.expectOne(`${API}/cash/close`);
+    expect(close.request.body).toEqual({
+      countedAmount: 90,
+      countedCurrency: 'USD',
+      closingNotes: 'cierre de prueba',
+    });
+    close.flush({
+      id: 's1',
+      code: 'CAJ-0001',
+      status: 'CLOSED',
+      openingAmount: 100,
+      openedAt: '2026-10-13T08:00:00.000Z',
+      closedAt: '2026-10-13T20:00:00.000Z',
+    });
+    http
+      .expectOne(`${API}/cash/current`)
+      .flush({ session: null, summary: null });
+
+    expect(pos.cashOpen()).toBeFalse();
+    expect(pos.cashDialog()).toBeNull();
+    fixture.detectChanges();
+    expect(
+      fixture.nativeElement.querySelector('[data-pos-cash-open]'),
+    ).not.toBeNull();
+  });
+
+  /**
+   * Con la caja cerrada el POS ofrece abrirla: el fondo se envía como línea de
+   * moneda para que el backend lo convierta a USD con la tasa del momento.
+   */
+  it('abre la caja desde el POS con el fondo contado', () => {
+    const { fixture, pos } = mount();
+    pos.cashOpen.set(false);
+    pos.cashSession.set(null);
+    fixture.detectChanges();
+
+    expect(
+      fixture.nativeElement.querySelector('[data-pos-cash-open]'),
+    ).not.toBeNull();
+
+    pos.startOpenCash();
+    pos.cashForm = { amount: 50, currency: 'VES', notes: 'fondo inicial' };
+    pos.submitCash();
+
+    const open = http.expectOne(`${API}/cash/open`);
+    expect(open.request.body.openingCurrency).toBe('VES');
+    expect(open.request.body.openingLines).toEqual([
+      { currency: 'VES', amount: 50 },
+    ]);
+    expect(open.request.body.openingNotes).toBe('fondo inicial');
+    open.flush({
+      id: 's2',
+      code: 'CAJ-0002',
+      status: 'OPEN',
+      openingAmount: 0.06,
+      openedAt: '2026-10-13T20:05:00.000Z',
+    });
+    http.expectOne(`${API}/cash/current`).flush({
+      session: {
+        id: 's2',
+        code: 'CAJ-0002',
+        status: 'OPEN',
+        openingAmount: 0.06,
+        openedAt: '2026-10-13T20:05:00.000Z',
+      },
+      summary: null,
+    });
+
+    expect(pos.cashOpen()).toBeTrue();
+    expect(pos.cashDialog()).toBeNull();
+  });
+
 });
 
 /** Cuenta cuantas veces aparece un texto completo en el contenido renderizado. */

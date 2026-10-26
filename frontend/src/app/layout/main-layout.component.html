@@ -112,6 +112,7 @@
 
           <div class="flex-1"></div>
 
+          @if (canManage()) {
           <a
             routerLink="/panel/configuracion"
             class="hidden items-center gap-2 rounded-full border px-3 py-1.5 text-xs font-semibold transition sm:flex"
@@ -146,6 +147,7 @@
               Caja cerrada
             }
           </a>
+          }
 
           <button
             type="button"

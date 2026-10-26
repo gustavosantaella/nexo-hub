@@ -76,6 +76,7 @@ import {
   payableAmount,
   rate,
   sumMoney,
+  truncate,
 } from '../../core/utils/format';
 import {
   menuStockHint,
@@ -289,6 +290,13 @@ export class PosComponent implements OnInit, OnDestroy {
   /** Presentación de los diálogos según la preferencia de la empresa. */
   readonly dialogView = this.preferences.dialogView;
 
+  /**
+   * `true` cuando la sesión activa es del personal de caja. El cajero solo
+   * trabaja en el POS (no tiene acceso al arqueo del back-office), así que la
+   * barra le muestra «Cerrar sesión» en lugar del enlace a Caja.
+   */
+  readonly isCashier = computed(() => this.auth.role() === 'CASHIER');
+
   /** Cómo lista el catálogo el POS: tarjetas, tabla (20/página) o columnas (10). */
   readonly posView = this.preferences.posView;
   readonly tablePageSize = POS_TABLE_PAGE_SIZE;
@@ -387,6 +395,18 @@ export class PosComponent implements OnInit, OnDestroy {
    */
   readonly cartOpen = signal(false);
   readonly cashOpen = signal(false);
+  /** Sesión de caja abierta (para el esperado y el cierre desde el POS). */
+  readonly cashSession = signal<CashSession | null>(null);
+  /** Diálogo de caja activo: abrir o cerrar el turno. */
+  readonly cashDialog = signal<'open' | 'close' | null>(null);
+  /** `true` mientras el API abre/cierra la caja. */
+  readonly cashBusy = signal(false);
+  /** Monto, moneda y notas del fondo inicial o del conteo de cierre. */
+  cashForm: { amount: number; currency: string; notes: string } = {
+    amount: 0,
+    currency: BASE_CURRENCY.code as string,
+    notes: '',
+  };
   /**
    * Botón **Actualizar preferencias**: `true` mientras se están trayendo de nuevo
    * la propina, la moneda de los precios y las conversiones de la empresa.
@@ -629,10 +649,124 @@ export class PosComponent implements OnInit, OnDestroy {
           response && 'status' in response
             ? (response as CashSession)
             : ((response as CashCurrentResponse | null)?.session ?? null);
-        this.cashOpen.set(session?.status === 'OPEN');
+        const open = session?.status === 'OPEN' ? session : null;
+        this.cashOpen.set(open !== null);
+        this.cashSession.set(open);
       },
-      error: () => this.cashOpen.set(false),
+      error: () => {
+        this.cashOpen.set(false);
+        this.cashSession.set(null);
+      },
     });
+  }
+
+  // ===========================================================================
+  //  APERTURA Y CIERRE DE CAJA DESDE EL POS
+  // ===========================================================================
+
+  /** Efectivo que debería haber en el cajón (arqueo en vivo). */
+  get expectedCash(): number {
+    const session = this.cashSession();
+    return session?.summary?.expectedCash ?? session?.expectedAmount ?? 0;
+  }
+
+  /** Monto del diálogo llevado a la moneda base (USD) con la tasa del día. */
+  get cashAmountBase(): number {
+    const amount = Math.max(Number(this.cashForm.amount) || 0, 0);
+    if (amount === 0) return 0;
+    const currency = this.cashForm.currency || BASE_CURRENCY.code;
+    const base = this.rates.toBase(amount, currency, CHARGE_RATE_KEY);
+    return truncate(base ?? amount, 2);
+  }
+
+  /** Diferencia del cierre (contado − esperado), sin pintar `-0.00`. */
+  get cashDifference(): number {
+    const difference = truncate(this.cashAmountBase - this.expectedCash, 2);
+    return difference === 0 ? 0 : difference;
+  }
+
+  /** Abre el diálogo para **abrir** la caja (fondo inicial). */
+  startOpenCash(): void {
+    this.cashForm = { amount: 0, currency: BASE_CURRENCY.code, notes: '' };
+    this.cashDialog.set('open');
+  }
+
+  /** Abre el diálogo para **cerrar** la caja con el conteo del cajón. */
+  startCloseCash(): void {
+    this.cashForm = {
+      amount: this.expectedCash,
+      currency: BASE_CURRENCY.code,
+      notes: '',
+    };
+    this.cashDialog.set('close');
+  }
+
+  dismissCashDialog(): void {
+    if (this.cashBusy()) return;
+    this.cashDialog.set(null);
+  }
+
+  /**
+   * Abre o cierra la caja según el diálogo activo.
+   *
+   * El fondo se envía como línea de moneda (`openingLines`), igual que el
+   * arqueo del back-office: el backend lo convierte a USD con la tasa del
+   * momento. Al cerrar, el conteo se envía en la moneda elegida y el backend
+   * calcula la diferencia contra el esperado.
+   */
+  submitCash(): void {
+    const mode = this.cashDialog();
+    if (!mode || this.cashBusy()) return;
+
+    const amount = Math.max(Number(this.cashForm.amount) || 0, 0);
+    const currency = this.cashForm.currency || BASE_CURRENCY.code;
+    const notes = this.cashForm.notes.trim() || undefined;
+    this.cashBusy.set(true);
+
+    const request =
+      mode === 'open'
+        ? this.cash.open({
+            openingAmount: this.cashAmountBase,
+            openingCurrency: currency,
+            openingLines: [{ currency, amount }],
+            openingNotes: notes,
+          })
+        : this.cash.close({
+            countedAmount: amount,
+            countedCurrency: currency,
+            closingNotes: notes,
+          });
+
+    request.subscribe({
+      next: (session) => {
+        this.cashBusy.set(false);
+        this.cashDialog.set(null);
+        const open = session.status === 'OPEN' ? session : null;
+        this.cashOpen.set(open !== null);
+        this.cashSession.set(open);
+        if (mode === 'open') {
+          this.toast.success(`Caja ${session.code} abierta`, 'Caja abierta');
+        } else {
+          this.toast.success('Turno cerrado y arqueo guardado', 'Caja cerrada');
+        }
+        // Trae el arqueo en vivo para el próximo cierre.
+        this.loadCash();
+      },
+      error: (error) => {
+        this.cashBusy.set(false);
+        this.toast.error(apiErrorMessage(error));
+      },
+    });
+  }
+
+  /** Cierra la sesión desde el POS (el cajero no entra al arqueo del panel). */
+  async logout(): Promise<void> {
+    const confirmed = await this.confirm.ask({
+      title: 'Cerrar sesión',
+      message: '¿Deseas salir del sistema?',
+      confirmLabel: 'Cerrar sesión',
+    });
+    if (confirmed) this.auth.logout();
   }
 
   private loadOrders(): void {

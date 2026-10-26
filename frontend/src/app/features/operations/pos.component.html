@@ -75,6 +75,18 @@
           <app-icon name="wallet" size="h-3.5 w-3.5" />
           {{ cashOpen() ? 'Caja abierta' : 'Caja cerrada' }}
         </span>
+        <!-- El cajero abre y cierra su turno sin salir del punto de venta. -->
+        @if (cashOpen()) {
+        <button type="button" data-pos-cash-close class="btn-secondary btn-sm" (click)="startCloseCash()">
+          <app-icon name="wallet" size="h-4 w-4" />
+          Cerrar caja
+        </button>
+        } @else {
+        <button type="button" data-pos-cash-open class="btn-primary btn-sm" (click)="startOpenCash()">
+          <app-icon name="wallet" size="h-4 w-4" />
+          Abrir caja
+        </button>
+        }
         <!-- El admin configura la propina, la moneda de los precios y las
                  conversiones de la empresa: con esto el cajero trae lo que acaba
                  de guardar sin cerrar sesión. -->
@@ -88,10 +100,18 @@
           <app-icon name="refresh" size="h-4 w-4" />
           Actualizar
         </button>
+        @if (isCashier()) {
+        <!-- El cajero no tiene acceso al arqueo del panel: sale desde aquí. -->
+        <button type="button" class="btn-secondary btn-sm" (click)="logout()">
+          <app-icon name="logout" size="h-4 w-4" />
+          Cerrar sesión
+        </button>
+        } @else {
         <button type="button" class="btn-secondary btn-sm" (click)="exit.emit()">
           <app-icon name="chevron-left" size="h-4 w-4" />
           Arqueo
         </button>
+        }
       </div>
     </div>
   </div>
@@ -1375,6 +1395,82 @@
     <button type="button" class="btn-danger" [disabled]="cancellationCode().length !== 8 || cancellationSending()"
       (click)="submitCancellation()">
       {{ cancellationSending() ? 'Cancelando…' : 'Cancelar pedido' }}
+    </button>
+  </div>
+</ng-template>
+
+<!-- Apertura / cierre de caja desde el punto de venta -->
+<app-dialog [open]="cashDialog() !== null" [variant]="dialogView()"
+  [title]="cashDialog() === 'open' ? 'Abrir caja' : 'Cerrar caja'"
+  [subtitle]="cashDialog() === 'open' ? 'Cuenta el fondo inicial del cajón' : 'Cuenta el efectivo y compáralo con lo esperado'"
+  size="sm" [body]="cashBody" [footer]="cashFooter" (closed)="dismissCashDialog()" />
+
+<ng-template #cashBody>
+  <div class="space-y-4">
+    @if (cashDialog() === 'close') {
+    <div class="rounded-xl border border-slate-200 bg-slate-50 px-4 py-3">
+      <div class="flex items-center justify-between gap-3 text-sm">
+        <span class="text-slate-500">Efectivo esperado en el cajón</span>
+        <app-money displayRateKey="BCV_USD" [amount]="expectedCash" [strong]="true" alignEnd="true" />
+      </div>
+      @if (cashSession(); as session) {
+      <p class="mt-1 text-xs text-slate-500">
+        Turno {{ session.code }} · fondo inicial {{ money(session.openingAmount) }}
+      </p>
+      }
+      <p class="mt-1 text-xs text-slate-400">
+        Incluye el fondo inicial, las ventas en efectivo y las propinas del turno.
+      </p>
+    </div>
+    } @else {
+    <div class="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-xs text-amber-800">
+      La caja está cerrada. Registra con cuánto efectivo arranca el turno para
+      habilitar el cobro en el punto de venta.
+    </div>
+    }
+
+    <div>
+      <label class="label" for="pos-cash-amount">
+        {{ cashDialog() === 'open' ? 'Fondo inicial' : 'Monto contado' }}
+      </label>
+      <input id="pos-cash-amount" type="number" class="input" min="0" step="0.01" placeholder="0.00"
+        [(ngModel)]="cashForm.amount" />
+      @if (cashDialog() === 'open') {
+      <p class="mt-1 text-xs text-slate-400">
+        Puedes abrir con fondo 0 si el cajón arranca vacío.
+      </p>
+      }
+    </div>
+
+    <app-currency-select id="pos-cash-currency" [label]="cashDialog() === 'open' ? 'Moneda del fondo' : 'Moneda contada'"
+      [(value)]="cashForm.currency" [amount]="cashForm.amount" />
+
+    @if (cashDialog() === 'close') {
+    <div class="flex items-center justify-between gap-3 rounded-xl border border-slate-200 px-4 py-3 text-sm">
+      <span class="text-slate-500">Diferencia</span>
+      <app-money displayRateKey="BCV_USD" [amount]="cashDifference" [strong]="true" alignEnd="true"
+        [class.text-emerald-600]="cashDifference >= 0" [class.text-rose-600]="cashDifference < 0" />
+    </div>
+    }
+
+    <div>
+      <label class="label" for="pos-cash-notes">Notas (opcional)</label>
+      <textarea id="pos-cash-notes" class="input" rows="2" [(ngModel)]="cashForm.notes"></textarea>
+    </div>
+  </div>
+</ng-template>
+
+<ng-template #cashFooter>
+  <div class="flex w-full justify-end gap-2">
+    <button type="button" class="btn-secondary" [disabled]="cashBusy()" (click)="dismissCashDialog()">
+      Cancelar
+    </button>
+    <button type="button" class="btn-primary" [disabled]="cashBusy()" (click)="submitCash()">
+      @if (cashBusy()) {
+      {{ cashDialog() === 'open' ? 'Abriendo…' : 'Cerrando…' }}
+      } @else {
+      {{ cashDialog() === 'open' ? 'Abrir caja' : 'Cerrar caja' }}
+      }
     </button>
   </div>
 </ng-template>

@@ -10,11 +10,20 @@ export const authGuard: CanActivateFn = () => {
   return auth.isAuthenticated() ? true : router.createUrlTree(['/login']);
 };
 
-/** Restringe una ruta a ciertos roles (si no, vuelve al panel). */
+/**
+ * Restringe una ruta a ciertos roles.
+ *
+ * Si el rol no está permitido se vuelve al panel; el cajero (que solo trabaja en
+ * el punto de venta) vuelve directamente a su vista para no quedar rebotando
+ * contra el guard del panel.
+ */
 export function roleGuard(roles: Role[]): CanActivateFn {
   return () => {
     const auth = inject(AuthService);
     const router = inject(Router);
-    return auth.hasRole(roles) ? true : router.createUrlTree(['/panel']);
+    if (auth.hasRole(roles)) return true;
+    return router.createUrlTree([
+      auth.role() === 'CASHIER' ? '/panel/caja/pos' : '/panel',
+    ]);
   };
 }
