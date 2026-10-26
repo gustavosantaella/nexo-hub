@@ -51,6 +51,8 @@ import {
 } from '../../core/utils/menu-availability';
 import {
   boxUnitsOf,
+  enteredBoxPriceOf,
+  enteredUnitPriceOf,
   isBoxProduct,
   soldUnitLabel,
   unitPriceOf,
@@ -77,6 +79,12 @@ interface OrderLine {
    * operador no lo definió, el repartido del precio de la presentación.
    */
   unitPrice: number;
+  /** Precio exacto de la presentacion en la moneda cargada (o `null`). */
+  enteredBoxPrice?: number | null;
+  /** Precio exacto de UNA unidad de inventario en `enteredCurrency` (o `null`). */
+  enteredUnitPrice?: number | null;
+  /** Moneda de los precios escritos en el catalogo. */
+  enteredCurrency?: string | null;
   /** Cantidad en unidades individuales del inventario. */
   quantity: number;
   /**
@@ -650,16 +658,21 @@ export class OrdersPage implements OnInit, OnDestroy {
    */
   balanceIn(currency: string): number {
     const order = this.payOrder();
-    const balance = order ? this.balance(order) : 0;
-    return this.rates.chargeAmount(balance, currency);
+    if (!order) return 0;
+    const exact = this.saleBalance(order);
+    if (exact != null && currency === order.priceCurrency) return Math.max(0, exact);
+    return this.rates.chargeAmount(this.balance(order), currency);
   }
 
   /** Saldo pendiente tal como se lee en pantalla, a la tasa oficial del BCV. */
   get payDisplayBalance(): number {
     const order = this.payOrder();
-    return order
-      ? this.rates.chargeAmount(this.balance(order), displayBaseCode())
-      : 0;
+    if (!order) return 0;
+    const exact = this.saleBalance(order);
+    if (exact != null && displayBaseCode() === order.priceCurrency) {
+      return Math.max(0, exact);
+    }
+    return this.rates.chargeAmount(this.balance(order), displayBaseCode());
   }
 
   /**
@@ -839,13 +852,10 @@ export class OrdersPage implements OnInit, OnDestroy {
       );
       return;
     }
-    // El saldo con el que se compara es el que cobra el cajero: el precio que lee
-    // en pantalla pasado a la moneda del pago con la tasa de cobro. Se tolera la
-    // diferencia por redondeo al convertir.
-    const limit = this.rates.chargeAmount(
-      this.balance(order),
-      currency,
-    );
+    // El saldo con el que se compara es el que cobra el cajero: el monto
+    // congelado en bolivares del pedido (o el equivalente a la moneda del pago).
+    // Se tolera la diferencia por redondeo al convertir.
+    const limit = this.balanceIn(currency);
     if (amount > limit + 0.02) {
       this.toast.error('El monto excede el saldo pendiente');
       return;
@@ -993,6 +1003,78 @@ export class OrdersPage implements OnInit, OnDestroy {
     return mulMoney(line.unitPrice, line.quantity);
   }
 
+  /** Total exacto de la linea en la moneda cargada en el catalogo (o `null`). */
+  lineEnteredTotal(line: OrderLine): number | null {
+    const currency = displayBaseCode();
+    if (!line.enteredCurrency || line.enteredCurrency !== currency) return null;
+    if (line.enteredUnitPrice == null) return null;
+    return mulMoney(line.enteredUnitPrice, line.quantity);
+  }
+
+  /** Total de la linea como se pinta: recupera el monto escrito en el catalogo. */
+  lineTotalText(line: OrderLine): string {
+    const entered = this.lineEnteredTotal(line);
+    if (entered != null && line.enteredCurrency) {
+      return moneyIn(entered, line.enteredCurrency);
+    }
+    return money(this.lineTotal(line));
+  }
+
+  /**
+   * Totales exactos de la venta nueva en la moneda de los precios (bolivares).
+   *
+   * Se calculan con los montos cargados en el catalogo para no volver a
+   * derivarlos del USD recortado a centavos (Bs 15.520,00 -> $ 17,49 ->
+   * Bs 15.518,88). `null` cuando falta el contexto de alguna linea.
+   */
+  get exactCreateTotals(): {
+    currency: string;
+    subtotal: number;
+    discount: number;
+    tax: number;
+    tip: number;
+    deliveryFee: number;
+    total: number;
+  } | null {
+    const currency = displayBaseCode();
+    if (currency === BASE_CURRENCY.code) return null;
+
+    const lines = this.lines();
+    if (lines.length === 0) return null;
+    const lineTotals = lines.map((line) => this.lineEnteredTotal(line));
+    if (lineTotals.some((value) => value == null)) return null;
+
+    const subtotal = sumMoney(lineTotals as number[]);
+    const discount = Math.min(
+      this.rates.fromBase(this.discountAmount, currency) ?? this.discountAmount,
+      subtotal,
+    );
+    const taxable = subtotal - discount;
+    const tax = mulMoney(taxable, (Number(this.form.taxRate) || 0) / 100);
+    const tip = mulMoney(taxable, (Number(this.form.tipRate) || 0) / 100);
+    const deliveryFee = this.enteredDeliveryFee(currency);
+
+    return {
+      currency,
+      subtotal,
+      discount,
+      tax,
+      tip,
+      deliveryFee,
+      total: sumMoney([subtotal, -discount, tax, tip, deliveryFee]),
+    };
+  }
+
+  /** Costo de delivery exacto en `currency` (monto escrito si ya viene en ella). */
+  private enteredDeliveryFee(currency: string): number {
+    if (!this.isDeliveryOrder) return 0;
+    const amount = Number(this.form.deliveryFee) || 0;
+    if (!(amount > 0)) return 0;
+    const written = this.form.deliveryFeeCurrency || BASE_CURRENCY.code;
+    if (written === currency) return amount;
+    return this.rates.fromBase(this.deliveryFeeAmount, currency) ?? this.deliveryFeeAmount;
+  }
+
   /** Productos del inventario que coinciden con la busqueda y el filtro de stock. */
   get filteredProducts(): ProductOption[] {
     const term = this.productSearch.trim().toLowerCase();
@@ -1039,6 +1121,8 @@ export class OrdersPage implements OnInit, OnDestroy {
    * (Bs 15.520,00 al BCV -> `$ 17,56`), nunca una fraccion de centavo.
    */
   get chargeTotal(): number {
+    const exact = this.exactCreateTotals;
+    if (exact && this.chargeCurrency === exact.currency) return exact.total;
     return payableAmount(
       this.rates.saleChargeAmount(this.total, this.chargeCurrency),
       this.chargeCurrency,
@@ -1142,11 +1226,21 @@ export class OrdersPage implements OnInit, OnDestroy {
 
   /** Línea del pedido con el precio por unidad y la presentación del producto. */
   private newLine(product: ProductOption, quantity: number): OrderLine {
+    const enteredBox = enteredBoxPriceOf(product);
+    const enteredUnit = enteredUnitPriceOf(product);
+    const enteredCurrency = enteredBox?.currency ?? enteredUnit?.currency ?? null;
     return {
       productId: product.id,
       menuId: null,
       name: product.name,
       unitPrice: this.unitPriceOf(product),
+      ...(enteredCurrency
+        ? {
+            enteredBoxPrice: enteredBox?.amount ?? null,
+            enteredUnitPrice: enteredUnit?.amount ?? null,
+            enteredCurrency,
+          }
+        : {}),
       quantity,
       stock: product.stock,
       unit: product.unit,
@@ -1331,6 +1425,10 @@ export class OrdersPage implements OnInit, OnDestroy {
           ...(line.menuId ? { menuId: line.menuId } : {}),
           quantity: line.quantity,
           unitPrice: line.unitPrice,
+          ...(line.enteredUnitPrice != null &&
+            line.enteredCurrency === displayBaseCode()
+            ? { unitPriceEntered: line.enteredUnitPrice }
+            : {}),
         })),
       })
       .subscribe({
@@ -1355,10 +1453,14 @@ export class OrdersPage implements OnInit, OnDestroy {
   private payCreatedOrder(order: Order, visibleCharge?: number | null): void {
     const currency = this.chargeCurrency || BASE_CURRENCY.code;
     // El monto se envia en la moneda del cobro; el backend guarda ademas el
-    // equivalente en USD y lo valida contra el saldo. Se conserva el monto visible
-    // antes de crear el pedido para no perder los bolívares exactos de la vitrina.
+    // equivalente en USD y lo valida contra el saldo. Si el pedido recien creado
+    // trae su ticket en bolivares se usa ese saldo exacto (Bs 15.520,00) y no la
+    // reconversion de los $ 17,49 recortados.
+    const exact = this.saleBalance(order);
     const amount = payableAmount(
-      visibleCharge ?? this.rates.chargeAmount(order.total, currency),
+      exact != null && currency === order.priceCurrency
+        ? Math.max(0, exact)
+        : visibleCharge ?? this.rates.chargeAmount(order.total, currency),
       currency,
     );
     const rateKey = this.rates.chargeKeyFor(currency);

@@ -180,7 +180,8 @@ interface ResolvedOrderItem {
   unitPrice: number;
   /**
    * `unitPrice` en la moneda de la vitrina (lo que vio el cajero). `null` cuando
-   * no hay recargo de vitrina: ahi el USD del catalogo ya es el precio exacto.
+   * el precio se cargo en USD o el pedido no trae el monto exacto: ahi el USD del
+   * catalogo ya es el precio exacto.
    */
   unitPriceEntered: number | null;
   total: number;
@@ -915,15 +916,17 @@ export class OrdersService {
         // hacia arriba): Bs 5.820,00 al cambio de 970 son $ 6,5882 y el cliente
         // paga $ 6,58, no $ 6,59.
         const unitPrice = truncMoney(catalogUnitPrice * sale.factor);
+        // El POS envia el precio exacto en bolivares que mostro (p. ej. Bs
+        // 15.520,00): se conserva aunque la vitrina no tenga recargo, para que
+        // el ticket y el cobro no vuelvan a derivarlo del USD recortado.
+        const unitPriceEntered = this.enteredPriceOf(line, sale, catalogUnitPrice);
         return {
           productId: null,
           menuId: recipe.id,
           name: recipe.name,
           quantity,
           unitPrice,
-          unitPriceEntered: sale.lifted
-            ? toMoney(money.mul(catalogUnitPrice, sale.displayRate))
-            : null,
+          unitPriceEntered,
           total: money.mul(unitPrice, quantity),
           consumption: recipe.ingredients.map((ingredient) => ({
             productId: ingredient.productId,
@@ -941,20 +944,45 @@ export class OrdersService {
       const catalogUnitPrice = toMoney(line.unitPrice ?? product.price);
       // Misma regla que los menus: se valoriza en USD recortando, no redondeando.
       const unitPrice = truncMoney(catalogUnitPrice * sale.factor);
+      const unitPriceEntered = this.enteredPriceOf(line, sale, catalogUnitPrice);
       return {
         productId: product.id,
         menuId: null,
         name: product.name,
         quantity,
         unitPrice,
-        unitPriceEntered: sale.lifted
-          ? toMoney(money.mul(catalogUnitPrice, sale.displayRate))
-          : null,
+        unitPriceEntered,
         total: money.mul(unitPrice, quantity),
         // Un producto suelto se consume a si mismo: 1 unidad por unidad vendida.
         consumption: [{ productId: product.id, quantity: 1 }],
       };
     });
+  }
+
+  /**
+   * Precio unitario en la moneda de vitrina que acompania a la linea.
+   *
+   * Si el POS manda `unitPriceEntered` se usa TAL CUAL: es el monto exacto que
+   * se le mostro al cliente y evita el viaje por el USD recortado (Bs 15.520,00
+   * -> $ 17,49 -> Bs 15.518,88). Sin el, se conserva el comportamiento anterior:
+   * solo hay snapshot cuando la vitrina tiene recargo (`sale.lifted`).
+   */
+  private enteredPriceOf(
+    line: OrderItemDto,
+    sale: SaleDisplay,
+    catalogUnitPrice: number,
+  ): number | null {
+    const provided = Number(line.unitPriceEntered);
+    if (
+      sale.currency === LOCAL_CURRENCY_CODE &&
+      Number.isFinite(provided) &&
+      provided > 0
+    ) {
+      return toMoney(provided);
+    }
+    return sale.lifted
+      ? toMoney(money.mul(catalogUnitPrice, sale.displayRate))
+      : null;
   }
 
   /**
@@ -966,9 +994,9 @@ export class OrdersService {
    * propina + delivery = total) y repite el monto que se le cobro al cliente.
    *
    * `null` (sin snapshot) cuando:
-   *  - no hay recargo de vitrina (el monto en USD es el precio exacto), o
-   *  - alguna linea no trae su precio en la moneda de la vitrina (pedido armado
-   *    antes de existir el snapshot): recalcular ahi seria inventar montos.
+   *  - los precios se guardan en USD (ahi el monto en USD es el precio exacto), o
+   *  - alguna linea no trae su precio exacto en la moneda de vitrina (pedido
+   *    armado antes de existir el snapshot): recalcular ahi seria inventar montos.
    */
   private priceSnapshot(input: {
     sale: { currency: string; rate: number } | null;
@@ -1016,12 +1044,17 @@ export class OrdersService {
 
   /**
    * Contexto de vitrina de una venta nueva.
-   * `null` sin recargo: el pedido se guarda y se muestra en USD, sin snapshot.
+   * `null` cuando los precios se guardan en dolares: ahi el USD ya es el monto
+   * exacto. Con los precios en bolivares se conserva SIEMPRE el snapshot, tenga
+   * o no recargo la vitrina: el monto cargado a mano (Bs 15.520,00 al BCV) no
+   * puede volver a derivarse de un USD recortado a centavos.
    */
   private saleContext(
     sale: SaleDisplay,
   ): { currency: string; rate: number } | null {
-    return sale.lifted ? { currency: sale.currency, rate: sale.displayRate } : null;
+    if (sale.currency !== LOCAL_CURRENCY_CODE) return null;
+    if (!Number.isFinite(sale.displayRate) || sale.displayRate <= 0) return null;
+    return { currency: sale.currency, rate: sale.displayRate };
   }
 
   /**

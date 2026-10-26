@@ -1079,9 +1079,11 @@ export class CashService {
       input.currency ?? BASE_CURRENCY_CODE,
     );
     // El llamador puede fijar el equivalente en USD (montos ajustados al saldo).
+    // El valor contable se guarda en centavos; `baseRate` conserva la tasa exacta
+    // para que el arqueo pueda valorar el dinero fisico sin perder decimales.
     const baseAmount =
       input.baseAmount === null || input.baseAmount === undefined
-        ? conversion.baseAmount
+        ? toMoney(conversion.baseAmount)
         : toMoney(input.baseAmount);
     // Tasa exacta para valorar el movimiento en la moneda base: se guarda
     // SIEMPRE, aunque el llamador haya ajustado `baseAmount` a un saldo.

@@ -9,6 +9,7 @@ import type { RatesSnapshot } from '../../core/models/rates.model';
 import { PreferencesService } from '../../core/services/preferences.service';
 import { RatesService } from '../../core/services/rates.service';
 import { ConfirmService } from '../../shared/services/confirm.service';
+import { setDisplayCurrency } from '../../core/utils/format';
 import { OrdersPage } from './orders.page';
 
 const API = environment.apiUrl;
@@ -263,6 +264,8 @@ describe('OrdersPage (formulario del cajero)', () => {
     http.verify();
     // La preferencia vive en `localStorage`: se limpia para no pasarla de una prueba a otra.
     localStorage.clear();
+    // La moneda de visualización es un signal global: vuelve a dólares.
+    setDisplayCurrency(null);
   });
 
   function mount(options: { cashOpen?: boolean } = {}): {
@@ -1055,6 +1058,68 @@ describe('OrdersPage (formulario del cajero)', () => {
       change: [],
     });
     payRequest.flush(order({ total: 32.5, paidAmount: 32.5, paymentStatus: 'PAID' }));
+
+    flushReload();
+  });
+
+  /**
+   * El pedido guarda su precio en USD redondeado a centavos, pero el monto
+   * cargado en bolivares (Bs 15.520,00 al BCV 887,30) se conserva exacto para el
+   * ticket y el cobro: no se recalcula desde los $ 17,49.
+   */
+  it('cobra los bolivares exactos del pedido sin reconvertir el USD', () => {
+    setDisplayCurrency({
+      code: 'VES',
+      label: 'Bolívares',
+      symbol: 'Bs',
+      decimals: 2,
+      bsPerUnit: 1,
+      bsPerUsd: 887.3,
+    });
+    const { fixture, page } = mount();
+    openCreate(fixture, page);
+
+    page.form.tipRate = 0;
+    page.addProduct({
+      ...PRODUCTS[0],
+      price: 17.49,
+      priceEntered: 15_520,
+      priceCurrency: 'VES',
+    });
+    page.onChargeCurrencyChange('VES');
+
+    expect(page.chargeTotal).toBe(15_520);
+    expect(page.lineTotalText(page.lines()[0])).toBe('Bs 15,520.00');
+
+    page.submitCreate();
+
+    const createRequest = http.expectOne(
+      (request) => request.method === 'POST' && request.url === `${API}/orders`,
+    );
+    expect(createRequest.request.body.items).toEqual([
+      { productId: 'p1', quantity: 1, unitPrice: 17.49, unitPriceEntered: 15_520 },
+    ]);
+    createRequest.flush(
+      order({
+        total: 17.49,
+        subtotal: 17.49,
+        priceCurrency: 'VES',
+        priceRate: 887.3,
+        priceBreakdown: {
+          subtotal: 15_520,
+          discount: 0,
+          tax: 0,
+          tip: 0,
+          deliveryFee: 0,
+          total: 15_520,
+        },
+      }),
+    );
+
+    const payRequest = http.expectOne(`${API}/orders/o1/payments`);
+    expect(payRequest.request.body.amount).toBe(15_520);
+    expect(payRequest.request.body.parts[0].amount).toBe(15_520);
+    payRequest.flush(order({ total: 17.49, paidAmount: 17.49, paymentStatus: 'PAID' }));
 
     flushReload();
   });

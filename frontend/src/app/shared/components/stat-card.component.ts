@@ -44,6 +44,8 @@ export class StatCardComponent {
   @Input() isCurrency = false;
   /** Tasa con la que se pinta el monto (las ventas y la caja usan `BCV_USD`). */
   @Input() displayRateKey: string | null = null;
+  /** Tasa con la que se cargó `entered`, para conservar esa conversión exacta. */
+  @Input() rateKey: string | null = null;
   /**
    * Monto exacto en la moneda de visualización (lo cobrado, no su equivalente
    * en dólares). Se pinta tal cual cuando la moneda de la tarjeta es la misma

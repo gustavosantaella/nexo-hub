@@ -183,7 +183,13 @@ export class MoneyComponent {
     if (this.entered == null || !Number.isFinite(amount) || amount === 0) {
       return saved;
     }
-    if (code !== displayBaseCode()) return saved;
+    // En la caja la tarjeta conserva el monto base contable (USD) y a la vez
+    // recibe los bolívares físicos que entraron (`entered` + moneda local). Esos
+    // son los que alimentan las conversiones "al cambio": reconstruirlas desde
+    // el dólar recortado pintaba Bs 15.518,91 para un cobro de Bs 15.520,00.
+    const localAtOfficialRate =
+      code === LOCAL_CURRENCY_CODE && key === BCV_USD_RATE_KEY;
+    if (code !== displayBaseCode() && !localAtOfficialRate) return saved;
     const base = this.rates.toBase(amount, code, key as RateKey);
     return base ?? saved;
   }
@@ -216,6 +222,18 @@ export class MoneyComponent {
    * bolívares al BCV (883,30) son `$ 17,57`.
    */
   private get shownBsAmount(): number | null {
+    // El registro guarda lo que escribió el operador: esos son los bolívares
+    // cobrados, no el equivalente en dólares redondeado a centavos. Se usan
+    // también con la pantalla en dólares (caja): la línea oficial debe mostrar
+    // los Bs 15.520,00 que entraron, no los que salen de reconvertir $ 17,49.
+    const entered = Number(this.entered ?? 0);
+    const loaded =
+      this.entered != null &&
+      Number.isFinite(entered) &&
+      entered !== 0 &&
+      String(this.currency ?? '').trim().toUpperCase() === LOCAL_CURRENCY_CODE;
+    if (loaded) return entered;
+
     if (displayBaseCode() !== LOCAL_CURRENCY_CODE) return null;
 
     // La base forzada a una tasa del sistema (`displayRateKey`) ya son esos
@@ -224,16 +242,6 @@ export class MoneyComponent {
     if (forced) {
       return this.rates.fromBase(this.amount, LOCAL_CURRENCY_CODE, forced as RateKey);
     }
-
-    // El registro guarda lo que escribió el operador: esos son los bolívares
-    // cobrados, no el equivalente en dólares redondeado a centavos.
-    const entered = Number(this.entered ?? 0);
-    const loaded =
-      this.entered != null &&
-      Number.isFinite(entered) &&
-      entered !== 0 &&
-      String(this.currency ?? '').trim().toUpperCase() === LOCAL_CURRENCY_CODE;
-    if (loaded) return entered;
 
     // Sin monto cargado la base la pinta `money()`: dólares × tasa de vitrina (la
     // personalizada del local si existe), el precio que el cajero está leyendo.

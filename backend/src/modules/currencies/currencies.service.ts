@@ -12,7 +12,6 @@ import {
   isDefaultCurrency,
   normalizeCurrencyCode,
 } from '../../common/constants/currencies';
-import { round2 } from '../../common/utils/money.util';
 import {
   BASE_CURRENCY_KEY,
   CURRENCIES_KEY,
@@ -238,7 +237,7 @@ export class CurrenciesService {
       const rate =
         input.rate === null || input.rate === undefined
           ? null
-          : round2(Number(input.rate));
+          : Number(input.rate);
 
       if (rate !== null && (!Number.isFinite(rate) || rate <= 0)) {
         throw new BadRequestException(
@@ -315,7 +314,7 @@ export class CurrenciesService {
       label: String(raw?.label ?? info.label),
       symbol: String(raw?.symbol ?? info.symbol),
       enabled: raw?.enabled !== false,
-      rate: Number.isFinite(rate) && rate > 0 ? round2(rate) : null,
+      rate: Number.isFinite(rate) && rate > 0 ? rate : null,
       decimals: info.decimals,
     };
   }

@@ -570,7 +570,7 @@
               <button type="button" class="btn-ghost btn-sm" (click)="incLine(line)">+</button>
             </span>
             <span class="w-16 flex-none text-right text-sm font-semibold text-slate-900">
-              {{ money(lineTotal(line)) }}
+              {{ lineTotalText(line) }}
             </span>
             <button type="button" class="btn-ghost btn-sm text-rose-600" title="Quitar del carrito"
               (click)="removeLine(lineKey(line))">

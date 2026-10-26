@@ -1294,6 +1294,68 @@ describe('PosComponent (vista de cajero)', () => {
     expect(pos.change).toBe(10);
   });
 
+  /**
+   * El precio cargado en bolivares no puede perder decimales al pasar por el USD
+   * contable: Bs 15.520,00 / 887,30 = $ 17,491265... y el pedido guarda $ 17,49.
+   * El cobro tiene que seguir siendo Bs 15.520,00 exactos.
+   */
+  it('cobra los bolivares exactos cargados en el catalogo', () => {
+    setDisplayCurrency({
+      code: 'VES',
+      label: 'Bolívares',
+      symbol: 'Bs',
+      decimals: 2,
+      bsPerUnit: 1,
+      bsPerUsd: 887.3,
+    });
+    const { fixture, pos } = mount();
+    const product: ProductOption = {
+      ...PRODUCTS[0],
+      price: 17.49,
+      priceEntered: 15_520,
+      priceCurrency: 'VES',
+    };
+
+    pos.setTip(false);
+    pos.addProduct(product);
+    pos.charge.currency = 'VES';
+
+    expect(pos.chargeAmount).toBe(15_520);
+    expect(pos.lineTotalText(pos.lines()[0])).toBe('Bs 15,520.00');
+
+    pos.submitSale(true);
+    fixture.detectChanges();
+
+    const createRequest = http.expectOne(
+      (request) => request.method === 'POST' && request.url === `${API}/orders`,
+    );
+    expect(createRequest.request.body.items).toEqual([
+      { productId: 'p1', quantity: 1, unitPrice: 17.49, unitPriceEntered: 15_520 },
+    ]);
+    createRequest.flush(
+      order({
+        total: 17.49,
+        subtotal: 17.49,
+        priceCurrency: 'VES',
+        priceRate: 887.3,
+        priceBreakdown: {
+          subtotal: 15_520,
+          discount: 0,
+          tax: 0,
+          tip: 0,
+          deliveryFee: 0,
+          total: 15_520,
+        },
+      }),
+    );
+
+    const payRequest = http.expectOne(`${API}/orders/o1/payments`);
+    expect(payRequest.request.body.amount).toBe(15_520);
+    expect(payRequest.request.body.parts[0].amount).toBe(15_520);
+    payRequest.flush(order({ total: 17.49, paidAmount: 17.49, paymentStatus: 'PAID' }));
+    flushReload();
+  });
+
   it('envia el vuelto del efectivo como parte del cobro', () => {
     const { fixture, pos } = mount();
     pos.setTip(false);

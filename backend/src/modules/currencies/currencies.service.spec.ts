@@ -121,6 +121,25 @@ describe('CurrenciesService', () => {
     expect(currencies[2]).toMatchObject({ code: 'EUR', enabled: false });
   });
 
+  it('conserva todos los decimales de la tasa manual', async () => {
+    const { service } = buildService();
+
+    const saved = await service.save(
+      COMPANY_ID,
+      [
+        { code: 'USD', enabled: true },
+        { code: 'VES', enabled: true },
+        { code: 'EUR', enabled: true },
+        { code: 'COP', enabled: true, rate: 887.296543 },
+      ],
+      'user-1',
+    );
+
+    // La tasa no es dinero: redondearla a 2 decimales cambia el equivalente de
+    // cada cobro en moneda extranjera. Se guarda con toda su precision.
+    expect(saved.find((item) => item.code === 'COP')?.rate).toBe(887.296543);
+  });
+
   it('guarda la configuracion como un unico documento JSON en Setting', async () => {
     const { service, prisma } = buildService();
 

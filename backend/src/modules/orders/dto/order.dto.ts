@@ -55,6 +55,16 @@ export class OrderItemDto {
   @IsNumber()
   @Min(0)
   unitPrice?: number;
+
+  @ApiPropertyOptional({
+    description:
+      'Precio unitario exacto en la moneda de vitrina (bolivares), tal como se le mostro al cliente. Conserva los montos cargados a mano (Bs 15.520,00) aunque el equivalente en USD quede en centavos; el backend lo usa para el snapshot del ticket y el cobro.',
+  })
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  @Min(0)
+  unitPriceEntered?: number;
 }
 
 export class CreateOrderDto {

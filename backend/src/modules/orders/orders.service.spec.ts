@@ -891,6 +891,45 @@ describe('OrdersService.create (costo de delivery)', () => {
     });
   });
 
+  it('conserva los bolivares exactos aunque la vitrina no tenga recargo', async () => {
+    // Precio cargado en el catalogo: Bs 15.520,00 al BCV 887,30. El USD
+    // contable queda en 17,49, pero el ticket debe guardar los 15.520 exactos.
+    const sale = {
+      currency: 'VES',
+      displayRate: 887.3,
+      chargeRate: 887.3,
+      factor: 1,
+      lifted: false,
+    };
+    const rates = { saleDisplay: jest.fn(async () => sale) };
+    const { service, tx } = createService(null, rates);
+
+    await service.create(
+      COMPANY_ID,
+      {
+        items: [
+          {
+            productId: 'p1',
+            quantity: 1,
+            unitPrice: 17.49,
+            unitPriceEntered: 15_520,
+          },
+        ],
+      },
+      'u1',
+    );
+
+    const data = tx.order.create.mock.calls[0][0].data;
+    const createdItems = data.items as {
+      create: { unitPrice: number; unitPriceEntered: number | null }[];
+    };
+    expect(createdItems.create[0].unitPrice).toBe(17.49);
+    expect(createdItems.create[0].unitPriceEntered).toBe(15_520);
+    expect(data.priceCurrency).toBe('VES');
+    expect(data.priceRate).toBe(887.3);
+    expect(parsePriceBreakdown(data.priceBreakdown)?.total).toBe(15_520);
+  });
+
   it('no guarda snapshot cuando la vitrina cobra al precio del catalogo', async () => {
     // Sin recargo el USD del pedido es el precio exacto: no hay nada que congelar.
     const { service, tx } = createService(null);

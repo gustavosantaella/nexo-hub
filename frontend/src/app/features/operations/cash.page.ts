@@ -28,7 +28,11 @@ import {
   PAYMENT_METHOD_LABELS,
   needsPaymentProof,
 } from '../../core/constants/domain';
-import { BASE_CURRENCY, MIXED_CURRENCY_CODE } from '../../core/constants/currency';
+import {
+  BASE_CURRENCY,
+  LOCAL_CURRENCY_CODE,
+  MIXED_CURRENCY_CODE,
+} from '../../core/constants/currency';
 import { CurrencySelectComponent } from '../../shared/components/currency-select.component';
 import { RateConversionsComponent } from '../../shared/components/rate-conversions.component';
 import { RatesService, BCV_USD_RATE_KEY } from '../../core/services/rates.service';
@@ -82,6 +86,20 @@ interface CashMethodCard {
   value: string;
   label: string;
   icon: string;
+}
+
+/**
+ * Monto exacto que alimenta las conversiones "al cambio" de una tarjeta.
+ *
+ * En la vista en dolares el valor base sigue siendo el equivalente contable
+ * (`$ 17,49`), pero los bolivares de debajo tienen que ser los que entraron al
+ * cajon (`Bs 15.520,00`). Por eso `amount` puede venir en una moneda distinta a
+ * la de visualizacion: `MoneyComponent` la usa solo para las conversiones.
+ */
+interface CashCardMoney {
+  amount: number | null;
+  currency: string;
+  rateKey: string | null;
 }
 
 /** Parte de un pago mixto tal como se captura en el formulario. */
@@ -708,6 +726,23 @@ export class CashPage implements OnInit, OnDestroy {
   }
 
   /**
+   * Neto de una fila del desglose por moneda para `<app-money>`.
+   *
+   * Con la pantalla en dólares, la moneda local conserva sus bolívares físicos:
+   * el monto base sigue siendo el equivalente contable (`row.baseNet`) y los
+   * bolívares nativos alimentan la línea del BCV. Reconvertir el dólar recortado
+   * pintaba `Bs 15.518,91` para un neto real de `Bs 15.520,00`.
+   */
+  currencyNetCard(row: CurrencyBreakdown): CashCardMoney {
+    const code = String(row.currency ?? '').trim().toUpperCase();
+    const exact =
+      this.isUsdDisplay() && code === LOCAL_CURRENCY_CODE
+        ? Number(row.net ?? 0)
+        : null;
+    return this.cardMoney(this.currencyNetDisplay(row), exact);
+  }
+
+  /**
    * Lleva un monto de su moneda original a la moneda de visualización.
    *
    * `amount` es lo que realmente entró o salió (en `currency`) y `baseAmount` su
@@ -732,14 +767,25 @@ export class CashPage implements OnInit, OnDestroy {
     return this.rates.fromBase(baseAmount, displayBaseCode(), BCV_USD_RATE_KEY);
   }
 
-  /** Efectivo que entró al cajón, en la moneda de visualización. */
+  /**
+   * Efectivo que entró al cajón, en la moneda de visualización.
+   *
+   * La moneda de pantalla conserva el monto FÍSICO que entró (Bs 15.520,00).
+   * Las demás se valorizan con el equivalente del backend. Reconvertir los Bs
+   * desde el USD recortado dejaba la tarjeta en Bs 15.518,88.
+   */
   get cashInDisplay(): number | null {
     return this.cashInDisplayOf(this.summary());
   }
 
   /** Efectivo que entró al cajón de un arqueo cualquiera. */
   cashInDisplayOf(summary: CashSummary | null | undefined): number | null {
-    return this.aggregateDisplay(summary?.cashIn);
+    if (this.isUsdDisplay()) return this.aggregateDisplay(summary?.cashIn);
+    return this.sumByCurrency(
+      summary,
+      (row) => row.cashIn,
+      (row) => row.baseCashIn,
+    );
   }
 
   /** Efectivo que salió del cajón, en la moneda de visualización. */
@@ -749,7 +795,12 @@ export class CashPage implements OnInit, OnDestroy {
 
   /** Efectivo que salió del cajón de un arqueo cualquiera. */
   cashOutDisplayOf(summary: CashSummary | null | undefined): number | null {
-    return this.aggregateDisplay(summary?.cashOut);
+    if (this.isUsdDisplay()) return this.aggregateDisplay(summary?.cashOut);
+    return this.sumByCurrency(
+      summary,
+      (row) => row.cashOut,
+      (row) => row.baseCashOut,
+    );
   }
 
   /** Fondo inicial en la moneda de visualización (lo contado al abrir). */
@@ -769,24 +820,33 @@ export class CashPage implements OnInit, OnDestroy {
     session: CashSession | null | undefined,
     summary: CashSummary | null | undefined,
   ): number | null {
-    if (summary?.openingCash != null) return this.aggregateDisplay(summary.openingCash);
     const lines = summary?.openingByCurrency ?? session?.openingLines ?? [];
-    const rated = lines.filter((line) => Number(line.baseRate ?? 0) > 0);
-    if (lines.length > 0 && rated.length === lines.length) {
+    if (this.isUsdDisplay()) {
+      if (summary?.openingCash != null) return this.aggregateDisplay(summary.openingCash);
+      const openingAmount = session?.openingAmount;
+      if (openingAmount != null) return this.aggregateDisplay(openingAmount);
       return this.aggregateDisplay(
-        sumMoney(
-          rated.map(
-            (line) => Number(line.amount ?? 0) / Number(line.baseRate ?? 1),
-          ),
-        ),
+        sumMoney(lines.map((line) => Number(line.baseAmount ?? 0))),
       );
     }
+    if (lines.length > 0) {
+      // La moneda de pantalla conserva los billetes contados; las demás se
+      // valorizan con el equivalente guardado al abrir.
+      let total = 0;
+      for (const line of lines) {
+        const amount = Number(line.amount ?? 0);
+        const shown = this.isDisplayCurrency(line.currency)
+          ? amount
+          : this.aggregateDisplay(Number(line.baseAmount ?? 0));
+        if (shown == null) return null;
+        total = sumMoney([total, shown]);
+      }
+      return total;
+    }
+    if (summary?.openingCash != null) return this.aggregateDisplay(summary.openingCash);
     const opening = session?.openingAmount;
     if (opening != null) return this.aggregateDisplay(opening);
-    if (lines.length === 0) return 0;
-    return this.aggregateDisplay(
-      sumMoney(lines.map((line) => Number(line.baseAmount ?? 0))),
-    );
+    return 0;
   }
 
   /** Efectivo esperado en el cajón, en la moneda de visualización. */
@@ -797,16 +857,24 @@ export class CashPage implements OnInit, OnDestroy {
   /**
    * Efectivo esperado de una sesión en la moneda de visualización.
    *
-   * Es el número con el que se cierra la caja (`summary.expectedCash`, que el
-   * backend recorta una sola vez desde los centavos sin redondear) y el que
-   * guarda la sesión ya cerrada (`expectedAmount`). Sumar aquí el desglose por
-   * moneda a la tasa del día volvía a introducir el centavo que este número
-   * acababa de quitar: la tarjeta decía 41,72 y el cierre 41,71.
+   * Cuando el arqueo trae el desglose por moneda se usa el efectivo FÍSICO de
+   * cada una (apertura + entradas − salidas): en bolívares son los Bs 15.520,00
+   * que realmente están en el cajón, no los Bs 15.518,88 que salen de
+   * reconvertir el equivalente USD recortado. Sin desglose se conserva el total
+   * del backend (`expectedCash`/`expectedAmount`).
    */
   expectedCashDisplayOf(
     session: CashSession | null | undefined,
     summary: CashSummary | null | undefined,
   ): number | null {
+    if (!this.isUsdDisplay() && summary?.byCurrency?.length) {
+      const opening = this.openingDisplayOf(session, summary);
+      const cashIn = this.cashInDisplayOf(summary);
+      const cashOut = this.cashOutDisplayOf(summary);
+      if (opening != null && cashIn != null && cashOut != null) {
+        return sumMoney([opening, cashIn, -cashOut]);
+      }
+    }
     const expected = session?.expectedAmount ?? summary?.expectedCash;
     if (expected != null) return this.aggregateDisplay(expected);
     return this.openingDisplayOf(session, summary);
@@ -819,7 +887,12 @@ export class CashPage implements OnInit, OnDestroy {
 
   /** Propinas de un arqueo cualquiera en la moneda de visualización. */
   tipsTotalDisplayOf(summary: CashSummary | null | undefined): number | null {
-    return this.aggregateDisplay(summary?.tipsTotal);
+    if (this.isUsdDisplay()) return this.aggregateDisplay(summary?.tipsTotal);
+    return this.sumByCurrency(
+      summary,
+      (row) => row.tips,
+      (row) => row.baseTips,
+    );
   }
 
   /** Ventas del turno (sin propinas ni vueltos) en la moneda de visualización. */
@@ -831,7 +904,12 @@ export class CashPage implements OnInit, OnDestroy {
   salesTotalDisplayOf(
     summary: CashSummary | null | undefined,
   ): number | null {
-    return this.aggregateDisplay(summary?.salesTotal);
+    if (this.isUsdDisplay()) return this.aggregateDisplay(summary?.salesTotal);
+    return this.sumByCurrency(
+      summary,
+      (row) => sumMoney([row.sales, -row.tips, -row.change]),
+      (row) => sumMoney([row.baseSales, -row.baseTips, -row.baseChange]),
+    );
   }
 
   /** Ventas + propinas (lo cobrado por ventas) en la moneda de visualización. */
@@ -841,9 +919,16 @@ export class CashPage implements OnInit, OnDestroy {
 
   /** Ventas + propinas de un arqueo cualquiera en la moneda de visualización. */
   salesGrossDisplayOf(summary: CashSummary | null | undefined): number | null {
-    if (!summary) return null;
-    return this.aggregateDisplay(
-      sumMoney([summary.salesTotal, summary.tipsTotal]),
+    if (this.isUsdDisplay()) {
+      if (!summary) return null;
+      return this.aggregateDisplay(
+        sumMoney([summary.salesTotal, summary.tipsTotal]),
+      );
+    }
+    return this.sumByCurrency(
+      summary,
+      (row) => sumMoney([row.sales, -row.change]),
+      (row) => sumMoney([row.baseSales, -row.baseChange]),
     );
   }
 
@@ -856,6 +941,9 @@ export class CashPage implements OnInit, OnDestroy {
     inDisplay: number | null;
     outDisplay: number | null;
     netDisplay: number | null;
+    inCard: CashCardMoney;
+    outCard: CashCardMoney;
+    netCard: CashCardMoney;
   }[] {
     const summary = this.summary();
     return (summary?.byMethod ?? []).map((row) => ({
@@ -863,6 +951,9 @@ export class CashPage implements OnInit, OnDestroy {
       inDisplay: this.methodDisplay(summary, row.method, 'in'),
       outDisplay: this.methodDisplay(summary, row.method, 'out'),
       netDisplay: this.methodDisplay(summary, row.method, 'net'),
+      inCard: this.methodCardOf(summary, row.method, 'in'),
+      outCard: this.methodCardOf(summary, row.method, 'out'),
+      netCard: this.methodCardOf(summary, row.method, 'net'),
     }));
   }
 
@@ -877,9 +968,352 @@ export class CashPage implements OnInit, OnDestroy {
     method: string,
     field: 'in' | 'out' | 'net',
   ): number | null {
+    if (this.isUsdDisplay()) {
+      const row = (summary?.byMethod ?? []).find((line) => line.method === method);
+      if (!row) return null;
+      return this.aggregateDisplay(row[field]);
+    }
+    const currencies = summary?.byCurrency ?? [];
+    let total = 0;
+    let found = false;
+    for (const currencyRow of currencies) {
+      const part = currencyRow.methods?.find((line) => line.method === method);
+      if (!part) continue;
+      found = true;
+      const native =
+        field === 'in' ? part.in : field === 'out' ? part.out : part.net;
+      const base =
+        field === 'in'
+          ? part.baseIn
+          : field === 'out'
+            ? part.baseOut
+            : part.baseNet;
+      const shown = this.isDisplayCurrency(currencyRow.currency)
+        ? native
+        : this.aggregateDisplay(base);
+      if (shown == null) return null;
+      total = sumMoney([total, shown]);
+    }
+    if (found) return total;
+
     const row = (summary?.byMethod ?? []).find((line) => line.method === method);
     if (!row) return null;
     return this.aggregateDisplay(row[field]);
+  }
+
+  /**
+   * Monto de un método listo para `<app-money>`.
+   *
+   * Con la pantalla en dólares envía los bolívares físicos como monto nativo
+   * (`currency: VES`, `rateKey: BCV_USD`); el componente sigue pintando el total
+   * contable en dólares (`row.in/out/net`) como base y usa esos bolívares solo
+   * para las conversiones del BCV.
+   */
+  private methodCardOf(
+    summary: CashSummary | null | undefined,
+    method: string,
+    field: 'in' | 'out' | 'net',
+  ): CashCardMoney {
+    return this.cardMoney(
+      this.methodDisplay(summary, method, field),
+      this.exactMethodBsOf(summary, method, field),
+    );
+  }
+
+  /**
+   * Suma el desglose por moneda en la moneda de visualización.
+   *
+   * La moneda de pantalla conserva sus montos físicos (`native`); las demás se
+   * valorizan con el equivalente en USD que ya calculó el backend (`base`). Asi
+   * los bolivares que entraron al cajon se pintan completos (Bs 15.520,00) sin
+   * reconvertir los $ 17,49 guardados.
+   */
+  private sumByCurrency(
+    summary: CashSummary | null | undefined,
+    native: (row: CurrencyBreakdown) => number,
+    base: (row: CurrencyBreakdown) => number,
+  ): number | null {
+    const rows = summary?.byCurrency ?? [];
+    if (rows.length === 0) return null;
+    let total = 0;
+    for (const row of rows) {
+      const shown = this.isDisplayCurrency(row.currency)
+        ? native(row)
+        : this.aggregateDisplay(base(row));
+      if (shown == null) return null;
+      total = sumMoney([total, shown]);
+    }
+    return total;
+  }
+
+  /**
+   * Equivalente exacto en bolívares del desglose por moneda.
+   *
+   * Solo aplica con la pantalla en dólares: ahí el monto base es el equivalente
+   * contable y las conversiones se hacían desde ese dólar recortado a centavos
+   * (Bs 15.518,91 para un cobro de Bs 15.520,00). Los bolívares de la moneda
+   * local se conservan tal cual entraron; las demás monedas se valorizan con su
+   * equivalente en USD, que es el único dato guardado para ellas.
+   */
+  private exactBsOf(
+    summary: CashSummary | null | undefined,
+    native: (row: CurrencyBreakdown) => number,
+    base: (row: CurrencyBreakdown) => number,
+  ): number | null {
+    if (!this.isUsdDisplay()) return null;
+    const rows = summary?.byCurrency ?? [];
+    if (rows.length === 0) return null;
+
+    let total = 0;
+    for (const row of rows) {
+      const code = String(row.currency ?? '').trim().toUpperCase();
+      const shown =
+        code === LOCAL_CURRENCY_CODE
+          ? native(row)
+          : this.rates.fromBase(
+              base(row),
+              LOCAL_CURRENCY_CODE,
+              BCV_USD_RATE_KEY,
+            );
+      if (shown == null || !Number.isFinite(shown)) return null;
+      total = sumMoney([total, shown]);
+    }
+    return total;
+  }
+
+  /**
+   * Bolívares exactos de un método de pago (vista en dólares).
+   *
+   * Cada moneda conserva el monto físico que entró o salió del cajón; las demás
+   * se valorizan con el equivalente en USD del backend a la tasa del BCV. Así la
+   * fila de Efectivo muestra `Bs 15.520,00` aunque su total contable sea
+   * `$ 17,49`, en vez de reconvertir ese dólar recortado a centavos.
+   */
+  private exactMethodBsOf(
+    summary: CashSummary | null | undefined,
+    method: string,
+    field: 'in' | 'out' | 'net',
+  ): number | null {
+    if (!this.isUsdDisplay()) return null;
+    const rows = summary?.byCurrency ?? [];
+
+    let total = 0;
+    let found = false;
+    for (const row of rows) {
+      const part = row.methods?.find((line) => line.method === method);
+      if (!part) continue;
+      found = true;
+      const native =
+        field === 'in' ? part.in : field === 'out' ? part.out : part.net;
+      const base =
+        field === 'in'
+          ? part.baseIn
+          : field === 'out'
+            ? part.baseOut
+            : part.baseNet;
+      const code = String(row.currency ?? '').trim().toUpperCase();
+      const shown =
+        code === LOCAL_CURRENCY_CODE
+          ? native
+          : this.rates.fromBase(
+              base,
+              LOCAL_CURRENCY_CODE,
+              BCV_USD_RATE_KEY,
+            );
+      if (shown == null || !Number.isFinite(shown)) return null;
+      total = sumMoney([total, shown]);
+    }
+    return found ? total : null;
+  }
+
+  /** Bolívares exactos del fondo inicial contado (vista en dólares). */
+  private exactOpeningBsOf(
+    session: CashSession | null | undefined,
+    summary: CashSummary | null | undefined,
+  ): number | null {
+    if (!this.isUsdDisplay()) return null;
+    const lines = summary?.openingByCurrency ?? session?.openingLines ?? [];
+    if (lines.length === 0) {
+      // Sin desglose (aperturas antiguas o fondo cero) no hay bolívares
+      // contados que conservar: se usa el fondo en USD como respaldo.
+      const opening = session?.openingAmount ?? summary?.openingCash;
+      if (opening == null) return null;
+      if (opening === 0) return 0;
+      return this.rates.fromBase(
+        opening,
+        LOCAL_CURRENCY_CODE,
+        BCV_USD_RATE_KEY,
+      );
+    }
+
+    let total = 0;
+    for (const line of lines) {
+      const code = String(line.currency ?? '').trim().toUpperCase();
+      const shown =
+        code === LOCAL_CURRENCY_CODE
+          ? Number(line.amount ?? 0)
+          : this.rates.fromBase(
+              Number(line.baseAmount ?? 0),
+              LOCAL_CURRENCY_CODE,
+              BCV_USD_RATE_KEY,
+            );
+      if (shown == null || !Number.isFinite(shown)) return null;
+      total = sumMoney([total, shown]);
+    }
+    return total;
+  }
+
+  /** Efectivo esperado exacto en bolívares (apertura + entradas − salidas). */
+  private exactExpectedBsOf(
+    session: CashSession | null | undefined,
+    summary: CashSummary | null | undefined,
+  ): number | null {
+    const opening = this.exactOpeningBsOf(session, summary);
+    const cashIn = this.exactBsOf(
+      summary,
+      (row) => row.cashIn,
+      (row) => row.baseCashIn,
+    );
+    const cashOut = this.exactBsOf(
+      summary,
+      (row) => row.cashOut,
+      (row) => row.baseCashOut,
+    );
+    if (opening == null || cashIn == null || cashOut == null) return null;
+    return sumMoney([opening, cashIn, -cashOut]);
+  }
+
+  /**
+   * Monto de una tarjeta: el base de siempre y, si hay desglose, el exacto en
+   * bolívares para las conversiones.
+   */
+  private cardMoney(
+    fallback: number | null | undefined,
+    exact: number | null,
+  ): CashCardMoney {
+    if (exact != null) {
+      return {
+        amount: exact,
+        currency: LOCAL_CURRENCY_CODE,
+        rateKey: BCV_USD_RATE_KEY,
+      };
+    }
+    return {
+      amount: fallback ?? null,
+      currency: displayBaseCode(),
+      rateKey: null,
+    };
+  }
+
+  private isUsdDisplay(): boolean {
+    return displayBaseCode() === BASE_CURRENCY.code;
+  }
+
+  /** Fondo inicial de la tarjeta, con sus bolívares exactos como conversión. */
+  get openingCard(): CashCardMoney {
+    return this.openingCardOf(this.session(), this.summary());
+  }
+
+  /** Fondo inicial de cualquier sesión, con sus bolívares exactos. */
+  openingCardOf(
+    session: CashSession | null | undefined,
+    summary: CashSummary | null | undefined,
+  ): CashCardMoney {
+    return this.cardMoney(
+      this.openingDisplayOf(session, summary),
+      this.exactOpeningBsOf(session, summary),
+    );
+  }
+
+  /** Ingresos de la tarjeta, con sus bolívares exactos como conversión. */
+  get cashInCard(): CashCardMoney {
+    return this.cardMoney(
+      this.cashInDisplay,
+      this.exactBsOf(
+        this.summary(),
+        (row) => row.cashIn,
+        (row) => row.baseCashIn,
+      ),
+    );
+  }
+
+  /** Egresos de la tarjeta, con sus bolívares exactos como conversión. */
+  get cashOutCard(): CashCardMoney {
+    return this.cardMoney(
+      this.cashOutDisplay,
+      this.exactBsOf(
+        this.summary(),
+        (row) => row.cashOut,
+        (row) => row.baseCashOut,
+      ),
+    );
+  }
+
+  /** Efectivo esperado de la tarjeta, con sus bolívares exactos. */
+  get expectedCard(): CashCardMoney {
+    return this.expectedCardOf(this.session(), this.summary());
+  }
+
+  /** Efectivo esperado de cualquier sesión, con sus bolívares exactos. */
+  expectedCardOf(
+    session: CashSession | null | undefined,
+    summary: CashSummary | null | undefined,
+  ): CashCardMoney {
+    return this.cardMoney(
+      this.expectedCashDisplayOf(session, summary),
+      this.exactExpectedBsOf(session, summary),
+    );
+  }
+
+  /** Ventas de la tarjeta (sin propinas ni vueltos), con bolívares exactos. */
+  get salesTotalCard(): CashCardMoney {
+    return this.salesTotalCardOf(this.summary());
+  }
+
+  /** Ventas de cualquier arqueo, con sus bolívares exactos. */
+  salesTotalCardOf(summary: CashSummary | null | undefined): CashCardMoney {
+    return this.cardMoney(
+      this.salesTotalDisplayOf(summary),
+      this.exactBsOf(
+        summary,
+        (row) => sumMoney([row.sales, -row.tips, -row.change]),
+        (row) => sumMoney([row.baseSales, -row.baseTips, -row.baseChange]),
+      ),
+    );
+  }
+
+  /** Propinas de la tarjeta, con sus bolívares exactos. */
+  get tipsTotalCard(): CashCardMoney {
+    return this.tipsTotalCardOf(this.summary());
+  }
+
+  /** Propinas de cualquier arqueo, con sus bolívares exactos. */
+  tipsTotalCardOf(summary: CashSummary | null | undefined): CashCardMoney {
+    return this.cardMoney(
+      this.tipsTotalDisplayOf(summary),
+      this.exactBsOf(
+        summary,
+        (row) => row.tips,
+        (row) => row.baseTips,
+      ),
+    );
+  }
+
+  /** Ventas + propinas (bruto) de la tarjeta, con bolívares exactos. */
+  get salesGrossCard(): CashCardMoney {
+    return this.salesGrossCardOf(this.summary());
+  }
+
+  /** Ventas + propinas de cualquier arqueo, con sus bolívares exactos. */
+  salesGrossCardOf(summary: CashSummary | null | undefined): CashCardMoney {
+    return this.cardMoney(
+      this.salesGrossDisplayOf(summary),
+      this.exactBsOf(
+        summary,
+        (row) => sumMoney([row.sales, -row.change]),
+        (row) => sumMoney([row.baseSales, -row.baseChange]),
+      ),
+    );
   }
 
   /**
@@ -1064,7 +1498,10 @@ export class CashPage implements OnInit, OnDestroy {
 
   /** Efectivo esperado después del movimiento, en la moneda de visualización. */
   get expectedAfterDisplay(): number | null {
-    return this.aggregateDisplay(this.expectedAfterBase);
+    const expected = this.expectedCashDisplay;
+    const movement = this.movementAmountDisplay;
+    if (expected == null || movement == null) return null;
+    return sumMoney([expected, movement]);
   }
 
   /** Efecto del movimiento en la moneda de visualización. */

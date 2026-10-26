@@ -545,10 +545,10 @@ describe('RatesService', () => {
         ],
       });
 
-      // 1000 COP * 0.22 = 220 Bs -> 220 / 876.7976 = 0.25 USD
+      // 1000 COP * 0.22 = 220 Bs -> 220 / 876.7976 = 0.250913... USD
       const payment = await service.resolvePayment(COMPANY_ID, 1000, 'COP');
 
-      expect(payment.baseAmount).toBe(0.25);
+      expect(payment.baseAmount).toBeCloseTo(220 / 876.7976, 10);
       expect(payment.exchangeRate).toBe(0.22);
     });
 
@@ -595,8 +595,11 @@ describe('RatesService', () => {
     it('expresa un monto de la moneda base en otra moneda', async () => {
       const { service } = buildService({ fetchImpl: fetchMock });
 
-      // 2 x 876,7976 = 1.753,5952 Bs: se recorta, no se redondea hacia arriba.
-      await expect(service.toCurrencyAmount(COMPANY_ID, 2, 'VES')).resolves.toBe(1753.59);
+      // 2 x 876,7976 = 1.753,5952 Bs: la conversion conserva toda la precision.
+      await expect(service.toCurrencyAmount(COMPANY_ID, 2, 'VES')).resolves.toBeCloseTo(
+        1753.5952,
+        10,
+      );
     });
 
     /**
@@ -616,7 +619,7 @@ describe('RatesService', () => {
         'BCV_EUR',
       );
 
-      expect(conversion.baseAmount).toBe(10);
+      expect(conversion.baseAmount).toBeCloseTo(9820.05 / 982.00454402, 10);
       // La tasa aplicada sigue siendo la de la moneda (1 Bs por 1 Bs).
       expect(conversion.exchangeRate).toBe(1);
     });
@@ -669,8 +672,8 @@ describe('RatesService', () => {
         ],
       });
 
-      // 1000 COP x 0,22 = 220 Bs; al cambio del euro son 0,22 USD (con la tasa
-      // activa, 876,7976, habrian sido 0,25).
+      // 1000 COP x 0,22 = 220 Bs; al cambio del euro son 0,224031... USD (con la
+      // tasa activa, 876,7976, habrian sido 0,250913...).
       const conversion = await service.resolveAmount(
         COMPANY_ID,
         1000,
@@ -678,18 +681,18 @@ describe('RatesService', () => {
         'BCV_EUR',
       );
 
-      expect(conversion.baseAmount).toBe(0.22);
+      expect(conversion.baseAmount).toBeCloseTo(220 / 982.00454402, 10);
       expect(conversion.exchangeRate).toBe(0.22);
     });
 
     it('re-expresa un monto en bolivares con la misma tasa elegida', async () => {
       const { service } = buildService({ fetchImpl: fetchMock });
 
-      // 10 USD al cambio del euro: 10 x 982,00454402 = 9.820,0454 Bs -> 9.820,04
-      // (se recorta). Con la tasa activa habrian sido 8.767,97 Bs.
+      // 10 USD al cambio del euro: 10 x 982,00454402 = 9.820,0454402 Bs, con
+      // toda la precision. Con la tasa activa habrian sido 8.767,976 Bs.
       await expect(
         service.toCurrencyAmount(COMPANY_ID, 10, 'VES', 'BCV_EUR'),
-      ).resolves.toBe(9820.04);
+      ).resolves.toBeCloseTo(9820.0454402, 8);
     });
   });
 

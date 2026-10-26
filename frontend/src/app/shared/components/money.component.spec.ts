@@ -691,6 +691,27 @@ describe('MoneyComponent (monto tal como se cargó)', () => {
     expect(text).toContain('USD · BCV $ 10.00');
   });
 
+  it('conserva los bolívares exactos en las conversiones aunque la base esté en dólares', () => {
+    load(BCV_ONLY);
+    // Caja en dólares: el monto base es $ 17,49 (el equivalente contable), pero
+    // los bolívares de la línea BCV son los Bs 15.520,00 que entraron al cajón.
+    // Reconstruirlos desde el dólar daba Bs 15.335,19.
+    fixture.componentInstance.amount.set(17.49);
+    fixture.componentInstance.entered.set(15_520);
+    fixture.componentInstance.currency.set('VES');
+    fixture.componentInstance.rateKey.set('BCV_USD');
+    fixture.componentInstance.displayRateKey.set('BCV_USD');
+    fixture.detectChanges();
+
+    const root = fixture.nativeElement as HTMLElement;
+    const base = root.querySelector('app-money span');
+    const text = root.textContent as string;
+
+    expect(base?.textContent?.trim()).toBe('$ 17.49');
+    expect(text).toContain('Bs 15,520.00');
+    expect(text).not.toContain('Bs 15,335.19');
+  });
+
   it('con una tasa forzada, manda lo cobrado en esa moneda', () => {
     load(withLocalPrice());
     // Caja: Bs 15.520,00 cobrados al BCV son $ 17,57 guardados. Volver a

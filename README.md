@@ -219,8 +219,11 @@ npm run db:clear -- --yes   # borra y crea un respaldo .db antes
   se registra como uno o varios egresos con categoría `CHANGE`, en la moneda y el método
   con que realmente se devolvió. Así el arqueo descuenta el vuelto del efectivo esperado,
   `salesTotal` queda neto de vueltos y el historial de movimientos muestra cada entrega.
-  La conversión del cobro parte del monto **redondeado a 2 decimales** que lee el cajero
-  (USD 9,35 × tasa BCV 881,87 = Bs 8.245,48), no de decimales ocultos del total.
+  La conversión del cobro conserva **todos los decimales** del equivalente en USD:
+  Bs 15.520,00 ÷ 887,30 = $ 17,491265…, y ese valor completo vuelve a dar los
+  mismos Bs 15.520,00. Los montos guardados se recortan a centavos solo al
+  persistirlos, pero el ticket conserva el monto original en bolívares y el cobro
+  (y el arqueo) usan ese monto exacto en vez de reconvertir los $ 17,49.
 - **Pedidos**: máquina de estados `PENDING → CONFIRMED → PREPARING → READY → COMPLETED`;
   cancelar exige que el pedido no tenga pagos; el pago total marca el pedido como `COMPLETED`.
   A un pedido en curso se le pueden **agregar productos** (`POST /orders/:id/items`, botón

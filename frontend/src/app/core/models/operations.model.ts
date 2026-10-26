@@ -266,6 +266,12 @@ export interface OrderItemPayload {
   menuId?: string;
   quantity: number;
   unitPrice?: number;
+  /**
+   * Precio unitario exacto en la moneda de vitrina (bolivares), tal como se le
+   * mostro al cliente. Evita que el backend reconvierta el USD recortado a
+   * centavos y pierda el monto original (Bs 15.520,00 -> Bs 15.518,88).
+   */
+  unitPriceEntered?: number;
 }
 
 export interface OrderPayload {

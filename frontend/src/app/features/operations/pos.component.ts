@@ -95,6 +95,8 @@ import {
 } from '../../core/utils/pack-unit';
 import {
   boxUnitsOf,
+  enteredBoxPriceOf,
+  enteredUnitPriceOf,
   isBoxProduct,
   loadedUnitPrice,
   soldUnitLabel,
@@ -143,6 +145,19 @@ interface PosLine {
    * En un producto suelto (o un menú) es el mismo precio de la línea.
    */
   boxPrice: number;
+  /**
+   * Precio exacto de la presentacion, en la moneda en que se cargo el catalogo
+   * (`priceEntered` / `priceCurrency`). `null` cuando el precio se cargo en USD
+   * o el registro es anterior al contexto de moneda.
+   */
+  enteredBoxPrice?: number | null;
+  /** Moneda de `enteredBoxPrice` y `enteredUnitPrice`. */
+  enteredCurrency?: string | null;
+  /**
+   * Precio exacto de UNA unidad de inventario en `enteredCurrency` (reparte el
+   * precio de la presentacion cuando no hay precio unitario explicito).
+   */
+  enteredUnitPrice?: number | null;
   /** Cantidad en unidades de inventario (el stock también está en unidades). */
   quantity: number;
   /**
@@ -1160,12 +1175,22 @@ export class PosComponent implements OnInit, OnDestroy {
    * venta elegida y la cantidad guardada en unidades de inventario.
    */
   private newLine(product: ProductOption, inputUnit: string, quantity: number): PosLine {
+    const enteredBox = enteredBoxPriceOf(product);
+    const enteredUnit = enteredUnitPriceOf(product);
+    const enteredCurrency = enteredBox?.currency ?? enteredUnit?.currency ?? null;
     const line: PosLine = {
       productId: product.id,
       menuId: null,
       name: product.name,
       unitPrice: this.unitPriceOf(product),
       boxPrice: product.price,
+      ...(enteredCurrency
+        ? {
+            enteredBoxPrice: enteredBox?.amount ?? null,
+            enteredUnitPrice: enteredUnit?.amount ?? null,
+            enteredCurrency,
+          }
+        : {}),
       inputUnit: normalizeUnit(inputUnit) || 'UND',
       quantity: 0,
       stock: product.stock,
@@ -1408,6 +1433,99 @@ export class PosComponent implements OnInit, OnDestroy {
    */
   lineTotal(line: PosLine): number {
     return mulMoney(this.salePrice(line), this.saleQuantity(line));
+  }
+
+  /**
+   * Precio exacto de la unidad de venta, en la moneda en que se cargo el
+   * catalogo, cuando esa moneda es la que se esta mostrando.
+   *
+   * Es el monto que vio el cliente (Bs 15.520,00). `null` si la linea no guarda
+   * contexto o si el precio se cargo en otra moneda (ahi no hay nada que
+   * recuperar: se usa el USD contable).
+   */
+  private enteredSalePrice(line: PosLine): number | null {
+    const currency = displayBaseCode();
+    if (!line.enteredCurrency || line.enteredCurrency !== currency) return null;
+    return (
+      (this.isBoxSaleUnit(line) ? line.enteredBoxPrice : line.enteredUnitPrice) ??
+      null
+    );
+  }
+
+  /** Total exacto de la linea en la moneda cargada (o `null` si no aplica). */
+  lineEnteredTotal(line: PosLine): number | null {
+    const price = this.enteredSalePrice(line);
+    return price == null ? null : mulMoney(price, this.saleQuantity(line));
+  }
+
+  /** Total de la linea como se pinta: recupera el monto escrito en el catalogo. */
+  lineTotalText(line: PosLine): string {
+    const entered = this.lineEnteredTotal(line);
+    if (entered != null && line.enteredCurrency) {
+      return moneyIn(entered, line.enteredCurrency);
+    }
+    return money(this.lineTotal(line));
+  }
+
+  /**
+   * Totales exactos de una venta NUEVA en la moneda de los precios (bolivares).
+   *
+   * Se calculan sobre los montos cargados en el catalogo, no sobre los USD ya
+   * recortados a centavos: Bs 15.520,00 / 887,30 = $ 17,49, y volver a
+   * multiplicar esos $ 17,49 daria Bs 15.518,88. `null` cuando no todas las
+   * lineas tienen su precio exacto en la moneda de pantalla.
+   */
+  get exactSaleTotals(): {
+    currency: string;
+    subtotal: number;
+    discount: number;
+    tax: number;
+    tip: number;
+    deliveryFee: number;
+    total: number;
+  } | null {
+    if (this.targetOrder()) return null;
+    const currency = displayBaseCode();
+    if (currency === BASE_CURRENCY.code) return null;
+
+    const lines = this.lines();
+    if (lines.length === 0) return null;
+    const lineTotals = lines.map((line) => this.lineEnteredTotal(line));
+    if (lineTotals.some((value) => value == null)) return null;
+
+    const subtotal = sumMoney(lineTotals as number[]);
+    // El descuento se captura en USD (moneda base): se lleva a la moneda de
+    // pantalla con la precision completa.
+    const discount = Math.min(
+      this.rates.fromBase(this.discountAmount, currency) ?? this.discountAmount,
+      subtotal,
+    );
+    const taxable = subtotal - discount;
+    const tax = mulMoney(taxable, (Number(this.form.taxRate) || 0) / 100);
+    const tip = this.form.tipEnabled
+      ? mulMoney(taxable, (Number(this.form.tipRate) || 0) / 100)
+      : 0;
+    const deliveryFee = this.enteredDeliveryFee(currency);
+
+    return {
+      currency,
+      subtotal,
+      discount,
+      tax,
+      tip,
+      deliveryFee,
+      total: sumMoney([subtotal, -discount, tax, tip, deliveryFee]),
+    };
+  }
+
+  /** Costo de delivery exacto en `currency` (monto escrito si ya viene en ella). */
+  private enteredDeliveryFee(currency: string): number {
+    if (this.form.type !== 'DELIVERY') return 0;
+    const amount = Number(this.form.deliveryFee) || 0;
+    if (!(amount > 0)) return 0;
+    const written = this.form.deliveryFeeCurrency || BASE_CURRENCY.code;
+    if (written === currency) return amount;
+    return this.rates.fromBase(this.deliveryFeeAmount, currency) ?? this.deliveryFeeAmount;
   }
 
   /** Unidades totales del carrito (se muestra en la cabecera). */
@@ -1889,13 +2007,49 @@ export class PosComponent implements OnInit, OnDestroy {
    */
   get chargeAmount(): number {
     const bill = this.bill;
+    const order = this.targetOrder();
+    const currency = this.charge.currency || BASE_CURRENCY.code;
+
+    // Saldo de un pedido ya abierto: cuando no se agregan lineas se cobra el
+    // monto congelado en bolivares (15520), no el USD recortado (17,49).
+    if (order && this.lines().length === 0) {
+      const exact = this.orderSaleBalance(order);
+      if (exact != null && currency === order.priceCurrency) return exact;
+    }
+
+    // Venta nueva: se cobra el total exacto calculado sobre los precios
+    // cargados en el catalogo (15520 Bs), sin pasar por el USD recortado.
+    const exactSale = this.exactSaleTotals;
+    if (exactSale && currency === exactSale.currency) return exactSale.total;
+
     return payableAmount(
       this.rates.saleChargeAmount(
         sumMoney([bill.total, -bill.paid]),
-        this.charge.currency,
+        currency,
       ),
-      this.charge.currency,
+      currency,
     );
+  }
+
+  /**
+   * Saldo de un pedido en la moneda de su ticket, con el monto original en
+   * bolivares y la tasa congelada. `null` en pedidos sin snapshot (precio
+   * cargado en USD): ahi el USD guardado es el exacto.
+   */
+  private orderSaleBalance(order: Order | null | undefined): number | null {
+    const total = this.saleEntered(order, 'total');
+    const rate = order?.priceRate;
+    if (total == null || rate == null) return null;
+    return Math.max(
+      0,
+      sumMoney([total, -mulMoney(order?.paidAmount ?? 0, rate)]),
+    );
+  }
+
+  /** Total exacto de la venta en la moneda de los precios (o `null`). */
+  private exactSaleTotal(): number | null {
+    const sale = this.exactSaleTotals;
+    return sale ? sale.total : null;
   }
 
   /**
@@ -1917,6 +2071,13 @@ export class PosComponent implements OnInit, OnDestroy {
    * moneda que el total que se lee arriba.
    */
   get displayTotal(): number {
+    const exact = this.exactSaleTotal();
+    if (exact != null) return exact;
+    const order = this.targetOrder();
+    const orderExact = this.orderSaleBalance(order);
+    if (orderExact != null && displayBaseCode() === order?.priceCurrency) {
+      return orderExact;
+    }
     return this.rates.displayAmount(this.bill.total);
   }
 
@@ -1954,7 +2115,13 @@ export class PosComponent implements OnInit, OnDestroy {
 
   /** Total del pedido expresado en USD con la tasa de cobro. */
   get mixedTargetBase(): number {
-    return this.rates.saleChargeAmount(this.bill.balance, BASE_CURRENCY.code);
+    const display = this.displayTotal;
+    const code = displayBaseCode();
+    if (code === BASE_CURRENCY.code) return display;
+    return (
+      this.rates.toBase(display, code, this.chargeRateKey()) ??
+      this.rates.saleChargeAmount(this.bill.balance, BASE_CURRENCY.code)
+    );
   }
 
   /**
@@ -1992,10 +2159,7 @@ export class PosComponent implements OnInit, OnDestroy {
 
   /** Total del pedido en la moneda que se lee en pantalla. */
   get mixedTargetDisplay(): number {
-    return this.rates.saleChargeAmount(
-      this.bill.balance,
-      displayBaseCode(),
-    );
+    return this.displayTotal;
   }
 
   /** Lo que queda cubierto después de descontar el vuelto. */
@@ -2423,12 +2587,25 @@ export class PosComponent implements OnInit, OnDestroy {
     // `quantity`/`unitPrice` viajan en unidades de inventario —una caja de 24 va
     // como 24 unidades sueltas—, que es como el backend descuenta el stock y como
     // quedan guardadas las lineas del pedido.
+    const entered = this.chargeUnitPriceEntered(line);
     return {
       ...(line.productId ? { productId: line.productId } : {}),
       ...(line.menuId ? { menuId: line.menuId } : {}),
       quantity: line.quantity,
       unitPrice: this.chargeUnitPrice(line),
+      ...(entered != null ? { unitPriceEntered: entered } : {}),
     };
+  }
+
+  /**
+   * Precio unitario exacto que viaja al pedido (en la moneda de vitrina), por
+   * unidad de inventario. Se calcula sobre el monto cargado en el catalogo
+   * (`enteredBoxPrice`/`enteredUnitPrice`), no sobre el USD recortado.
+   */
+  private chargeUnitPriceEntered(line: PosLine): number | null {
+    const price = this.enteredSalePrice(line);
+    if (price == null || line.quantity <= 0) return null;
+    return divMoney(mulMoney(price, this.saleQuantity(line)), line.quantity);
   }
 
   /**
@@ -2449,12 +2626,18 @@ export class PosComponent implements OnInit, OnDestroy {
   private payOrder(order: Order, visibleCharge?: number | null): void {
     const mixed = this.charge.method === 'MIXED';
     const currency = mixed ? BASE_CURRENCY.code : this.charge.currency || BASE_CURRENCY.code;
-    // El cobro se calcula desde el saldo en USD con la tasa oficial del BCV. Al
-    // crear la venta se conserva el monto visible antes del redondeo.
+    // El cobro se calcula desde el saldo en USD con la tasa oficial del BCV. Si
+    // el pedido guarda su ticket en bolivares se usa ese monto exacto: Bs
+    // 15.520,00 no se vuelve a derivar de los $ 17,49 recortados.
+    const exactOrder = this.orderSaleBalance(order);
+    const exact =
+      exactOrder != null && currency === order.priceCurrency
+        ? exactOrder
+        : visibleCharge;
     const amount = payableAmount(
       mixed
         ? this.mixedAppliedBase
-        : visibleCharge ?? this.rates.chargeAmount(this.balance(order), currency),
+        : exact ?? this.rates.chargeAmount(this.balance(order), currency),
       currency,
     );
 

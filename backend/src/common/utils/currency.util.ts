@@ -15,7 +15,7 @@ import {
   LOCAL_CURRENCY_CODE,
   normalizeCurrencyCode,
 } from '../constants/currencies';
-import { round2, truncMoney } from './money.util';
+import { round2 } from './money.util';
 
 /** Tasas necesarias para convertir un monto a la moneda base. */
 export interface ConversionRates {
@@ -51,9 +51,12 @@ function positiveOrNull(value: number | null | undefined): number | null {
 /**
  * Monto a convertir, con TODA su precision.
  *
- * No se recorta antes de operar: el recorte ocurre una sola vez sobre el
- * resultado (`truncMoney`). Recortar la entrada hacia que Bs 876,7976 al cambio
- * de 876,7976 dieran 0,99 USD en vez de 1,00.
+ * No se recorta antes de operar ni despues de convertir: la conversion es una
+ * operacion matematica y solo se recorta al guardar el movimiento en caja
+ * (`toCents`) o al pintarlo. Recortar el equivalente en USD antes de volver a
+ * multiplicarlo por la tasa hacia que Bs 15.520,00 al BCV (887,30) se cobraran
+ * como $ 17,49 y al reconvertirlos dieran Bs 15.518,88 en vez de los 15.520,00
+ * originales.
  */
 function amountOf(value: number | null | undefined): number {
   const parsed = typeof value === 'string' ? Number(value) : Number(value ?? 0);
@@ -78,7 +81,7 @@ export function convertToBase(
     return {
       currency: code,
       exchangeRate: bsPerUsd,
-      baseAmount: truncMoney(value),
+      baseAmount: value,
       unitsPerBase: 1,
     };
   }
@@ -88,9 +91,9 @@ export function convertToBase(
     return {
       currency: code,
       exchangeRate: 1,
-      // Se divide con toda la precision y se recorta una sola vez: redondear el
-      // equivalente en USD era lo que convertia Bs 15.520,00 en 17,57.
-      baseAmount: truncMoney(value / bsPerUsd),
+      // Se divide con toda la precision: Bs 15.520,00 / 887,30 = 17,491265...
+      // (no 17,49). El recorte ocurre una sola vez al persistir el movimiento.
+      baseAmount: value / bsPerUsd,
       // Unidades de bolivares por 1 USD.
       unitsPerBase: bsPerUsd,
     };
@@ -102,7 +105,7 @@ export function convertToBase(
   return {
     currency: code,
     exchangeRate: bsPerCurrency,
-    baseAmount: truncMoney((value * bsPerCurrency) / bsPerUsd),
+    baseAmount: (value * bsPerCurrency) / bsPerUsd,
     // Unidades de `currency` por 1 USD (puente por el bolivar).
     unitsPerBase: bsPerUsd / bsPerCurrency,
   };
@@ -110,7 +113,11 @@ export function convertToBase(
 
 /**
  * Inverso: expresa un monto de la moneda base (USD) en `currency`.
- * Devuelve `null` cuando falta la tasa necesaria.
+ *
+ * Conserva toda la precision para que la ida y vuelta sea exacta cuando el
+ * llamador tiene el monto completo (15.520 -> 17,491265... -> 15.520). El
+ * recorte a los decimales de la moneda corresponde a la vista o al cobro fisico,
+ * no a esta conversion.
  */
 export function convertFromBase(
   baseAmount: number | null | undefined,
@@ -121,14 +128,14 @@ export function convertFromBase(
   const code = normalizeCurrencyCode(currency);
   const bsPerUsd = positiveOrNull(rates.bsPerUsd);
 
-  if (code === BASE_CURRENCY_CODE) return truncMoney(value);
+  if (code === BASE_CURRENCY_CODE) return value;
   if (code === LOCAL_CURRENCY_CODE) {
-    return bsPerUsd ? truncMoney(value * bsPerUsd) : null;
+    return bsPerUsd ? value * bsPerUsd : null;
   }
 
   const bsPerCurrency = positiveOrNull(rates.bsPerCurrency);
   if (!bsPerCurrency || !bsPerUsd) return null;
-  return truncMoney((value * bsPerUsd) / bsPerCurrency);
+  return (value * bsPerUsd) / bsPerCurrency;
 }
 
 /** Tasa (bolivares por unidad) con la que se guarda un pago en `currency`. */

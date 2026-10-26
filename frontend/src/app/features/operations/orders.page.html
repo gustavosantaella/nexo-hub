@@ -540,7 +540,7 @@
                         [(ngModel)]="line.unitPrice"
                       />
                     </td>
-                    <td class="text-right"><app-money [amount]="lineTotal(line)" alignEnd="true" /></td>
+                    <td class="text-right font-medium">{{ lineTotalText(line) }}</td>
                     <td class="text-right">
                       <button
                         type="button"
@@ -1305,7 +1305,7 @@
                         [(ngModel)]="line.unitPrice"
                       />
                     </td>
-                    <td class="text-right"><app-money [amount]="lineTotal(line)" alignEnd="true" /></td>
+                    <td class="text-right font-medium">{{ lineTotalText(line) }}</td>
                     <td class="text-right">
                       <button
                         type="button"

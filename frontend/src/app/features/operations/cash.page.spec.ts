@@ -726,12 +726,12 @@ describe('CashPage (fondo inicial multimoneda)', () => {
     ]);
     fixture.detectChanges();
 
-    // Las tarjetas y los totales salen del arqueo del backend, al BCV (905).
-    const expectedInBs = 17.57 * BS_PER_USD;
-    expect(page.cashInDisplay).toBeCloseTo(expectedInBs, 6);
-    expect(page.expectedCashDisplay).toBeCloseTo(expectedInBs, 6);
-    expect(page.salesTotalDisplay).toBeCloseTo(expectedInBs, 6);
-    expect(page.byMethodRows[0].inDisplay).toBeCloseTo(expectedInBs, 6);
+    // Las tarjetas conservan el efectivo FÍSICO que entró al cajón: los Bs
+    // 15.520,00 cobrados, no la reconversión de los $ 17,57 guardados.
+    expect(page.cashInDisplay).toBe(15_520);
+    expect(page.expectedCashDisplay).toBe(15_520);
+    expect(page.salesTotalDisplay).toBe(15_520);
+    expect(page.byMethodRows[0].inDisplay).toBe(15_520);
     // El desglose por moneda sigue en los bolívares cobrados.
     expect(page.currencyNetDisplay(ves)).toBe(15_520);
 
@@ -745,6 +745,56 @@ describe('CashPage (fondo inicial multimoneda)', () => {
     expect(page.salesTotalDisplay).toBe(17.57);
     expect(page.byMethodRows[0].inDisplay).toBe(17.57);
     expect(page.expectedCashDisplay).toBe(page.expectedCash);
+
+    // Las conversiones de las tarjetas usan los bolívares físicos, no el dólar
+    // recortado: $ 17,57 al BCV daban Bs 15.900,85, no los Bs 15.520,00
+    // cobrados.
+    expect(page.cashInCard).toEqual({
+      amount: 15_520,
+      currency: 'VES',
+      rateKey: 'BCV_USD',
+    });
+    expect(page.expectedCard.amount).toBe(15_520);
+    expect(page.salesTotalCard.amount).toBe(15_520);
+
+    // La tarjeta de Ingresos pinta el equivalente exacto, no la reconversión
+    // desde el dólar guardado ($ 17,57 al BCV darían Bs 15.900,85).
+    const incomeCard = Array.from(
+      (fixture.nativeElement as HTMLElement).querySelectorAll('app-stat-card'),
+    ).find((card) => card.textContent?.includes('Ingresos'));
+    expect(incomeCard?.textContent).toContain('$ 17.57');
+    expect(incomeCard?.textContent).toContain('Bs 15,520.00');
+    expect(incomeCard?.textContent).not.toContain('Bs 15,900.85');
+
+    // Las dos tablas agregadas usan el mismo criterio: el monto base sigue en
+    // dólares ($ 17,57) y la conversión del BCV conserva los Bs 15.520,00 que
+    // entraron al cajón, no los que salen del dólar recortado.
+    expect(page.byMethodRows[0].inCard).toEqual({
+      amount: 15_520,
+      currency: 'VES',
+      rateKey: 'BCV_USD',
+    });
+    expect(page.currencyNetCard(ves)).toEqual({
+      amount: 15_520,
+      currency: 'VES',
+      rateKey: 'BCV_USD',
+    });
+
+    const root = fixture.nativeElement as HTMLElement;
+    const sectionText = (heading: string): string =>
+      Array.from(root.querySelectorAll('.card')).find((card) =>
+        card.textContent?.includes(heading),
+      )?.textContent ?? '';
+
+    const methodText = sectionText('Desglose por método');
+    expect(methodText).toContain('$ 17.57');
+    expect(methodText).toContain('Bs 15,520.00');
+    expect(methodText).not.toContain('Bs 15,900.85');
+
+    const currencyText = sectionText('Desglose por moneda');
+    expect(currencyText).toContain('$ 17.57');
+    expect(currencyText).toContain('Bs 15,520.00');
+    expect(currencyText).not.toContain('Bs 15,900.85');
 
     page.closeForm.countedAmount = page.expectedCash;
     expect(page.closeDifference).toBe(0);

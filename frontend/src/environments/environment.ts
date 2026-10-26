@@ -15,6 +15,6 @@
 export const environment = {
   production: false,
   mediaUrl: 'http://localhost:3000/media',
-  apiUrl: '/api',
+  apiUrl: 'http://localhost:3000/api',
   appName: 'Nexo Hub',
 };

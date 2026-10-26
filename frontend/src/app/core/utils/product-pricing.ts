@@ -28,6 +28,9 @@ interface Presentation {
 
 /** Presentacion con el contexto de moneda del precio unitario (opcional). */
 interface UnitPriceDetail extends Presentation {
+  priceEntered?: number | null;
+  priceCurrency?: string | null;
+  priceRateKey?: string | null;
   unitPriceEntered?: number | null;
   unitPriceCurrency?: string | null;
   unitPriceRateKey?: string | null;
@@ -57,6 +60,57 @@ export function unitPriceOf(product: Presentation): number {
     if (Number.isFinite(explicit) && explicit > 0) return explicit;
   }
   return divMoney(product.price, boxUnitsOf(product));
+}
+
+/** Monto exacto cargado a mano en el catalogo, con su moneda. */
+export interface EnteredPrice {
+  amount: number;
+  currency: string;
+}
+
+/**
+ * Precio de la presentacion completa TAL COMO se escribio en el catalogo.
+ *
+ * El monto guardado en USD pierde los decimales que no llegan a un centavo
+ * (Bs 15.520,00 al BCV 887,30 son $ 17,49); con este contexto el POS conserva
+ * los Bs 15.520,00 exactos para el ticket y el cobro.
+ *
+ * `null` cuando el catalogo no guardo el monto escrito (precio cargado en USD o
+ * registro anterior a `priceEntered`): en ese caso el USD guardado es el exacto.
+ */
+export function enteredBoxPriceOf(product: UnitPriceDetail): EnteredPrice | null {
+  const amount = Number(product.priceEntered ?? 0);
+  if (!Number.isFinite(amount) || amount <= 0) return null;
+  const currency = String(product.priceCurrency ?? BASE_CURRENCY_CODE).toUpperCase();
+  if (currency === BASE_CURRENCY_CODE) return null;
+  return { amount, currency };
+}
+
+/**
+ * Precio de UNA unidad suelta tal como se escribio en el catalogo.
+ *
+ * Usa `unitPriceEntered` cuando el operador definio un precio unitario propio;
+ * si no, reparte el precio escrito de la presentacion entre sus unidades. En un
+ * producto suelto equivale al precio de la presentacion.
+ */
+export function enteredUnitPriceOf(product: UnitPriceDetail): EnteredPrice | null {
+  const units = boxUnitsOf(product);
+  if (units > 1) {
+    const explicit = Number(product.unitPrice ?? 0);
+    const entered = Number(product.unitPriceEntered ?? 0);
+    if (Number.isFinite(explicit) && explicit > 0) {
+      if (!Number.isFinite(entered) || entered <= 0) return null;
+      const currency = String(
+        product.unitPriceCurrency ?? product.priceCurrency ?? BASE_CURRENCY_CODE,
+      ).toUpperCase();
+      if (currency === BASE_CURRENCY_CODE) return null;
+      return { amount: entered, currency };
+    }
+  }
+
+  const box = enteredBoxPriceOf(product);
+  if (!box) return null;
+  return { amount: divMoney(box.amount, units), currency: box.currency };
 }
 
 /**

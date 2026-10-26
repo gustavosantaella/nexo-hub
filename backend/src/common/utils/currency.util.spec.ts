@@ -20,7 +20,7 @@ describe('currency.util', () => {
       });
     });
 
-    it('convierte bolivares a dolares con la tasa por USD', () => {
+    it('convierte bolivares a dolares con la tasa por USD sin recortar', () => {
       const result = convertToBase(876.7976, 'VES', RATES);
 
       expect(result?.currency).toBe('VES');
@@ -30,20 +30,40 @@ describe('currency.util', () => {
       expect(result?.unitsPerBase).toBe(876.7976);
     });
 
+    it('conserva todos los decimales del equivalente en USD', () => {
+      // 15.520 Bs / 887,30 = 17,491265637326... No debe quedar en 17,49: al
+      // volver a bolivares tiene que dar exactamente los 15.520 originales.
+      const result = convertToBase(15_520, 'VES', {
+        bsPerUsd: 887.3,
+        bsPerCurrency: 1,
+      });
+
+      expect(result?.baseAmount).toBeCloseTo(17.4912656373267, 10);
+      expect(
+        convertFromBase(result!.baseAmount, 'VES', {
+          bsPerUsd: 887.3,
+          bsPerCurrency: 1,
+        }),
+      ).toBeCloseTo(15_520, 8);
+    });
+
     it('convierte una moneda con tasa propia pasando por el bolivar', () => {
-      // 1000 COP * 0.22 Bs = 220 Bs; 220 / 876.7976 = 0.25 USD
+      // 1000 COP * 0.22 Bs = 220 Bs; 220 / 876.7976 = 0.250913... USD
       const result = convertToBase(1000, 'COP', COP_RATES);
 
       expect(result?.currency).toBe('COP');
       expect(result?.exchangeRate).toBe(0.22);
-      expect(result?.baseAmount).toBe(0.25);
+      expect(result?.baseAmount).toBeCloseTo(220 / 876.7976, 10);
       // 1 USD = 876.7976 / 0.22 = 3985.44 COP.
       expect(result?.unitsPerBase).toBeCloseTo(876.7976 / 0.22, 6);
     });
 
-    it('normaliza el codigo de la moneda y redondea a 2 decimales', () => {
+    it('normaliza el codigo de la moneda sin recortar el resultado', () => {
       expect(convertToBase(10, ' cop ', COP_RATES)?.currency).toBe('COP');
-      expect(convertToBase(3, 'VES', RATES)?.baseAmount).toBe(0);
+      expect(convertToBase(3, 'VES', RATES)?.baseAmount).toBeCloseTo(
+        3 / 876.7976,
+        12,
+      );
     });
 
     it('devuelve null cuando falta la tasa de la moneda', () => {
@@ -64,15 +84,15 @@ describe('currency.util', () => {
       expect(convertFromBase(12.5, 'USD', RATES)).toBe(12.5);
     });
 
-    it('expresa un monto en dolares como bolivares', () => {
-      // 2 * 876.7976 = 1753.5952 Bs: se recorta (nunca se redondea hacia arriba)
-      // porque es el monto que se lee y se cobra en caja.
-      expect(convertFromBase(2, 'VES', RATES)).toBe(1753.59);
+    it('expresa un monto en dolares como bolivares sin recortar', () => {
+      // 2 * 876.7976 = 1753.5952 Bs: la conversion conserva toda la precision y
+      // solo la vista decide cuantos decimales ensenar.
+      expect(convertFromBase(2, 'VES', RATES)).toBeCloseTo(1753.5952, 10);
     });
 
     it('expresa un monto en dolares en otra moneda configurada', () => {
-      // 5 USD * 876.7976 = 4383.99 Bs; / 0.22 = 19927.2181... -> 19927.21 COP
-      expect(convertFromBase(5, 'COP', COP_RATES)).toBe(19927.21);
+      // 5 USD * 876.7976 = 4383.99 Bs; / 0.22 = 19927.2181... COP
+      expect(convertFromBase(5, 'COP', COP_RATES)).toBeCloseTo(19927.2181818, 6);
     });
 
     it('devuelve null cuando falta la tasa', () => {

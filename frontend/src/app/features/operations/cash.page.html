@@ -178,8 +178,9 @@
           [compact]="false"
           label="Fondo inicial"
           [value]="session()?.openingAmount ?? 0"
-          [entered]="openingDisplay"
-          [currency]="moneyBaseCode()"
+          [entered]="openingCard.amount"
+          [currency]="openingCard.currency"
+          [rateKey]="openingCard.rateKey"
           icon="wallet"
           [isCurrency]="true"
           [hint]="openingStatHint"
@@ -188,8 +189,9 @@
           [compact]="false"
           label="Ingresos"
           [value]="summary()?.cashIn ?? 0"
-          [entered]="cashInDisplay"
-          [currency]="moneyBaseCode()"
+          [entered]="cashInCard.amount"
+          [currency]="cashInCard.currency"
+          [rateKey]="cashInCard.rateKey"
           icon="trend-up"
           tone="emerald"
           [isCurrency]="true"
@@ -198,8 +200,9 @@
           [compact]="false"
           label="Egresos"
           [value]="summary()?.cashOut ?? 0"
-          [entered]="cashOutDisplay"
-          [currency]="moneyBaseCode()"
+          [entered]="cashOutCard.amount"
+          [currency]="cashOutCard.currency"
+          [rateKey]="cashOutCard.rateKey"
           icon="trend-down"
           tone="rose"
           [isCurrency]="true"
@@ -208,8 +211,9 @@
           [compact]="false"
           label="Efectivo esperado"
           [value]="expectedCash"
-          [entered]="expectedCashDisplay"
-          [currency]="moneyBaseCode()"
+          [entered]="expectedCard.amount"
+          [currency]="expectedCard.currency"
+          [rateKey]="expectedCard.rateKey"
           icon="money"
           tone="brand"
           [isCurrency]="true"
@@ -218,8 +222,9 @@
           [compact]="false"
           label="Ventas"
           [value]="salesTotal"
-          [entered]="salesTotalDisplay"
-          [currency]="moneyBaseCode()"
+          [entered]="salesTotalCard.amount"
+          [currency]="salesTotalCard.currency"
+          [rateKey]="salesTotalCard.rateKey"
           icon="receipt"
           tone="sky"
           [isCurrency]="true"
@@ -229,8 +234,9 @@
           [compact]="false"
           label="Propinas"
           [value]="tipsTotal"
-          [entered]="tipsTotalDisplay"
-          [currency]="moneyBaseCode()"
+          [entered]="tipsTotalCard.amount"
+          [currency]="tipsTotalCard.currency"
+          [rateKey]="tipsTotalCard.rateKey"
           icon="money"
           tone="amber"
           [isCurrency]="true"
@@ -261,24 +267,27 @@
                     <td class="text-right text-emerald-600">
                       <app-money displayRateKey="BCV_USD"
                         [amount]="row.in"
-                        [entered]="row.inDisplay"
-                        [currency]="moneyBaseCode()"
+                        [entered]="row.inCard.amount"
+                        [currency]="row.inCard.currency"
+                        [rateKey]="row.inCard.rateKey"
                         alignEnd="true"
                       />
                     </td>
                     <td class="text-right text-rose-600">
                       <app-money displayRateKey="BCV_USD"
                         [amount]="row.out"
-                        [entered]="row.outDisplay"
-                        [currency]="moneyBaseCode()"
+                        [entered]="row.outCard.amount"
+                        [currency]="row.outCard.currency"
+                        [rateKey]="row.outCard.rateKey"
                         alignEnd="true"
                       />
                     </td>
                     <td class="text-right font-medium">
                       <app-money displayRateKey="BCV_USD"
                         [amount]="row.net"
-                        [entered]="row.netDisplay"
-                        [currency]="moneyBaseCode()"
+                        [entered]="row.netCard.amount"
+                        [currency]="row.netCard.currency"
+                        [rateKey]="row.netCard.rateKey"
                         alignEnd="true"
                       />
                     </td>
@@ -334,8 +343,9 @@
                     <td class="text-right font-medium">
                       <app-money displayRateKey="BCV_USD"
                         [amount]="row.baseNet"
-                        [entered]="currencyNetDisplay(row)"
-                        [currency]="moneyBaseCode()"
+                        [entered]="currencyNetCard(row).amount"
+                        [currency]="currencyNetCard(row).currency"
+                        [rateKey]="currencyNetCard(row).rateKey"
                         alignEnd="true"
                       />
                     </td>
@@ -497,8 +507,9 @@
                   <td class="text-right">
                     <app-money displayRateKey="BCV_USD"
                       [amount]="row.openingAmount"
-                      [entered]="openingDisplayOf(row, null)"
-                      [currency]="moneyBaseCode()"
+                      [entered]="openingCardOf(row, null).amount"
+                      [currency]="openingCardOf(row, null).currency"
+                      [rateKey]="openingCardOf(row, null).rateKey"
                       alignEnd="true"
                     />
                     @if (openingFundHint(row); as hint) {
@@ -933,8 +944,9 @@
                 <app-money
                   displayRateKey="BCV_USD"
                   [amount]="expectedCash"
-                  [entered]="expectedCashDisplay"
-                  [currency]="moneyBaseCode()"
+                  [entered]="expectedCard.amount"
+                  [currency]="expectedCard.currency"
+                  [rateKey]="expectedCard.rateKey"
                   alignEnd="true"
                 />
               </dd>
@@ -1068,8 +1080,9 @@
             <span class="text-slate-500">Ventas (sin propinas)</span>
             <app-money displayRateKey="BCV_USD"
               [amount]="salesTotal"
-              [entered]="salesTotalDisplay"
-              [currency]="moneyBaseCode()"
+              [entered]="salesTotalCard.amount"
+              [currency]="salesTotalCard.currency"
+              [rateKey]="salesTotalCard.rateKey"
               alignEnd="true"
             />
           </div>
@@ -1077,8 +1090,9 @@
             <span class="text-slate-500">Propinas</span>
             <app-money displayRateKey="BCV_USD"
               [amount]="tipsTotal"
-              [entered]="tipsTotalDisplay"
-              [currency]="moneyBaseCode()"
+              [entered]="tipsTotalCard.amount"
+              [currency]="tipsTotalCard.currency"
+              [rateKey]="tipsTotalCard.rateKey"
               alignEnd="true"
             />
           </div>
@@ -1086,8 +1100,9 @@
             <span class="font-medium text-slate-600">Total cobrado por ventas</span>
             <app-money displayRateKey="BCV_USD"
               [amount]="salesGrossTotal"
-              [entered]="salesGrossDisplay"
-              [currency]="moneyBaseCode()"
+              [entered]="salesGrossCard.amount"
+              [currency]="salesGrossCard.currency"
+              [rateKey]="salesGrossCard.rateKey"
               [strong]="true"
               alignEnd="true"
             />
@@ -1103,8 +1118,9 @@
             <span class="text-slate-500">Efectivo esperado en el cajón</span>
             <app-money displayRateKey="BCV_USD"
               [amount]="expectedCash"
-              [entered]="expectedCashDisplay"
-              [currency]="moneyBaseCode()"
+              [entered]="expectedCard.amount"
+              [currency]="expectedCard.currency"
+              [rateKey]="expectedCard.rateKey"
               alignEnd="true"
             />
           </div>
@@ -1239,8 +1255,9 @@
               <p class="text-slate-500">Fondo inicial</p>
               <app-money displayRateKey="BCV_USD"
                 [amount]="detail.openingAmount"
-                [entered]="openingDisplayOf(detail, detail.summary)"
-                [currency]="moneyBaseCode()"
+                [entered]="openingCardOf(detail, detail.summary).amount"
+                [currency]="openingCardOf(detail, detail.summary).currency"
+                [rateKey]="openingCardOf(detail, detail.summary).rateKey"
               />
               @if ((detail.openingLines?.length ?? 0) > 0) {
                 <ul class="mt-1 space-y-0.5 text-[11px] text-slate-500">
@@ -1259,8 +1276,9 @@
               <p class="text-slate-500">Efectivo esperado</p>
               <app-money displayRateKey="BCV_USD"
                 [amount]="detail.expectedAmount ?? detail.summary?.expectedCash ?? 0"
-                [entered]="expectedCashDisplayOf(detail, detail.summary)"
-                [currency]="moneyBaseCode()"
+                [entered]="expectedCardOf(detail, detail.summary).amount"
+                [currency]="expectedCardOf(detail, detail.summary).currency"
+                [rateKey]="expectedCardOf(detail, detail.summary).rateKey"
               />
             </div>
             <div class="rounded-lg bg-slate-50 px-3 py-2">
@@ -1287,8 +1305,9 @@
               <p class="text-slate-500">Ventas</p>
               <app-money displayRateKey="BCV_USD"
                 [amount]="detail.summary?.salesTotal ?? 0"
-                [entered]="salesTotalDisplayOf(detail.summary)"
-                [currency]="moneyBaseCode()"
+                [entered]="salesTotalCardOf(detail.summary).amount"
+                [currency]="salesTotalCardOf(detail.summary).currency"
+                [rateKey]="salesTotalCardOf(detail.summary).rateKey"
               />
               <p class="text-[11px] text-slate-400">sin propinas</p>
             </div>
@@ -1296,8 +1315,9 @@
               <p class="text-slate-500">Propinas</p>
               <app-money displayRateKey="BCV_USD"
                 [amount]="detail.summary?.tipsTotal ?? 0"
-                [entered]="tipsTotalDisplayOf(detail.summary)"
-                [currency]="moneyBaseCode()"
+                [entered]="tipsTotalCardOf(detail.summary).amount"
+                [currency]="tipsTotalCardOf(detail.summary).currency"
+                [rateKey]="tipsTotalCardOf(detail.summary).rateKey"
               />
             </div>
             <div class="rounded-lg bg-slate-50 px-3 py-2">
