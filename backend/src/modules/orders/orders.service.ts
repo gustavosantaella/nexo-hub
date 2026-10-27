@@ -33,6 +33,7 @@ import {
   type ConsumptionPart,
 } from '../../common/utils/consumption.util';
 import {
+  PAYMENT_TOLERANCE,
   compareMoney,
   fitToBalance,
   fromCents,
@@ -1644,7 +1645,11 @@ export class OrdersService {
       // el monto aplicado nunca puede superar el saldo pendiente. Solo se
       // tolera la diferencia de redondeo de convertir a otra moneda.
       const limit = balance;
-      const baseAmount = fitToBalance(computedApplied, limit);
+      const baseAmount = fitToBalance(
+        computedApplied,
+        limit,
+        this.paymentRoundingTolerance(order),
+      );
       if (baseAmount === null) {
         throw new BadRequestException(
           `El monto aplicado (${computedApplied} USD) excede el saldo pendiente (${limit} USD)`,
@@ -1864,6 +1869,36 @@ export class OrdersService {
     }
 
     return paid.order;
+  }
+
+  /**
+   * Margen de redondeo al cobrar exactamente el ticket en bolívares.
+   *
+   * El pedido se guarda en USD recortando el precio unitario a centavos. Al
+   * vender varias unidades, la suma en USD queda hasta un centavo por unidad
+   * por debajo del monto exacto en bolívares que vio el cliente (por ejemplo,
+   * 4 unidades pueden quedar 3 centavos abajo). Cobrar ese ticket exacto en
+   * bolívares no es un sobrepago real: es el redondeo acumulado de las lineas.
+   *
+   * La misma diferencia aparece si el cliente paga ese ticket en otra moneda a
+   * la tasa oficial del BCV: Bs 6.790,00 son `$ 7,65`, aunque el pedido haya
+   * quedado en `$ 7,62`. Por eso el margen depende de las unidades del ticket y
+   * no de la moneda en que se entrega el dinero.
+   */
+  private paymentRoundingTolerance(order: {
+    priceCurrency: string | null;
+    items?: { quantity: number }[];
+  }): number {
+    if (order.priceCurrency !== LOCAL_CURRENCY_CODE) {
+      return PAYMENT_TOLERANCE;
+    }
+    const units = (order.items ?? []).reduce(
+      (total, item) => total + Math.max(0, Math.trunc(item.quantity)),
+      0,
+    );
+    // El precio unitario se recorta a centavos: a lo sumo un centavo de dolar
+    // por unidad de diferencia con el monto exacto en bolivares.
+    return money.add(PAYMENT_TOLERANCE, money.mul(0.01, units));
   }
 
   // =========================================================================

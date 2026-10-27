@@ -104,6 +104,20 @@ const RATES: RatesSnapshot = {
   reference: null,
 };
 
+/** Tasas de la empresa con la tasa oficial del dólar del BCV indicada. */
+function ratesAtBcv(usd: number): RatesSnapshot {
+  return {
+    ...RATES,
+    bcv: {
+      ...RATES.bcv,
+      current: { ...RATES.bcv.current, usd },
+    },
+    rates: RATES.rates.map((item) =>
+      item.key === 'BCV_USD' ? { ...item, rate: usd } : item,
+    ),
+  };
+}
+
 /** Catalogo de la venta: un producto suelto y una caja de 24 a $ 24. */
 const PRODUCTS: ProductOption[] = [
   {
@@ -1784,6 +1798,145 @@ describe('PosComponent (vista de cajero)', () => {
     text = fixture.nativeElement.textContent as string;
     expect(text).toContain('Ya en la mesa');
     expect(text).toContain('Cafe pasado');
+  });
+
+  /**
+   * El pedido guardado en bolívares conserva el ticket congelado al abrir la
+   * tarjeta de cobro: Bs 6.790,00, no el USD recortado por línea (7,62)
+   * reconvertido a la tasa de vitrina de hoy (Bs 7.391,40). Ese mismo ticket,
+   * valorado a la tasa oficial del BCV, es el monto que se cobra en dólares:
+   * Bs 6.790,00 / 887,3020 = $ 7,65.
+   */
+  it('cobra un pedido guardado con su ticket exacto, no el USD reconvertido', () => {
+    setDisplayCurrency({
+      code: 'VES',
+      label: 'Bolívares',
+      symbol: 'Bs',
+      decimals: 2,
+      bsPerUnit: 1,
+      bsPerUsd: 970,
+    });
+    const { fixture, pos } = mount();
+
+    // Tasa oficial del día del cobro: Bs 887,3020 por dólar.
+    TestBed.inject(RatesService).load();
+    http.expectOne(`${API}/rates`).flush(ratesAtBcv(887.302));
+
+    const items: OrderItem[] = [
+      {
+        id: 'i1',
+        orderId: 'o10',
+        productId: 'p1',
+        name: 'Caja Solera',
+        quantity: 2,
+        unitPrice: 1.63,
+        unitPriceEntered: 1_455,
+        total: 3.26,
+      },
+      {
+        id: 'i2',
+        orderId: 'o10',
+        productId: null,
+        menuId: 'm1',
+        name: 'Americana',
+        quantity: 2,
+        unitPrice: 2.18,
+        unitPriceEntered: 1_940,
+        total: 4.36,
+      },
+    ];
+    const savedOrder = order({
+      id: 'o10',
+      code: 'PED-20261027-0003',
+      items,
+      subtotal: 7.62,
+      total: 7.62,
+      priceCurrency: 'VES',
+      priceRate: 970,
+      priceBreakdown: {
+        subtotal: 6_790,
+        discount: 0,
+        tax: 0,
+        tip: 0,
+        deliveryFee: 0,
+        total: 6_790,
+      },
+    });
+
+    pos.startAddToOrder(savedOrder);
+    fixture.detectChanges();
+
+    // El panel muestra el desglose exacto del ticket, no una revalorización.
+    expect(pos.targetBill).toEqual(
+      jasmine.objectContaining({
+        currency: 'VES',
+        subtotal: 6_790,
+        total: 6_790,
+        paid: 0,
+        balance: 6_790,
+      }),
+    );
+    expect(pos.displayTotal).toBe(6_790);
+    expect(pos.billTotalText).toBe('Bs 6,790.00');
+
+    // En bolívares se cobra el ticket; en USD, ese mismo ticket al BCV
+    // (6.790 / 887,302 = 7,652), no el saldo contable recortado (7,62) ni el
+    // precio inflado por la tasa de vitrina ($ 8,33).
+    pos.charge.currency = 'VES';
+    expect(pos.chargeAmount).toBe(6_790);
+    pos.charge.currency = 'USD';
+    expect(pos.chargeAmount).toBe(7.65);
+    expect(pos.mixedTargetBase).toBeCloseTo(7.65, 2);
+
+    const text = fixture.nativeElement.textContent as string;
+    expect(text).toContain('Bs 6,790.00');
+    expect(text).not.toContain('Bs 7,391.40');
+    // Cada línea repite el precio con el que se vendió, no el USD recortado.
+    expect(text).toContain('Bs 1,455.00 c/u');
+    expect(text).toContain('Bs 1,940.00 c/u');
+    expect(text).not.toContain('Bs 1,581.10 c/u');
+
+    // Al agregar una línea nueva se conserva el ticket anterior y se suma su
+    // precio exacto (Bs 1.000,00), sin revalorizar las líneas ya guardadas.
+    const extra: ProductOption = {
+      ...PRODUCTS[0],
+      id: 'p3',
+      sku: 'EXTRA-01',
+      name: 'Extra',
+      price: 1.03,
+      priceEntered: 1_000,
+      priceCurrency: 'VES',
+      stock: 10,
+      unitsPerBox: 1,
+    };
+    pos.addProduct(extra);
+    fixture.detectChanges();
+
+    expect(pos.targetBill).toEqual(
+      jasmine.objectContaining({
+        subtotal: 7_790,
+        total: 7_790,
+        balance: 7_790,
+      }),
+    );
+    pos.charge.currency = 'VES';
+    expect(pos.chargeAmount).toBe(7_790);
+    expect(fixture.nativeElement.textContent as string).toContain('Bs 7,790.00');
+
+    // Cobrado el ticket (el backend aplica $ 7,62 aunque el cliente entregue el
+    // equivalente al BCV), el listado no puede quedar con saldo negativo ni
+    // decir que se pagaron más bolívares que el total del ticket.
+    const paidOrder = order({
+      ...savedOrder,
+      paidAmount: 7.62,
+      paymentStatus: 'PAID',
+    });
+    expect(pos.saleBalanceMoney(paidOrder)).toBe('Bs 0.00');
+    pos.startAddToOrder(paidOrder);
+    fixture.detectChanges();
+    expect(pos.targetBill).toEqual(
+      jasmine.objectContaining({ total: 6_790, paid: 6_790, balance: 0 }),
+    );
   });
 
   /**

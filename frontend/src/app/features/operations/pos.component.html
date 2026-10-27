@@ -383,7 +383,7 @@
         <span class="block text-[10px] font-semibold uppercase tracking-wide text-white/70">
           Cobro
         </span>
-        <span class="block text-sm font-semibold">{{ money(bill.total) }}</span>
+        <span class="block text-sm font-semibold">{{ billTotalText }}</span>
       </span>
     </button>
 
@@ -489,7 +489,7 @@
               </span>
               <span class="block text-xs font-semibold text-amber-800">
                 Cantidad: <span class="text-amber-900">{{ item.quantity }}</span> ·
-                {{ money(item.unitPrice) }} c/u · ya en el pedido
+                {{ orderItemUnitMoney(order, item) }} c/u · ya en el pedido
               </span>
             </span>
             <span class="flex flex-none flex-col items-end gap-1">
@@ -671,6 +671,52 @@
         }
 
         <div class="space-y-1 text-sm">
+          @if (targetBill; as saved) {
+          <div class="flex items-center justify-between">
+            <span class="text-slate-500">Subtotal</span>
+            <span>{{ amountIn(saved.subtotal, saved.currency) }}</span>
+          </div>
+          @if (saved.discount > 0) {
+          <div class="flex items-center justify-between">
+            <span class="text-slate-500">Descuento</span>
+            <span class="font-medium text-rose-600">− {{ amountIn(saved.discount, saved.currency) }}</span>
+          </div>
+          }
+          @if (saved.tax > 0) {
+          <div class="flex items-center justify-between">
+            <span class="text-slate-500">IGV</span>
+            <span>{{ amountIn(saved.tax, saved.currency) }}</span>
+          </div>
+          }
+          @if (saved.tip > 0) {
+          <div class="flex items-center justify-between">
+            <span class="text-slate-500">Propina</span>
+            <span>{{ amountIn(saved.tip, saved.currency) }}</span>
+          </div>
+          }
+          @if (saved.deliveryFee > 0) {
+          <div class="flex items-center justify-between">
+            <span class="text-slate-500">Delivery</span>
+            <span>{{ amountIn(saved.deliveryFee, saved.currency) }}</span>
+          </div>
+          }
+          <div
+            class="flex items-center justify-between border-t border-slate-200 pt-2 text-base font-semibold text-slate-900">
+            <span>Total</span>
+            <span>{{ amountIn(saved.total, saved.currency) }}</span>
+          </div>
+          <app-rate-conversions [amount]="saved.total" [currency]="saved.currency" />
+          @if (saved.paid > 0) {
+          <div class="flex items-center justify-between">
+            <span class="text-slate-500">Ya pagado</span>
+            <span>{{ amountIn(saved.paid, saved.currency) }}</span>
+          </div>
+          <div class="flex items-center justify-between font-semibold text-slate-900">
+            <span>Saldo pendiente</span>
+            <span>{{ amountIn(saved.balance, saved.currency) }}</span>
+          </div>
+          }
+          } @else {
           <div class="flex items-center justify-between">
             <span class="text-slate-500">Subtotal</span>
             <app-money [amount]="bill.subtotal" alignEnd="true" />
@@ -714,6 +760,7 @@
             <span>Saldo pendiente</span>
             <app-money [amount]="bill.balance" alignEnd="true" strong />
           </div>
+          }
           }
         </div>
 

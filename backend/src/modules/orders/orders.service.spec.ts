@@ -134,6 +134,10 @@ interface OrderFixture {
   tip: number;
   /** Costo de delivery en USD (0 = pedido sin delivery). */
   deliveryFee: number;
+  /** Moneda del ticket congelado (`null`/ausente = pedido sin snapshot). */
+  priceCurrency?: string | null;
+  /** Tasa de vitrina con la que se congelo el ticket. */
+  priceRate?: number | null;
   total: number;
   paidAmount: number;
   items: OrderItemFixture[];
@@ -1343,6 +1347,139 @@ describe('OrdersService.addPayment (tasa de cobro del cajero)', () => {
     // El cobro guarda la tasa aplicada (BCV) y la foto del dia completa.
     expect(payment.rateKey).toBe('BCV_USD');
     expect(JSON.parse(String(payment.ratesHistory))).toEqual(RATES_HISTORY);
+  });
+
+  /**
+   * Caso real del POS: el ticket se vio en Bs 6.790,00 y se cobra exacto en
+   * bolivares. Cada precio unitario se recorto a centavos de dolar, asi que el
+   * pedido quedo en $ 7,62 mientras que los Bs exactos valen $ 7,65. Ese exceso
+   * de $ 0,03 es el redondeo de 4 unidades, no un sobrepago: debe aplicarse.
+   */
+  it('acepta el ticket exacto en bolivares con el redondeo de las unidades', async () => {
+    const ticket = order({
+      subtotal: 7.62,
+      total: 7.62,
+      priceCurrency: 'VES',
+      priceRate: 970,
+      items: [
+        item({ id: 'i1', quantity: 2, unitPrice: 1.63, total: 3.26 }),
+        item({
+          id: 'i2',
+          productId: null,
+          menuId: 'm1',
+          name: 'Americana',
+          quantity: 2,
+          unitPrice: 2.18,
+          total: 4.36,
+        }),
+      ],
+    });
+    const ticketRates = {
+      resolvePayment: jest.fn(async () => ({
+        currency: 'VES',
+        exchangeRate: 887.302,
+        baseAmount: 7.65,
+        unitsPerBase: 887.302,
+      })),
+    };
+    const { service, tx } = createService(ticket, ticketRates, cash);
+
+    await service.addPayment(
+      COMPANY_ID,
+      'o1',
+      { amount: 6790, method: PaymentMethod.CASH, currency: 'VES' },
+      'u1',
+    );
+
+    const payment = tx.orderPayment.create.mock.calls[0][0].data;
+    expect(payment.baseAmount).toBe(7.62);
+    expect(payment.amount).toBe(6790);
+    expect(tx.order.update.mock.calls[0][0].data.paidAmount).toBe(7.62);
+    expect(tx.order.update.mock.calls[0][0].data.paymentStatus).toBe(
+      PaymentStatus.PAID,
+    );
+  });
+
+  /**
+   * El mismo ticket exacto cobrado en dolares: Bs 6.790,00 al BCV son $ 7,65,
+   * mientras el pedido quedo en $ 7,62 por el recorte de las lineas. El cajero
+   * cobra lo que muestra la pantalla ($ 7,65) y el pedido se aplica completo.
+   */
+  it('acepta el ticket exacto en dolares con el redondeo de las unidades', async () => {
+    const ticket = order({
+      subtotal: 7.62,
+      total: 7.62,
+      priceCurrency: 'VES',
+      priceRate: 970,
+      items: [
+        item({ id: 'i1', quantity: 2, unitPrice: 1.63, total: 3.26 }),
+        item({
+          id: 'i2',
+          productId: null,
+          menuId: 'm1',
+          name: 'Americana',
+          quantity: 2,
+          unitPrice: 2.18,
+          total: 4.36,
+        }),
+      ],
+    });
+    const ticketRates = {
+      resolvePayment: jest.fn(async () => ({
+        currency: 'USD',
+        exchangeRate: 887.302,
+        baseAmount: 7.65,
+        unitsPerBase: 887.302,
+      })),
+    };
+    const { service, tx } = createService(ticket, ticketRates, cash);
+
+    await service.addPayment(
+      COMPANY_ID,
+      'o1',
+      { amount: 7.65, method: PaymentMethod.CASH, currency: 'USD' },
+      'u1',
+    );
+
+    const payment = tx.orderPayment.create.mock.calls[0][0].data;
+    expect(payment.amount).toBe(7.65);
+    expect(payment.baseAmount).toBe(7.62);
+    expect(tx.order.update.mock.calls[0][0].data.paidAmount).toBe(7.62);
+    expect(tx.order.update.mock.calls[0][0].data.paymentStatus).toBe(
+      PaymentStatus.PAID,
+    );
+  });
+
+  it('sigue rechazando un cobro en bolivares que supera el redondeo de las unidades', async () => {
+    const ticket = order({
+      subtotal: 7.62,
+      total: 7.62,
+      priceCurrency: 'VES',
+      priceRate: 970,
+      items: [
+        item({ id: 'i1', quantity: 2, unitPrice: 1.63, total: 3.26 }),
+        item({ id: 'i2', quantity: 2, unitPrice: 2.18, total: 4.36 }),
+      ],
+    });
+    const ticketRates = {
+      resolvePayment: jest.fn(async () => ({
+        currency: 'VES',
+        exchangeRate: 887.302,
+        baseAmount: 7.7,
+        unitsPerBase: 887.302,
+      })),
+    };
+    const { service, tx } = createService(ticket, ticketRates, cash);
+
+    await expect(
+      service.addPayment(
+        COMPANY_ID,
+        'o1',
+        { amount: 6830, method: PaymentMethod.CASH, currency: 'VES' },
+        'u1',
+      ),
+    ).rejects.toThrow('excede el saldo pendiente');
+    expect(tx.orderPayment.create).not.toHaveBeenCalled();
   });
 
   it('guarda TODAS las tasas del dia en el cobro (no solo la aplicada)', async () => {

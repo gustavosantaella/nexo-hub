@@ -238,6 +238,18 @@ interface BillTotals {
 }
 
 /**
+ * Cuenta de un pedido guardado en la moneda de su ticket (`priceCurrency`).
+ *
+ * El pedido congela sus montos en bolívares al venderlos; volver a multiplicar
+ * el USD guardado (recortado por línea) por la tasa de hoy cambia el total. La
+ * pantalla de cobro usa estos montos exactos, igual que el ticket del listado.
+ */
+interface SavedBillTotals extends BillTotals {
+  /** Moneda del ticket (`order.priceCurrency`). */
+  currency: string;
+}
+
+/**
  * Linea editable de un cobro mixto o de un vuelto: metodo, moneda y monto.
  * El cajero puede agregar tantas como necesite (efectivo USD, transferencia VES,
  * tarjeta, y el vuelto en la forma que entregue).
@@ -1663,6 +1675,92 @@ export class PosComponent implements OnInit, OnDestroy {
     return taxable > 0 ? (order.tax / taxable) * 100 : 0;
   }
 
+  /**
+   * Cuenta exacta de un pedido guardado en la moneda de su ticket.
+   *
+   * Sin líneas nuevas devuelve el desglose congelado (`priceBreakdown`) tal
+   * cual: el total que dice el listado, no el USD recortado por línea
+   * reconvertido a la tasa de hoy. Al agregar líneas nuevas suma sus precios
+   * exactos (los que el cajero está viendo) y recalcula el IGV con la misma
+   * tasa del pedido.
+   *
+   * `null` cuando el pedido no guardó snapshot (precios en USD) o cuando alguna
+   * línea nueva no trae su precio exacto en esa moneda: ahí se usa la cuenta en
+   * USD de `bill`.
+   */
+  get targetBill(): SavedBillTotals | null {
+    const order = this.targetOrder();
+    const currency = order?.priceCurrency;
+    const snapshot = order?.priceBreakdown;
+    if (!order || !currency || !snapshot) return null;
+
+    // Lo cobrado se guarda en USD: para leerlo en el ticket se valora a la tasa
+    // congelada del pedido (o a la activa si el pedido no la guardó). Un pedido
+    // pagado por completo vale exactamente su ticket: el backend aplica el saldo
+    // contable ($ 7,62) aunque el cliente haya entregado su equivalente al BCV
+    // ($ 7,65), y valorar esos centavos a la tasa de vitrina inflaría el "pagado".
+    const paidInCurrency = () => {
+      if (order.paidAmount <= 0) return 0;
+      if (sumMoney([order.total, -order.paidAmount]) <= 0.005) return snapshot.total;
+      if (currency === BASE_CURRENCY.code) return order.paidAmount;
+      if (order.priceRate != null && order.priceRate > 0) {
+        return mulMoney(order.paidAmount, order.priceRate);
+      }
+      return this.rates.fromBase(order.paidAmount, currency) ?? 0;
+    };
+
+    const lines = this.lines();
+    if (lines.length === 0) {
+      const paid = Math.min(snapshot.total, paidInCurrency());
+      return {
+        ...snapshot,
+        currency,
+        paid,
+        balance: Math.max(0, sumMoney([snapshot.total, -paid])),
+      };
+    }
+
+    // Las líneas nuevas solo se pueden sumar a un ticket de la misma moneda que
+    // la pantalla: sus montos exactos viven en `enteredCurrency`.
+    if (displayBaseCode() !== currency) return null;
+    const lineTotals = lines.map((line) => this.lineEnteredTotal(line));
+    if (lineTotals.some((value) => value == null)) return null;
+
+    const subtotal = sumMoney([snapshot.subtotal, ...(lineTotals as number[])]);
+    // El backend rehace el snapshot con la tasa de vitrina vigente al agregar:
+    // descuento y propina (guardados en USD) se vuelven a valorar con ella.
+    const discount = Math.min(
+      this.rates.fromBase(order.discount, currency) ?? snapshot.discount,
+      subtotal,
+    );
+    const taxable = sumMoney([subtotal, -discount]);
+    const tax = mulMoney(taxable, this.taxRateOf(order) / 100);
+    const tip = this.rates.fromBase(order.tip, currency) ?? snapshot.tip;
+    const deliveryFee =
+      order.deliveryFeeEntered != null && order.deliveryFeeCurrency === currency
+        ? order.deliveryFeeEntered
+        : (this.rates.fromBase(order.deliveryFee, currency) ?? snapshot.deliveryFee);
+    const total = sumMoney([taxable, tax, tip, deliveryFee]);
+    const paid = Math.min(snapshot.total, paidInCurrency());
+    return {
+      currency,
+      subtotal,
+      discount,
+      tax,
+      tip,
+      deliveryFee,
+      total,
+      paid,
+      balance: Math.max(0, sumMoney([total, -paid])),
+    };
+  }
+
+  /** Total del cobro como se lee arriba: ticket exacto o equivalente en pantalla. */
+  get billTotalText(): string {
+    const saved = this.targetBill;
+    return saved ? moneyIn(saved.total, saved.currency) : money(this.bill.total);
+  }
+
   // ===========================================================================
   //  PEDIDOS GUARDADOS
   // ===========================================================================
@@ -1997,30 +2095,56 @@ export class PosComponent implements OnInit, OnDestroy {
   // ===========================================================================
 
   /**
-   * Monto a cobrar en la moneda elegida: el saldo del pedido en USD convertido
-   * con la **tasa oficial del BCV**, nunca con el precio de vitrina.
+   * Monto a cobrar en la moneda elegida.
    *
-   * La tasa personalizada solo infla el precio que se muestra en bolívares; el
-   * cobro (en Bs, USD o cualquier otra moneda) sale siempre del monto en USD a la
-   * tasa BCV. Se recorta a los decimales de la moneda: el cajero cobra el monto
-   * que lee (Bs 15.520,00 al BCV -> `$ 17,56`, no `$ 17,57`).
+   * En un pedido guardado se respeta su ticket: en la moneda del ticket se cobra
+   * el desglose exacto (Bs 6.790,00), y en otra moneda ese MISMO ticket valorado
+   * a la tasa oficial del BCV (Bs 6.790,00 -> `$ 7,65`), no el USD contable
+   * recortado por línea (`$ 7,62`). En una venta nueva se cobra el total exacto
+   * de los precios cargados en el catalogo, sin pasar por el USD recortado.
+   *
+   * Se recorta a los decimales de la moneda: el cajero cobra el monto que lee
+   * (Bs 15.520,00 al BCV -> `$ 17,56`, no `$ 17,57`).
    */
   get chargeAmount(): number {
     const bill = this.bill;
     const order = this.targetOrder();
     const currency = this.charge.currency || BASE_CURRENCY.code;
 
-    // Saldo de un pedido ya abierto: cuando no se agregan lineas se cobra el
-    // monto congelado en bolivares (15520), no el USD recortado (17,49).
-    if (order && this.lines().length === 0) {
-      const exact = this.orderSaleBalance(order);
-      if (exact != null && currency === order.priceCurrency) return exact;
+    // Pedido ya abierto con ticket en bolívares: se cobra su desglose exacto
+    // (también al agregar líneas). En otra moneda se valora ese saldo exacto a
+    // la tasa oficial del BCV, sin volver a inflarlo con la vitrina ni perder
+    // los centavos que el USD contable recortó por línea.
+    const saved = this.targetBill;
+    if (saved) {
+      if (currency === saved.currency) {
+        return payableAmount(saved.balance, currency);
+      }
+      if (order) {
+        const base = this.rates.toBase(saved.balance, saved.currency, CHARGE_RATE_KEY);
+        const converted =
+          base == null ? null : this.rates.fromBase(base, currency, CHARGE_RATE_KEY);
+        if (converted != null) return payableAmount(converted, currency);
+        return payableAmount(this.rates.chargeAmount(bill.balance, currency), currency);
+      }
     }
 
     // Venta nueva: se cobra el total exacto calculado sobre los precios
     // cargados en el catalogo (15520 Bs), sin pasar por el USD recortado.
     const exactSale = this.exactSaleTotals;
-    if (exactSale && currency === exactSale.currency) return exactSale.total;
+    if (exactSale) {
+      if (currency === exactSale.currency) {
+        return payableAmount(exactSale.total, currency);
+      }
+      const base = this.rates.toBase(
+        exactSale.total,
+        exactSale.currency,
+        CHARGE_RATE_KEY,
+      );
+      const converted =
+        base == null ? null : this.rates.fromBase(base, currency, CHARGE_RATE_KEY);
+      if (converted != null) return payableAmount(converted, currency);
+    }
 
     return payableAmount(
       this.rates.saleChargeAmount(
@@ -2073,12 +2197,37 @@ export class PosComponent implements OnInit, OnDestroy {
   get displayTotal(): number {
     const exact = this.exactSaleTotal();
     if (exact != null) return exact;
+    const saved = this.targetBill;
+    if (saved) {
+      // El ticket exacto se valora a la moneda de pantalla con la tasa de cobro:
+      // Bs 6.790,00 al BCV se leen como $ 7,65, no como el USD contable ($ 7,62).
+      const converted = this.savedAmountIn(saved.total, saved.currency, displayBaseCode());
+      if (converted != null) return converted;
+    }
     const order = this.targetOrder();
     const orderExact = this.orderSaleBalance(order);
     if (orderExact != null && displayBaseCode() === order?.priceCurrency) {
       return orderExact;
     }
     return this.rates.displayAmount(this.bill.total);
+  }
+
+  /**
+   * Valor de un monto congelado en la moneda del ticket (`from`) expresado en
+   * `to`, pasando por la tasa oficial del BCV. Devuelve `null` si falta alguna
+   * tasa y el llamador conserva su respaldo contable.
+   */
+  private savedAmountIn(
+    amount: number,
+    from: string,
+    to: string,
+  ): number | null {
+    const source = String(from ?? '').trim().toUpperCase() || BASE_CURRENCY.code;
+    const target = String(to ?? '').trim().toUpperCase() || BASE_CURRENCY.code;
+    if (source === target) return amount;
+    const base = this.rates.toBase(amount, source, CHARGE_RATE_KEY);
+    if (base == null) return null;
+    return this.rates.fromBase(base, target, CHARGE_RATE_KEY);
   }
 
   /** Vuelto a entregar en efectivo (en la moneda del cobro). */
@@ -2414,6 +2563,20 @@ export class PosComponent implements OnInit, OnDestroy {
   }
 
   /**
+   * Precio unitario de una línea del pedido en la moneda del ticket.
+   *
+   * La fila del producto muestra el precio que se cargó al venderlo (Bs
+   * 1.455,00), no el USD recortado reconvertido a la tasa de hoy (Bs 1.581,10).
+   */
+  orderItemUnitMoney(order: Order | null | undefined, item: OrderItem): string {
+    const unit = item.unitPriceEntered;
+    if (unit != null && Number.isFinite(unit)) {
+      return moneyIn(unit, this.saleCurrency(order));
+    }
+    return this.orderMoney(item.unitPrice);
+  }
+
+  /**
    * Saldo del pedido en la moneda de la vitrina: el total congelado menos lo
    * pagado (guardado en USD) pasado a la tasa del snapshot.
    */
@@ -2421,7 +2584,12 @@ export class PosComponent implements OnInit, OnDestroy {
     const total = this.saleEntered(order, 'total');
     const rate = order?.priceRate;
     if (total != null && rate != null) {
-      return moneyIn(total - mulMoney(order?.paidAmount ?? 0, rate), this.saleCurrency(order));
+      // Cobrado el pedido completo, el ticket no tiene saldo aunque el pago se
+      // haya entregado en USD al BCV ($ 7,65 contra un saldo contable de $ 7,62).
+      const paid = order?.paidAmount ?? 0;
+      const fullyPaid = order != null && sumMoney([order.total, -paid]) <= 0.005;
+      const balance = fullyPaid ? 0 : Math.max(0, sumMoney([total, -mulMoney(paid, rate)]));
+      return moneyIn(balance, this.saleCurrency(order));
     }
     return order ? this.orderMoney(this.balance(order)) : this.orderMoney(0);
   }
