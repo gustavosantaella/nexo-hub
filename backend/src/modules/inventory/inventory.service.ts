@@ -207,6 +207,7 @@ export class InventoryService {
       void this.notifications?.notifyLowStock(companyId, {
         name: product.name,
         sku: product.sku ?? null,
+        imageUrl: product.imageUrl ?? null,
         stock: stockAfter,
         minStock: product.minStock,
         unit: product.unit,

@@ -11,6 +11,8 @@ const MOVEMENT_PRODUCT_SELECT = {
   id: true,
   sku: true,
   name: true,
+  // Foto del producto: el aviso de stock bajo la envia al administrador.
+  imageUrl: true,
   stock: true,
   minStock: true,
   trackStock: true,

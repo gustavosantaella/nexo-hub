@@ -372,6 +372,48 @@ describe('NotificationsService', () => {
     expect(telegram.sendMessage.mock.calls[0][1]).toContain('Cafe');
   });
 
+  it('envia la foto del producto con el stock restante en el pie', async () => {
+    const { service, telegram } = createService();
+    const photo = '/media/J-1/products/cafe.png';
+
+    const sent = await service.notifyLowStock(COMPANY_ID, {
+      name: 'Cafe',
+      sku: 'CAF-1',
+      imageUrl: photo,
+      stock: 2,
+      minStock: 2,
+      unit: 'UND',
+    });
+
+    expect(sent).toBe(true);
+    expect(telegram.sendPhoto).toHaveBeenCalledWith(
+      '123456',
+      photo,
+      expect.stringContaining('<b>Stock actual:</b> 2 UND'),
+    );
+    expect(telegram.sendMessage).not.toHaveBeenCalled();
+  });
+
+  it('si la foto del producto falla, el aviso se envia como texto', async () => {
+    const { service, telegram } = createService();
+    telegram.sendPhoto.mockResolvedValue(false);
+
+    const sent = await service.notifyLowStock(COMPANY_ID, {
+      name: 'Cafe',
+      sku: 'CAF-1',
+      imageUrl: '/media/J-1/products/cafe.png',
+      stock: 2,
+      minStock: 2,
+      unit: 'UND',
+    });
+
+    expect(sent).toBe(true);
+    expect(telegram.sendMessage).toHaveBeenCalledWith(
+      '123456',
+      expect.stringContaining('Cafe'),
+    );
+  });
+
   it('el cierre de caja resume lo recaudado y la diferencia', async () => {
     const { service, telegram } = createService();
     await service.notifyCashClose(COMPANY_ID, {

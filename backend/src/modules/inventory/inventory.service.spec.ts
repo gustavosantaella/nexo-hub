@@ -25,8 +25,9 @@ const CARNE = {
 };
 
 function createService(
-  product: typeof CAJA | typeof CARNE | null = CAJA,
+  product: Record<string, unknown> | null = CAJA,
   ratesOverride: Partial<Record<keyof RatesService, jest.Mock>> = {},
+  notifications?: { notifyLowStock: jest.Mock },
 ) {
   const prisma = {
     product: {
@@ -57,8 +58,9 @@ function createService(
   const service = new InventoryService(
     new InventoryRepository(prisma as unknown as PrismaService),
     rates,
+    notifications as never,
   );
-  return { service, prisma };
+  return { service, prisma, notifications };
 }
 
 /** `data` del movimiento creado en la ultima llamada. */
@@ -270,6 +272,67 @@ describe('InventoryService (precio unitario de la entrada)', () => {
     });
 
     expect(productData(prisma)).toEqual({ stock: 47 });
+  });
+});
+
+describe('InventoryService (aviso de stock bajo)', () => {
+  it('avisa al cruzar el minimo con el stock restante y la foto del producto', async () => {
+    const notifications = { notifyLowStock: jest.fn(async () => true) };
+    const cafe = {
+      id: 'p-cafe',
+      sku: 'CAF-1',
+      name: 'Cafe',
+      imageUrl: '/media/J-1/products/cafe.png',
+      stock: 3,
+      minStock: 2,
+      trackStock: true,
+      unit: 'UND',
+      unitsPerBox: 1,
+    };
+    const { service } = createService(cafe, {}, notifications);
+
+    // 3 -> 1 cruza el minimo (2): el aviso sale una sola vez.
+    await service.applyMovement(COMPANY_ID, {
+      productId: 'p-cafe',
+      type: 'OUT',
+      quantity: 2,
+    });
+
+    expect(notifications.notifyLowStock).toHaveBeenCalledWith(COMPANY_ID, {
+      name: 'Cafe',
+      sku: 'CAF-1',
+      imageUrl: '/media/J-1/products/cafe.png',
+      stock: 1,
+      minStock: 2,
+      unit: 'UND',
+    });
+  });
+
+  it('avisa igual aunque el producto no tenga foto', async () => {
+    const notifications = { notifyLowStock: jest.fn(async () => true) };
+    const cafe = {
+      id: 'p-cafe',
+      sku: 'CAF-1',
+      name: 'Cafe',
+      imageUrl: null,
+      stock: 3,
+      minStock: 2,
+      trackStock: true,
+      unit: 'UND',
+      unitsPerBox: 1,
+    };
+    const { service } = createService(cafe, {}, notifications);
+
+    await service.applyMovement(COMPANY_ID, {
+      productId: 'p-cafe',
+      type: 'OUT',
+      quantity: 2,
+    });
+
+    expect(notifications.notifyLowStock).toHaveBeenCalledWith(
+      COMPANY_ID,
+      expect.objectContaining({ imageUrl: null, stock: 1 }),
+    );
   });
 });
 

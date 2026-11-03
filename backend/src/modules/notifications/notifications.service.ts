@@ -81,6 +81,8 @@ export interface SaleNotification {
 export interface LowStockNotification {
   name: string;
   sku: string | null;
+  /** Foto del producto (URL local `/media/...` o URL publica); opcional. */
+  imageUrl?: string | null;
   stock: number;
   minStock: number;
   unit: string;
@@ -593,6 +595,17 @@ export class NotificationsService implements OnModuleInit, OnModuleDestroy {
     ]
       .filter(Boolean)
       .join('\n');
+
+    // Si el producto tiene foto, el aviso viaja como imagen con el resumen de
+    // pie de foto. Si el envio de la imagen falla, el texto igual llega.
+    if (product.imageUrl) {
+      const sentPhoto = await this.telegram.sendPhoto(
+        row.telegramChatId,
+        product.imageUrl,
+        text,
+      );
+      if (sentPhoto) return true;
+    }
 
     return this.telegram.sendMessage(row.telegramChatId, text);
   }
