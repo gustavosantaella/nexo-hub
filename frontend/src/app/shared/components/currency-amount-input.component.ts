@@ -15,7 +15,7 @@ import {
 } from '../../core/constants/currency';
 import type { RateKey, RateOption } from '../../core/models/rates.model';
 import { RatesService } from '../../core/services/rates.service';
-import { bs, moneyIn, rate } from '../../core/utils/format';
+import { bs, moneyIn, rateExact } from '../../core/utils/format';
 import { IconComponent } from './icon.component';
 import { RateConversionsComponent } from './rate-conversions.component';
 
@@ -139,7 +139,7 @@ export class CurrencyAmountInputComponent {
   /** Etiqueta de una tasa en el selector (ej. `BCV € · 982.00 Bs`). */
   rateLabel(option: RateOption): string {
     const label = RATE_META[option.key]?.shortLabel ?? option.key;
-    return `${label} · ${rate(option.rate, 2)} Bs`;
+    return `${label} · ${rateExact(option.rate)} Bs`;
   }
 
   /** `true` cuando la moneda elegida no tiene tasa para convertir. */

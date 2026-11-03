@@ -142,6 +142,9 @@ describe('CashService (arqueo multimoneda)', () => {
           baseSales: 17.57,
           baseTips: 0,
           baseChange: 0,
+          localIn: null,
+          localOut: null,
+          localNet: null,
           methods: [
             {
               method: 'CASH',
@@ -175,7 +178,15 @@ describe('CashService (arqueo multimoneda)', () => {
       expect(breakdown.cashIn).toBe(41.71);
       expect(breakdown.expectedCash).toBe(41.71);
       expect(breakdown.totalIn).toBe(41.71);
-      expect(breakdown.byMethod[0]).toEqual({ method: 'CASH', in: 41.71, out: 0, net: 41.71 });
+      expect(breakdown.byMethod[0]).toEqual({
+        method: 'CASH',
+        in: 41.71,
+        out: 0,
+        net: 41.71,
+        localIn: null,
+        localOut: null,
+        localNet: null,
+      });
       // El equivalente por moneda tambien se recorta una sola vez.
       expect(breakdown.byCurrency[0].baseIn).toBe(41.71);
       expect(breakdown.byCurrency[0].baseNet).toBe(41.71);
@@ -200,7 +211,15 @@ describe('CashService (arqueo multimoneda)', () => {
       expect(breakdown.cashIn).toBe(41.72);
       expect(breakdown.expectedCash).toBe(41.72);
       expect(breakdown.totalIn).toBe(41.72);
-      expect(breakdown.byMethod[0]).toEqual({ method: 'CASH', in: 41.72, out: 0, net: 41.72 });
+      expect(breakdown.byMethod[0]).toEqual({
+        method: 'CASH',
+        in: 41.72,
+        out: 0,
+        net: 41.72,
+        localIn: null,
+        localOut: null,
+        localNet: null,
+      });
       // El desglose por moneda recorta una vez por moneda: 35,13 + 6,59 = 41,72,
       // el mismo numero que la tarjeta del efectivo.
       expect(breakdown.byCurrency.map((row) => [row.currency, row.baseNet])).toEqual([
@@ -425,6 +444,53 @@ describe('CashService (arqueo multimoneda)', () => {
           }),
         }),
       );
+    });
+
+    it('valora en bolivares el ticket del pedido aunque el cobro sea en dolares', async () => {
+      const prisma = {
+        order: {
+          findMany: jest.fn().mockResolvedValue([
+            {
+              id: 'o1',
+              total: 17.59,
+              tip: 0,
+              // Ticket exacto que vio el cajero: Bs 15.680,00 (en centavos).
+              priceCurrency: 'VES',
+              priceRate: 980,
+              priceBreakdown: JSON.stringify({ total: 1_568_000 }),
+              payments: [
+                { id: 'p1', amount: 17.59, baseAmount: 17.59, cashMovementId: 'm1' },
+              ],
+            },
+          ]),
+        },
+      } as unknown as PrismaService;
+      const service = new CashService(new CashRepository(prisma), config, rates);
+
+      const movements = await service.withTips(COMPANY_ID, [
+        movement({
+          id: 'm1',
+          amount: 17.59,
+          currency: 'USD',
+          baseAmount: 17.59,
+          baseRate: 1,
+          exchangeRate: 891.1054,
+          referenceType: 'ORDER',
+          referenceId: 'o1',
+        }),
+      ]);
+
+      // Bs 15.680,00 / 891,1054 = $ 17,5960... que se cobro como $ 17,59. La
+      // caja debe conservar el ticket, no los Bs 15.674,54 del dolar recortado.
+      expect(movements[0].localAmount).toBe(15_680);
+
+      const breakdown = service.buildBreakdown(0, movements);
+      expect(breakdown.localIn).toBe(15_680);
+      expect(breakdown.localCashIn).toBe(15_680);
+      expect(breakdown.localSales).toBe(15_680);
+      expect(breakdown.totalIn).toBe(17.59);
+      expect(breakdown.byMethod[0].localIn).toBe(15_680);
+      expect(breakdown.byCurrency[0].localIn).toBe(15_680);
     });
 
     it('no consulta la base cuando ningun movimiento es un cobro de pedido', async () => {

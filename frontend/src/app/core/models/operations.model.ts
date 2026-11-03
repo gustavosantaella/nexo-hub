@@ -317,6 +317,11 @@ export interface CashMovement {
   baseRate?: number | null;
   /** Equivalente en USD (moneda base del sistema). */
   baseAmount: number;
+  /**
+   * Valor del movimiento en bolívares con el ticket del documento (el monto que
+   * vio el cajero). `null` en registros antiguos sin tasa.
+   */
+  localAmount?: number | null;
   description?: string | null;
   referenceType?: string | null;
   referenceId?: string | null;
@@ -366,6 +371,13 @@ export interface CurrencyBreakdown {
   baseChange: number;
   /** Desglose de esta moneda por método de pago. */
   methods: CurrencyMethodTotal[];
+  /**
+   * Los mismos totales valorados en bolívares con el ticket de cada documento.
+   * `null` cuando alguna parte de la moneda no se pudo valorar en bolívares.
+   */
+  localIn?: number | null;
+  localOut?: number | null;
+  localNet?: number | null;
 }
 
 /** Una parte del fondo inicial: monto contado en su moneda + equivalente en USD. */
@@ -403,7 +415,32 @@ export interface CashSummary {
   /** Propinas cobradas en el turno (vienen dentro de los cobros por venta). */
   tipsTotal: number;
   movementCount: number;
-  byMethod: { method: string; in: number; out: number; net: number }[];
+  /**
+   * Los mismos totales valorados en BOLÍVARES con el ticket de cada documento
+   * (el monto que se vio en el POS), sin reconvertir el USD recortado a
+   * centavos. `null` cuando el turno tiene movimientos antiguos sin tasa.
+   */
+  localIn?: number | null;
+  localOut?: number | null;
+  localNet?: number | null;
+  /** Efectivo (método CASH) valorado en bolívares. */
+  localCashIn?: number | null;
+  localCashOut?: number | null;
+  /** Fondo inicial valorado en bolívares. */
+  localOpening?: number | null;
+  /** Ventas netas (sin propinas ni vueltos) y propinas, en bolívares. */
+  localSales?: number | null;
+  localTips?: number | null;
+  byMethod: {
+    method: string;
+    in: number;
+    out: number;
+    net: number;
+    /** Los mismos montos valorados en bolívares. */
+    localIn?: number | null;
+    localOut?: number | null;
+    localNet?: number | null;
+  }[];
   byCategory: { category: string; in: number; out: number; net: number }[];
   byCurrency: CurrencyBreakdown[];
   /** Cómo se contó el fondo inicial, moneda por moneda (vacío en sesiones antiguas). */

@@ -691,6 +691,11 @@ export class CashPage implements OnInit, OnDestroy {
     return !!code && code === displayBaseCode();
   }
 
+  /** `true` cuando la pantalla muestra los montos en bolívares. */
+  private isBsDisplay(): boolean {
+    return displayBaseCode() === LOCAL_CURRENCY_CODE;
+  }
+
   /**
    * Monto del movimiento en la moneda de visualización.
    *
@@ -698,10 +703,17 @@ export class CashPage implements OnInit, OnDestroy {
    * al cajón). Las demás se valoran con la tasa con la que se registró el
    * movimiento (`baseRate`), no con la del día: así el listado no cambia cuando
    * el BCV publica una tasa nueva y el total coincide con el arqueo.
+   *
+   * Con la pantalla en bolívares manda el valor del ticket (`localAmount`): un
+   * cobro de Bs 15.680,00 pagado con $ 17,59 se lee en Bs 15.680,00, no en los
+   * Bs 15.674,54 que salen de reconvertir el dólar recortado a centavos.
    */
   movementDisplay(movement: CashMovement): number | null {
     const sign = movement.type === 'IN' ? 1 : -1;
     const amount = sign * Number(movement.amount ?? 0);
+    if (this.isBsDisplay() && movement.localAmount != null) {
+      return sign * Number(movement.localAmount);
+    }
     if (this.isDisplayCurrency(movement.currency)) return amount;
     const baseRate = Number(movement.baseRate ?? 0);
     const base =
@@ -721,6 +733,7 @@ export class CashPage implements OnInit, OnDestroy {
    * bolívares en 35,13 mientras el total del método decía 35,12.
    */
   currencyNetDisplay(row: CurrencyBreakdown): number | null {
+    if (this.isBsDisplay() && row.localNet != null) return row.localNet;
     if (this.isDisplayCurrency(row.currency)) return Number(row.net ?? 0);
     return this.aggregateDisplay(row.baseNet);
   }
@@ -780,6 +793,9 @@ export class CashPage implements OnInit, OnDestroy {
 
   /** Efectivo que entró al cajón de un arqueo cualquiera. */
   cashInDisplayOf(summary: CashSummary | null | undefined): number | null {
+    if (this.isBsDisplay() && summary?.localCashIn != null) {
+      return summary.localCashIn;
+    }
     if (this.isUsdDisplay()) return this.aggregateDisplay(summary?.cashIn);
     return this.sumByCurrency(
       summary,
@@ -795,11 +811,52 @@ export class CashPage implements OnInit, OnDestroy {
 
   /** Efectivo que salió del cajón de un arqueo cualquiera. */
   cashOutDisplayOf(summary: CashSummary | null | undefined): number | null {
+    if (this.isBsDisplay() && summary?.localCashOut != null) {
+      return summary.localCashOut;
+    }
     if (this.isUsdDisplay()) return this.aggregateDisplay(summary?.cashOut);
     return this.sumByCurrency(
       summary,
       (row) => row.cashOut,
       (row) => row.baseCashOut,
+    );
+  }
+
+  /**
+   * Ingresos del turno (todos los métodos) en la moneda de visualización.
+   *
+   * Un cobro por transferencia, tarjeta o billetera también entró a la caja y
+   * debe sumar en la tarjeta de Ingresos; `cashInDisplay` (solo efectivo) se
+   * reserva para el arqueo del cajón.
+   */
+  get totalInDisplay(): number | null {
+    return this.totalInDisplayOf(this.summary());
+  }
+
+  /** Ingresos de todos los métodos de un arqueo cualquiera. */
+  totalInDisplayOf(summary: CashSummary | null | undefined): number | null {
+    if (this.isBsDisplay() && summary?.localIn != null) return summary.localIn;
+    if (this.isUsdDisplay()) return this.aggregateDisplay(summary?.totalIn);
+    return this.sumByCurrency(
+      summary,
+      (row) => row.in,
+      (row) => row.baseIn,
+    );
+  }
+
+  /** Egresos del turno (todos los métodos) en la moneda de visualización. */
+  get totalOutDisplay(): number | null {
+    return this.totalOutDisplayOf(this.summary());
+  }
+
+  /** Egresos de todos los métodos de un arqueo cualquiera. */
+  totalOutDisplayOf(summary: CashSummary | null | undefined): number | null {
+    if (this.isBsDisplay() && summary?.localOut != null) return summary.localOut;
+    if (this.isUsdDisplay()) return this.aggregateDisplay(summary?.totalOut);
+    return this.sumByCurrency(
+      summary,
+      (row) => row.out,
+      (row) => row.baseOut,
     );
   }
 
@@ -821,6 +878,9 @@ export class CashPage implements OnInit, OnDestroy {
     summary: CashSummary | null | undefined,
   ): number | null {
     const lines = summary?.openingByCurrency ?? session?.openingLines ?? [];
+    if (this.isBsDisplay() && summary?.localOpening != null) {
+      return summary.localOpening;
+    }
     if (this.isUsdDisplay()) {
       if (summary?.openingCash != null) return this.aggregateDisplay(summary.openingCash);
       const openingAmount = session?.openingAmount;
@@ -867,6 +927,22 @@ export class CashPage implements OnInit, OnDestroy {
     session: CashSession | null | undefined,
     summary: CashSummary | null | undefined,
   ): number | null {
+    // En bolívares el esperado sale del ticket de cada movimiento: el cobro de
+    // Bs 15.680,00 hecho con $ 17,59 sigue valiendo Bs 15.680,00 en la caja.
+    if (
+      this.isBsDisplay() &&
+      summary?.localCashIn != null &&
+      summary?.localCashOut != null
+    ) {
+      const opening = this.openingDisplayOf(session, summary);
+      if (opening != null) {
+        return sumMoney([
+          opening,
+          summary.localCashIn,
+          -summary.localCashOut,
+        ]);
+      }
+    }
     if (!this.isUsdDisplay() && summary?.byCurrency?.length) {
       const opening = this.openingDisplayOf(session, summary);
       const cashIn = this.cashInDisplayOf(summary);
@@ -887,6 +963,7 @@ export class CashPage implements OnInit, OnDestroy {
 
   /** Propinas de un arqueo cualquiera en la moneda de visualización. */
   tipsTotalDisplayOf(summary: CashSummary | null | undefined): number | null {
+    if (this.isBsDisplay() && summary?.localTips != null) return summary.localTips;
     if (this.isUsdDisplay()) return this.aggregateDisplay(summary?.tipsTotal);
     return this.sumByCurrency(
       summary,
@@ -904,6 +981,9 @@ export class CashPage implements OnInit, OnDestroy {
   salesTotalDisplayOf(
     summary: CashSummary | null | undefined,
   ): number | null {
+    if (this.isBsDisplay() && summary?.localSales != null) {
+      return summary.localSales;
+    }
     if (this.isUsdDisplay()) return this.aggregateDisplay(summary?.salesTotal);
     return this.sumByCurrency(
       summary,
@@ -919,6 +999,9 @@ export class CashPage implements OnInit, OnDestroy {
 
   /** Ventas + propinas de un arqueo cualquiera en la moneda de visualización. */
   salesGrossDisplayOf(summary: CashSummary | null | undefined): number | null {
+    if (this.isBsDisplay() && summary?.localSales != null) {
+      return sumMoney([summary.localSales, summary.localTips ?? 0]);
+    }
     if (this.isUsdDisplay()) {
       if (!summary) return null;
       return this.aggregateDisplay(
@@ -972,6 +1055,16 @@ export class CashPage implements OnInit, OnDestroy {
       const row = (summary?.byMethod ?? []).find((line) => line.method === method);
       if (!row) return null;
       return this.aggregateDisplay(row[field]);
+    }
+    if (this.isBsDisplay()) {
+      const row = (summary?.byMethod ?? []).find((line) => line.method === method);
+      const local =
+        field === 'in'
+          ? row?.localIn
+          : field === 'out'
+            ? row?.localOut
+            : row?.localNet;
+      if (local != null) return local;
     }
     const currencies = summary?.byCurrency ?? [];
     let total = 0;
@@ -1059,8 +1152,12 @@ export class CashPage implements OnInit, OnDestroy {
     summary: CashSummary | null | undefined,
     native: (row: CurrencyBreakdown) => number,
     base: (row: CurrencyBreakdown) => number,
+    local?: number | null,
   ): number | null {
     if (!this.isUsdDisplay()) return null;
+    // El backend ya valora el turno con el ticket de cada documento: ese es el
+    // numero exacto que se pinta debajo del monto en dolares.
+    if (local != null) return local;
     const rows = summary?.byCurrency ?? [];
     if (rows.length === 0) return null;
 
@@ -1095,6 +1192,16 @@ export class CashPage implements OnInit, OnDestroy {
     field: 'in' | 'out' | 'net',
   ): number | null {
     if (!this.isUsdDisplay()) return null;
+    const methodRow = (summary?.byMethod ?? []).find(
+      (line) => line.method === method,
+    );
+    const local =
+      field === 'in'
+        ? methodRow?.localIn
+        : field === 'out'
+          ? methodRow?.localOut
+          : methodRow?.localNet;
+    if (local != null) return local;
     const rows = summary?.byCurrency ?? [];
 
     let total = 0;
@@ -1132,6 +1239,7 @@ export class CashPage implements OnInit, OnDestroy {
     summary: CashSummary | null | undefined,
   ): number | null {
     if (!this.isUsdDisplay()) return null;
+    if (summary?.localOpening != null) return summary.localOpening;
     const lines = summary?.openingByCurrency ?? session?.openingLines ?? [];
     if (lines.length === 0) {
       // Sin desglose (aperturas antiguas o fondo cero) no hay bolívares
@@ -1168,16 +1276,33 @@ export class CashPage implements OnInit, OnDestroy {
     session: CashSession | null | undefined,
     summary: CashSummary | null | undefined,
   ): number | null {
+    if (this.isUsdDisplay()) {
+      // El backend valora el efectivo con el ticket de cada cobro y el fondo con
+      // su tasa: es el mismo numero que pinta la pantalla en bolivares.
+      if (
+        summary?.localOpening != null &&
+        summary.localCashIn != null &&
+        summary.localCashOut != null
+      ) {
+        return sumMoney([
+          summary.localOpening,
+          summary.localCashIn,
+          -summary.localCashOut,
+        ]);
+      }
+    }
     const opening = this.exactOpeningBsOf(session, summary);
     const cashIn = this.exactBsOf(
       summary,
       (row) => row.cashIn,
       (row) => row.baseCashIn,
+      summary?.localCashIn,
     );
     const cashOut = this.exactBsOf(
       summary,
       (row) => row.cashOut,
       (row) => row.baseCashOut,
+      summary?.localCashOut,
     );
     if (opening == null || cashIn == null || cashOut == null) return null;
     return sumMoney([opening, cashIn, -cashOut]);
@@ -1225,26 +1350,28 @@ export class CashPage implements OnInit, OnDestroy {
     );
   }
 
-  /** Ingresos de la tarjeta, con sus bolívares exactos como conversión. */
-  get cashInCard(): CashCardMoney {
+  /** Ingresos de la tarjeta (todos los métodos), con sus bolívares exactos. */
+  get incomeCard(): CashCardMoney {
     return this.cardMoney(
-      this.cashInDisplay,
+      this.totalInDisplay,
       this.exactBsOf(
         this.summary(),
-        (row) => row.cashIn,
-        (row) => row.baseCashIn,
+        (row) => row.in,
+        (row) => row.baseIn,
+        this.summary()?.localIn,
       ),
     );
   }
 
-  /** Egresos de la tarjeta, con sus bolívares exactos como conversión. */
-  get cashOutCard(): CashCardMoney {
+  /** Egresos de la tarjeta (todos los métodos), con sus bolívares exactos. */
+  get expenseCard(): CashCardMoney {
     return this.cardMoney(
-      this.cashOutDisplay,
+      this.totalOutDisplay,
       this.exactBsOf(
         this.summary(),
-        (row) => row.cashOut,
-        (row) => row.baseCashOut,
+        (row) => row.out,
+        (row) => row.baseOut,
+        this.summary()?.localOut,
       ),
     );
   }
@@ -1278,6 +1405,7 @@ export class CashPage implements OnInit, OnDestroy {
         summary,
         (row) => sumMoney([row.sales, -row.tips, -row.change]),
         (row) => sumMoney([row.baseSales, -row.baseTips, -row.baseChange]),
+        summary?.localSales,
       ),
     );
   }
@@ -1295,6 +1423,7 @@ export class CashPage implements OnInit, OnDestroy {
         summary,
         (row) => row.tips,
         (row) => row.baseTips,
+        summary?.localTips,
       ),
     );
   }
@@ -1312,6 +1441,9 @@ export class CashPage implements OnInit, OnDestroy {
         summary,
         (row) => sumMoney([row.sales, -row.change]),
         (row) => sumMoney([row.baseSales, -row.baseChange]),
+        summary?.localSales == null
+          ? null
+          : sumMoney([summary.localSales, summary.localTips ?? 0]),
       ),
     );
   }

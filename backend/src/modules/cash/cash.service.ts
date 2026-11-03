@@ -16,6 +16,7 @@ import {
 } from '../../common/constants/enums';
 import {
   BASE_CURRENCY_CODE,
+  LOCAL_CURRENCY_CODE,
   MIXED_CURRENCY_CODE,
   normalizeCurrencyCode,
 } from '../../common/constants/currencies';
@@ -60,6 +61,16 @@ export interface MovementLike {
    * registros anteriores a este campo.
    */
   baseRate?: number | null;
+  /** Bolivares por 1 unidad de `currency` al momento del registro. */
+  exchangeRate?: number | null;
+  /**
+   * Valor del movimiento en bolivares, con la precision del ticket que vio el
+   * cajero. Lo calcula `withTips` a partir del pedido cobrado: un cobro de
+   * Bs 15.680,00 pagado con $ 17,59 vale Bs 15.680,00 (no los Bs 15.674,54 que
+   * salen de reconvertir el dolar recortado a centavos). `null` cuando no hay
+   * forma de valorarlo en bolivares.
+   */
+  localAmount?: number | null;
   /**
    * Propina incluida en el movimiento, en la moneda base. El movimiento guarda
    * el cobro completo (consumo + propina), asi que este monto lo calcula
@@ -117,6 +128,13 @@ export interface CurrencyBreakdown {
   baseChange: number;
   /** Desglose de esta moneda por metodo de pago. */
   methods: CurrencyMethodTotal[];
+  /**
+   * Los mismos totales valorados en bolivares con el ticket de cada documento.
+   * `null` cuando alguna parte de la moneda no se pudo valorar en bolivares.
+   */
+  localIn: number | null;
+  localOut: number | null;
+  localNet: number | null;
 }
 
 /** Una parte del fondo inicial: monto contado en su moneda + equivalente en USD. */
@@ -157,8 +175,17 @@ interface OpeningFund {
  * Entrada del desglose por moneda mientras se recorre el turno: los totales
  * por metodo se acumulan en un mapa y se pasan a lista al terminar.
  */
-type CurrencyEntry = Omit<CurrencyBreakdown, 'methods'> & {
+type CurrencyEntry = Omit<
+  CurrencyBreakdown,
+  'methods' | 'localIn' | 'localOut' | 'localNet'
+> & {
   methods: Map<string, { in: number; out: number; baseIn: number; baseOut: number }>;
+  /** Acumulados en bolivares (centavos); `localKnown` dice si son completos. */
+  localIn: number;
+  localOut: number;
+  localNet: number;
+  /** `false` cuando algun movimiento de la moneda no se pudo valorar en Bs. */
+  localKnown: boolean;
 };
 
 /** Entrada vacia del desglose por moneda. */
@@ -181,6 +208,10 @@ function emptyCurrencyEntry(currency: string): CurrencyEntry {
     baseSales: 0,
     baseTips: 0,
     baseChange: 0,
+    localIn: 0,
+    localOut: 0,
+    localNet: 0,
+    localKnown: true,
     methods: new Map(),
   };
 }
@@ -230,7 +261,36 @@ export interface CashBreakdown {
   /** Propinas cobradas en el turno (ya vienen dentro de los cobros por venta). */
   tipsTotal: number;
   movementCount: number;
-  byMethod: { method: string; in: number; out: number; net: number }[];
+  /**
+   * Los mismos totales valorados en BOLIVARES con el ticket de cada documento
+   * (no reconvirtiendo el USD recortado). Es lo que pinta el arqueo cuando la
+   * pantalla esta en bolivares: Bs 15.680,00 cobrados con $ 17,59 valen
+   * Bs 15.680,00 en la caja, igual que en el punto de venta.
+   *
+   * `null` cuando el turno tiene movimientos antiguos sin tasa ni ticket y no
+   * hay forma de valorarlos en bolivares; la pantalla cae en la conversion.
+   */
+  localIn: number | null;
+  localOut: number | null;
+  localNet: number | null;
+  /** Efectivo (metodo CASH) valorado en bolivares. */
+  localCashIn: number | null;
+  localCashOut: number | null;
+  /** Fondo inicial valorado en bolivares (`null` si no se puede reconstruir). */
+  localOpening: number | null;
+  /** Ventas netas (sin propinas ni vueltos) y propinas, en bolivares. */
+  localSales: number | null;
+  localTips: number | null;
+  byMethod: {
+    method: string;
+    in: number;
+    out: number;
+    net: number;
+    /** Los mismos montos valorados en bolivares (ver `localIn`). */
+    localIn: number | null;
+    localOut: number | null;
+    localNet: number | null;
+  }[];
   byCategory: { category: string; in: number; out: number; net: number }[];
   /** Desglose por moneda (montos originales + equivalente en USD). */
   byCurrency: CurrencyBreakdown[];
@@ -308,6 +368,30 @@ export class CashService {
    */
   private baseOf(row: MovementLike): number {
     return fromCents(this.baseCentsOf(row));
+  }
+
+  /**
+   * Valor del movimiento en bolivares (centavos), ya calculado por `withTips`.
+   * Con el ticket del pedido es el monto exacto que vio el cajero; sin ticket,
+   * el resultado de aplicar su tasa. `null` cuando no hay forma de valorarlo.
+   */
+  private localCentsOf(row: MovementLike): number | null {
+    if (row.localAmount === null || row.localAmount === undefined) return null;
+    return toCents(row.localAmount);
+  }
+
+  /** Valor del fondo inicial en bolivares (centavos), o `null` si falta tasa. */
+  private openingLocalCentsOf(fundLines: readonly OpeningLine[]): number | null {
+    if (fundLines.length === 0) return null;
+    let cents = 0;
+    for (const line of fundLines) {
+      const currency = normalizeCurrencyCode(line.currency) || BASE_CURRENCY_CODE;
+      const rate =
+        line.rate ?? (currency === LOCAL_CURRENCY_CODE ? 1 : null);
+      if (!rate || !Number.isFinite(rate) || rate <= 0) return null;
+      cents += toCents(line.amount) * rate;
+    }
+    return cents;
   }
 
   // =========================================================================
@@ -522,7 +606,19 @@ export class CashService {
     // total de ventas para que `salesTotal` siga siendo lo NETO cobrado.
     let changeTotal = 0;
 
+    // Los mismos agregados valorados en bolivares con el ticket de cada
+    // documento (`localAmount`). Se acumulan en centavos y se recortan al final.
+    let localIn = 0;
+    let localOut = 0;
+    let localKnown = true;
+    let localCashIn = 0;
+    let localCashOut = 0;
+    let localSalesTotal = 0;
+    let localTipsTotal = 0;
+    let localChangeTotal = 0;
+
     const methods = new Map<string, { in: number; out: number }>();
+    const localMethods = new Map<string, { in: number; out: number }>();
     const categories = new Map<string, { in: number; out: number }>();
     const currencies = new Map<string, CurrencyEntry>();
 
@@ -531,6 +627,7 @@ export class CashService {
       // `amount`: moneda original · `base`: equivalente en USD exacto (centavos).
       const amount = toMoney(m.amount);
       const base = this.baseCentsOf(m);
+      const local = this.localCentsOf(m);
       const isIn = m.type === CashMovementType.IN;
       const isCash = m.paymentMethod === PaymentMethod.CASH;
       const side = isIn ? 'in' : 'out';
@@ -543,18 +640,42 @@ export class CashService {
         if (isCash) cashOut += base;
       }
 
+      if (local == null) {
+        localKnown = false;
+      } else if (isIn) {
+        localIn += local;
+        if (isCash) localCashIn += local;
+      } else {
+        localOut += local;
+        if (isCash) localCashOut += local;
+      }
+
       if (isIn && m.category === CashMovementCategory.SALE) {
         salesTotal += base;
         // La propina entra dentro del cobro: se separa de la venta.
-        tipsTotal += toCents(this.tipOf(m));
+        const tip = toCents(this.tipOf(m));
+        tipsTotal += tip;
+        if (local != null) {
+          localSalesTotal += local;
+          // La propina se reparte con la misma proporcion que en el ticket.
+          localTipsTotal +=
+            base > 0 ? (local * tip) / base : 0;
+        }
       }
       if (!isIn && m.category === CashMovementCategory.CHANGE) {
         changeTotal += base;
+        if (local != null) localChangeTotal += local;
       }
 
       const methodEntry = methods.get(m.paymentMethod) ?? { in: 0, out: 0 };
       methodEntry[side] += base;
       methods.set(m.paymentMethod, methodEntry);
+
+      if (local != null) {
+        const localMethod = localMethods.get(m.paymentMethod) ?? { in: 0, out: 0 };
+        localMethod[side] += local;
+        localMethods.set(m.paymentMethod, localMethod);
+      }
 
       const catEntry = categories.get(m.category) ?? { in: 0, out: 0 };
       catEntry[side] += base;
@@ -573,6 +694,11 @@ export class CashService {
       const entry = currencies.get(currency) ?? emptyCurrencyEntry(currency);
       entry[side] = money.add(entry[side], amount);
       entry[side === 'in' ? 'baseIn' : 'baseOut'] += base;
+      if (local == null) {
+        entry.localKnown = false;
+      } else {
+        entry[side === 'in' ? 'localIn' : 'localOut'] += local;
+      }
       if (isCash) {
         entry[side === 'in' ? 'cashIn' : 'cashOut'] = money.add(
           entry[side === 'in' ? 'cashIn' : 'cashOut'],
@@ -605,6 +731,10 @@ export class CashService {
 
     /** Centavos acumulados -> monto, recortando una sola vez. */
     const truncate = (cents: number): number => fromCents(truncCents(cents));
+    /** Monto en bolivares (centavos) -> valor, o `null` si no se pudo sumar. */
+    const localValue = (cents: number, known: boolean): number | null =>
+      known ? truncate(cents) : null;
+    const openingLocalCents = this.openingLocalCentsOf(fundLines);
 
     return {
       cashIn: truncate(cashIn),
@@ -614,52 +744,77 @@ export class CashService {
       totalIn: truncate(totalIn),
       totalOut: truncate(totalOut),
       net: truncate(totalIn - totalOut),
+      localIn: localValue(localIn, localKnown),
+      localOut: localValue(localOut, localKnown),
+      localNet: localKnown ? truncate(localIn - localOut) : null,
+      localCashIn: localValue(localCashIn, localKnown),
+      localCashOut: localValue(localCashOut, localKnown),
+      localOpening:
+        openingLocalCents == null ? null : truncate(openingLocalCents),
+      localSales: localValue(
+        localSalesTotal - localTipsTotal - localChangeTotal,
+        localKnown,
+      ),
+      localTips: localValue(localTipsTotal, localKnown),
       // Ventas netas: se descuentan la propina (que viene dentro del cobro) y los
       // vueltos entregados. `cashIn`/`totalIn` conservan el bruto para que el
       // arqueo cuadre con el dinero que fisicamente paso por el cajon.
       salesTotal: truncate(salesTotal - tipsTotal - changeTotal),
       tipsTotal: truncate(tipsTotal),
       movementCount: movements.length,
-      byMethod: [...methods.entries()].map(([method, v]) => ({
-        method,
-        in: truncate(v.in),
-        out: truncate(v.out),
-        net: truncate(v.in - v.out),
-      })),
+      byMethod: [...methods.entries()].map(([method, v]) => {
+        const local = localMethods.get(method);
+        return {
+          method,
+          in: truncate(v.in),
+          out: truncate(v.out),
+          net: truncate(v.in - v.out),
+          localIn: localKnown ? (local ? truncate(local.in) : 0) : null,
+          localOut: localKnown ? (local ? truncate(local.out) : 0) : null,
+          localNet: localKnown ? (local ? truncate(local.in - local.out) : 0) : null,
+        };
+      }),
       byCategory: [...categories.entries()].map(([category, v]) => ({
         category,
         in: truncate(v.in),
         out: truncate(v.out),
         net: truncate(v.in - v.out),
       })),
-      byCurrency: [...currencies.values()].map(({ methods: byMethod, ...entry }) => {
-        const baseIn = truncate(entry.baseIn);
-        const baseOut = truncate(entry.baseOut);
-        return {
-          ...entry,
-          baseIn,
-          baseOut,
-          baseNet: money.sub(baseIn, baseOut),
-          baseCashIn: truncate(entry.baseCashIn),
-          baseCashOut: truncate(entry.baseCashOut),
-          baseSales: truncate(entry.baseSales),
-          baseTips: truncate(entry.baseTips),
-          baseChange: truncate(entry.baseChange),
-          methods: [...byMethod.entries()].map(([method, v]) => {
-            const methodBaseIn = truncate(v.baseIn);
-            const methodBaseOut = truncate(v.baseOut);
-            return {
-              method,
-              in: v.in,
-              out: v.out,
-              net: money.sub(v.in, v.out),
-              baseIn: methodBaseIn,
-              baseOut: methodBaseOut,
-              baseNet: money.sub(methodBaseIn, methodBaseOut),
-            };
-          }),
-        };
-      }),
+      byCurrency: [...currencies.values()].map(
+        ({ methods: byMethod, localKnown: currencyLocalKnown, ...entry }) => {
+          const baseIn = truncate(entry.baseIn);
+          const baseOut = truncate(entry.baseOut);
+          return {
+            ...entry,
+            baseIn,
+            baseOut,
+            baseNet: money.sub(baseIn, baseOut),
+            baseCashIn: truncate(entry.baseCashIn),
+            baseCashOut: truncate(entry.baseCashOut),
+            baseSales: truncate(entry.baseSales),
+            baseTips: truncate(entry.baseTips),
+            baseChange: truncate(entry.baseChange),
+            localIn: currencyLocalKnown ? truncate(entry.localIn) : null,
+            localOut: currencyLocalKnown ? truncate(entry.localOut) : null,
+            localNet: currencyLocalKnown
+              ? truncate(entry.localIn - entry.localOut)
+              : null,
+            methods: [...byMethod.entries()].map(([method, v]) => {
+              const methodBaseIn = truncate(v.baseIn);
+              const methodBaseOut = truncate(v.baseOut);
+              return {
+                method,
+                in: v.in,
+                out: v.out,
+                net: money.sub(v.in, v.out),
+                baseIn: methodBaseIn,
+                baseOut: methodBaseOut,
+                baseNet: money.sub(methodBaseIn, methodBaseOut),
+              };
+            }),
+          };
+        },
+      ),
       openingByCurrency: fundLines,
       openingMixed: fundLines.length > 1,
     };
@@ -730,12 +885,14 @@ export class CashService {
   }
 
   /**
-   * Añade a cada cobro por venta la propina que lleva dentro (moneda base).
+   * Añade a cada cobro por venta la propina que lleva dentro (moneda base) y su
+   * valor exacto en bolivares.
    *
-   * Solo consulta los pedidos con propina referenciados por los movimientos
-   * recibidos; los movimientos que no son cobros de pedido se devuelven tal
-   * cual. Lo usan el arqueo (`serializeSession`) y el panel para que las ventas
-   * que muestra el sistema queden siempre netas de propina.
+   * Solo consulta los pedidos referenciados por los movimientos recibidos; los
+   * movimientos que no son cobros de pedido se valoran con su propia tasa
+   * (`amount × exchangeRate`). Lo usan el arqueo (`serializeSession`) y el panel
+   * para que las ventas que muestra el sistema queden siempre netas de propina y
+   * valoradas en bolivares igual que el ticket del punto de venta.
    */
   async withTips(
     companyId: string,
@@ -753,11 +910,19 @@ export class CashService {
           .map((m) => m.referenceId as string),
       ),
     ];
-    if (orderIds.length === 0) return [...movements];
+    if (orderIds.length === 0) {
+      return movements.map((movement) => this.withLocalAmount(movement));
+    }
 
     const orders = await this.cash.findOrdersWithTips(companyId, orderIds);
 
     const tipsByMovement = new Map<string, number>();
+    // Valor en bolivares (centavos) de cada movimiento de venta. Cuando el
+    // pedido guarda su ticket en bolivares se reparte ESE monto entre sus
+    // cobros: Bs 15.680,00 pagados con $ 17,59 no se revalorizan con el dolar
+    // recortado (darian Bs 15.674,54).
+    const localCentsByMovement = new Map<string, number>();
+
     for (const order of orders) {
       const portions = this.tipPortionsOfOrder(
         order.total,
@@ -768,13 +933,88 @@ export class CashService {
         if (!payment.cashMovementId) continue;
         tipsByMovement.set(payment.cashMovementId, portions.get(payment.id) ?? 0);
       }
+
+      const ticketCents = this.ticketCentsOf(order);
+      if (ticketCents == null) continue;
+
+      const sales = movements.filter(
+        (m) =>
+          m.category === CashMovementCategory.SALE &&
+          m.referenceType === 'ORDER' &&
+          m.referenceId === order.id &&
+          !!m.id,
+      );
+      if (sales.length === 0) continue;
+
+      // Se reparte el ticket en proporcion a lo que aporto cada movimiento al
+      // pedido. El ultimo recibe el resto para que la suma cierre exacta.
+      const bases = sales.map((m) => this.baseCentsOf(m));
+      const totalBase = bases.reduce((acc, value) => acc + value, 0);
+      if (totalBase <= 0) continue;
+      // Con una lista paginada pueden faltar partes del cobro: si lo recibido no
+      // cubre el pedido, el reparto seria incorrecto y se deja la valoracion por
+      // tasa (el arqueo, que siempre ve el turno completo, si reparte el ticket).
+      if (totalBase + 2 < toCents(order.total)) continue;
+
+      let assigned = 0;
+      sales.forEach((movement, index) => {
+        const share =
+          index === sales.length - 1
+            ? ticketCents - assigned
+            : Math.trunc((ticketCents * bases[index]) / totalBase);
+        assigned += share;
+        localCentsByMovement.set(movement.id as string, share);
+      });
     }
 
-    return movements.map((movement) => ({
-      ...movement,
-      tipAmount: movement.id ? (tipsByMovement.get(movement.id) ?? 0) : 0,
-    }));
+    return movements.map((movement) => {
+      const valued = this.withLocalAmount(movement);
+      const ticket = movement.id
+        ? localCentsByMovement.get(movement.id)
+        : undefined;
+      return {
+        ...valued,
+        tipAmount: movement.id ? (tipsByMovement.get(movement.id) ?? 0) : 0,
+        ...(ticket !== undefined ? { localAmount: fromCents(ticket) } : {}),
+      };
+    });
   }
+
+  /**
+   * Valor en bolivares de un movimiento que no viene de un ticket en bolivares:
+   * se usa la tasa con la que se registro (`amount × exchangeRate`). Los
+   * registros sin tasa quedan en `null` y la pantalla cae en la conversion.
+   */
+  private withLocalAmount(movement: MovementLike): MovementLike {
+    if (movement.localAmount !== undefined && movement.localAmount !== null) {
+      return movement;
+    }
+    const rate = Number(movement.exchangeRate ?? 0);
+    if (!(rate > 0)) return movement;
+    return { ...movement, localAmount: toMoney(Number(movement.amount ?? 0) * rate) };
+  }
+
+  /**
+   * Total del ticket del pedido en bolivares (centavos), cuando sus precios se
+   * cargaron en la moneda local. Tolera JSON vacio o corrupto (devuelve `null`).
+   */
+  private ticketCentsOf(order: {
+    priceCurrency?: string | null;
+    priceBreakdown?: unknown;
+  }): number | null {
+    if (order.priceCurrency !== LOCAL_CURRENCY_CODE) return null;
+    if (typeof order.priceBreakdown !== 'string' || !order.priceBreakdown.trim()) {
+      return null;
+    }
+    try {
+      const parsed = JSON.parse(order.priceBreakdown) as { total?: unknown } | null;
+      const total = Number(parsed?.total);
+      return Number.isFinite(total) && total > 0 ? total : null;
+    } catch {
+      return null;
+    }
+  }
+
 
   /** Etiqueta legible del resultado del arqueo. */
   private differenceLabel(difference: number | null | undefined): string {
@@ -815,6 +1055,8 @@ export class CashService {
 
     return {
       ...session,
+      /** Movimientos con la propina y el valor en bolivares ya resueltos. */
+      movements,
       /** Todos los montos del arqueo estan en esta moneda (USD). */
       baseCurrency: BASE_CURRENCY_CODE,
       /** Desglose del fondo (moneda + monto contado + equivalente en USD). */
@@ -864,7 +1106,11 @@ export class CashService {
   async listMovements(companyId: string, query: CashMovementQueryDto) {
     const { items, total } = await this.cash.findMovementPage(companyId, query);
 
-    return buildPaginatedResult(items, total, query.page, query.limit);
+    // El listado lleva la propina y el valor en bolivares de cada movimiento
+    // (el mismo que pinta el arqueo) para que la tabla no reconvierta el USD.
+    const rows = await this.withTips(companyId, items);
+
+    return buildPaginatedResult(rows, total, query.page, query.limit);
   }
 
 

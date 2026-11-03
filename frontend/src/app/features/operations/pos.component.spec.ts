@@ -1203,12 +1203,14 @@ describe('PosComponent (vista de cajero)', () => {
       fixture.nativeElement.querySelectorAll('[data-bcv-rate]'),
     ) as HTMLElement[];
     expect(badges.map((badge) => badge.textContent?.trim())).toEqual([
-      'BCV $ 876.79',
-      'BCV € 982.00',
+      'BCV $ 876.7976',
+      'BCV € 982.00454402',
     ]);
     // Cada badge lleva la tasa exacta del BCV y la fecha publicada en el tooltip.
     expect(badges[0].getAttribute('title')).toBe('BCV Dólar: Bs 876.7976 · 2026-10-13');
-    expect(badges[1].getAttribute('title')).toBe('BCV Euro: Bs 982.0045 · 2026-10-13');
+    expect(badges[1].getAttribute('title')).toBe(
+      'BCV Euro: Bs 982.00454402 · 2026-10-13',
+    );
   });
 
   /**

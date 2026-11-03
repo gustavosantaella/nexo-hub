@@ -41,7 +41,7 @@ import {
   moneyIn,
   mulMoney,
   payableAmount,
-  rate,
+  rateExact,
   sumMoney,
 } from '../../core/utils/format';
 import {
@@ -775,7 +775,7 @@ export class OrdersPage implements OnInit, OnDestroy {
     const rates = payment.ratesHistory?.rates ?? [];
     if (rates.length === 0) return '';
     return rates
-      .map((item) => `${RATE_META[item.key].shortLabel} ${rate(item.rate, 2)}`)
+      .map((item) => `${RATE_META[item.key].shortLabel} ${rateExact(item.rate)}`)
       .join(' · ');
   }
 

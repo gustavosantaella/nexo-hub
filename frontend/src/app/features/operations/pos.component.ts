@@ -74,7 +74,7 @@ import {
   moneyLoaded,
   mulMoney,
   payableAmount,
-  rate,
+  rateExact,
   sumMoney,
   truncate,
 } from '../../core/utils/format';
@@ -401,11 +401,12 @@ export class PosComponent implements OnInit, OnDestroy {
         key: row.key,
         label: RATE_META[row.key].shortLabel,
         badge: RATE_META[row.key].badge,
-        // Dos decimales, como el resumen de tasas del cobro y el selector de monedas.
-        text: rate(row.rate, 2),
+        // Todos los decimales del BCV (891,1054): recortarlos a dos hacia que
+        // Bs 15.680,00 pareciera no cuadrar con su equivalente en dolares.
+        text: rateExact(row.rate),
         title: current?.date
-          ? `${RATE_META[row.key].label}: Bs ${rate(row.rate)} · ${current.date}`
-          : `${RATE_META[row.key].label}: Bs ${rate(row.rate)}`,
+          ? `${RATE_META[row.key].label}: Bs ${rateExact(row.rate)} · ${current.date}`
+          : `${RATE_META[row.key].label}: Bs ${rateExact(row.rate)}`,
       }));
   });
 

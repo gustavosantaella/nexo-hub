@@ -749,7 +749,7 @@ describe('CashPage (fondo inicial multimoneda)', () => {
     // Las conversiones de las tarjetas usan los bolívares físicos, no el dólar
     // recortado: $ 17,57 al BCV daban Bs 15.900,85, no los Bs 15.520,00
     // cobrados.
-    expect(page.cashInCard).toEqual({
+    expect(page.incomeCard).toEqual({
       amount: 15_520,
       currency: 'VES',
       rateKey: 'BCV_USD',
@@ -803,6 +803,124 @@ describe('CashPage (fondo inicial multimoneda)', () => {
     expect(inUsd).toContain('$ 17.57');
     // La línea del desglose mantiene los bolívares que entraron al cajón.
     expect(inUsd).toContain('Bs 15,520.00');
+  });
+
+  /**
+   * El ticket manda en bolívares: una venta de Bs 15.680,00 cobrada con $ 17,59
+   * vale Bs 15.680,00 en la caja (no los Bs 15.674,54 que salen de reconvertir
+   * el dólar recortado a centavos). El backend manda ese valor por movimiento
+   * (`localAmount`) y por agregado (`localIn`, `localCashIn`, ...).
+   */
+  it('usa el ticket en bolívares aunque el cobro haya sido en dólares', () => {
+    const page = mount();
+    setDisplayCurrency({
+      code: 'VES',
+      label: 'Bolívares',
+      symbol: 'Bs',
+      decimals: 2,
+      bsPerUnit: 1,
+      bsPerUsd: 891.1054,
+    });
+
+    page.session.set(session({ status: 'OPEN', openingAmount: 0 }));
+    page.summary.set({
+      cashIn: 17.59,
+      cashOut: 0,
+      expectedCash: 17.59,
+      totalIn: 17.59,
+      totalOut: 20,
+      net: -2.41,
+      salesTotal: 17.59,
+      tipsTotal: 0,
+      movementCount: 2,
+      localIn: 15_680,
+      localOut: 2_000,
+      localNet: 13_680,
+      localCashIn: 15_680,
+      localCashOut: 2_000,
+      localOpening: 0,
+      localSales: 15_680,
+      localTips: 0,
+      byMethod: [
+        { method: 'CASH', in: 17.59, out: 20, net: -2.41, localIn: 15_680, localOut: 2_000, localNet: 13_680 },
+      ],
+      byCategory: [],
+      byCurrency: [],
+    });
+    page.movItems.set([
+      {
+        id: 'mv1',
+        sessionId: 's1',
+        type: 'IN',
+        category: 'SALE',
+        paymentMethod: 'CASH',
+        amount: 17.59,
+        currency: 'USD',
+        exchangeRate: 891.1054,
+        baseRate: 1,
+        baseAmount: 17.59,
+        localAmount: 15_680,
+        createdAt: '2026-10-13T10:00:00.000Z',
+      } satisfies CashMovement,
+    ]);
+    fixture.detectChanges();
+
+    expect(page.totalInDisplay).toBe(15_680);
+    expect(page.totalOutDisplay).toBe(2_000);
+    expect(page.cashInDisplay).toBe(15_680);
+    expect(page.expectedCashDisplay).toBe(13_680);
+    expect(page.salesTotalDisplay).toBe(15_680);
+    expect(page.byMethodRows[0].inDisplay).toBe(15_680);
+    expect(page.byMethodRows[0].netDisplay).toBe(13_680);
+    // El listado de movimientos también conserva el ticket.
+    expect(page.movementDisplay(page.movItems()[0])).toBe(15_680);
+
+    setDisplayCurrency(null);
+  });
+
+  it('suma en Ingresos y Egresos todos los métodos, no solo el efectivo', () => {
+    const page = mount();
+    page.session.set(session({ status: 'OPEN', openingAmount: 0 }));
+    page.summary.set({
+      // Solo 30 USD entraron al cajón; el resto se cobró por transferencia.
+      cashIn: 30,
+      cashOut: 0,
+      expectedCash: 30,
+      totalIn: 180,
+      // Un gasto pagado por transferencia también egresa del turno.
+      totalOut: 20,
+      net: 160,
+      salesTotal: 180,
+      tipsTotal: 0,
+      movementCount: 3,
+      byMethod: [
+        { method: 'CASH', in: 30, out: 0, net: 30 },
+        { method: 'TRANSFER', in: 150, out: 20, net: 130 },
+      ],
+      byCategory: [],
+      byCurrency: [],
+    });
+    fixture.detectChanges();
+
+    // El efectivo esperado sigue mirando solo el cajón.
+    expect(page.cashInDisplay).toBe(30);
+    expect(page.expectedCashDisplay).toBe(30);
+
+    // Las tarjetas del turno suman todos los métodos.
+    expect(page.totalInDisplay).toBe(180);
+    expect(page.totalOutDisplay).toBe(20);
+    expect(page.incomeCard.amount).toBe(180);
+    expect(page.expenseCard.amount).toBe(20);
+
+    const cards = Array.from<HTMLElement>(
+      fixture.nativeElement.querySelectorAll('app-stat-card'),
+    );
+    const income = cards.find((card) => card.textContent?.includes('Ingresos'));
+    const expense = cards.find((card) => card.textContent?.includes('Egresos'));
+    expect(income?.textContent).toContain('$ 180.00');
+    expect(income?.textContent).toContain('todos los métodos');
+    expect(expense?.textContent).toContain('$ 20.00');
+    expect(expense?.textContent).toContain('todos los métodos');
   });
 
   it('cierra la tarjeta con el total del backend aunque el desglose sume un centavo mas', () => {

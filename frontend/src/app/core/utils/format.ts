@@ -167,6 +167,22 @@ export function rate(value: number | null | undefined, digits = 4): string {
   return decimal(Number(value ?? 0), digits);
 }
 
+/**
+ * Formatea una tasa con TODOS sus decimales (hasta 8, sin ceros de relleno).
+ *
+ * Las tasas del BCV traen 4 decimales (`891,1054`) y la del euro hasta 8.
+ * Recortarlas a dos hacia que una venta de Bs 15.680,00 pareciera no cuadrar
+ * con su equivalente en dolares: con la tasa completa se ve de donde sale cada
+ * centavo y la caja puede reconstruir el monto exacto del ticket.
+ */
+export function rateExact(value: number | null | undefined): string {
+  const amount = Number(value ?? 0);
+  return new Intl.NumberFormat(BASE_CURRENCY.locale, {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 8,
+  }).format(Number.isFinite(amount) ? amount : 0);
+}
+
 /** Variacion porcentual con signo. Ej.: `signedPercent(0.131)` -> `+0.13%`. */
 export function signedPercent(
   value: number | null | undefined,

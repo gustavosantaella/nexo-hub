@@ -36,6 +36,12 @@ const ORDER_TIPS_SELECT = {
   id: true,
   total: true,
   tip: true,
+  // Ticket exacto del pedido en la moneda en que se cargaron los precios. Se
+  // usa para valorar el cobro en bolivares con el monto que vio el cajero
+  // (Bs 15.680,00), aunque el cliente haya pagado en otra moneda ($ 17,59).
+  priceCurrency: true,
+  priceRate: true,
+  priceBreakdown: true,
   payments: {
     select: {
       id: true,
@@ -208,6 +214,13 @@ export class CashRepository {
 
 
   /** Pedidos con propina referenciados por los movimientos recibidos. */
+  /**
+   * Pedidos referenciados por los cobros del turno.
+   *
+   * Se traen SIEMPRE (no solo los que tienen propina): ademas de repartir la
+   * propina, el arqueo necesita el ticket en bolivares del pedido para valorar
+   * el cobro con el monto exacto que vio el cajero.
+   */
   findOrdersWithTips(
     companyId: string,
     orderIds: string[],
@@ -215,8 +228,6 @@ export class CashRepository {
     return this.prisma.order.findMany({
       where: {
         id: { in: orderIds },
-        // Sin propina no hay nada que separar.
-        tip: { gt: 0 },
         ...tenantWhere(companyId),
       },
       select: ORDER_TIPS_SELECT,
