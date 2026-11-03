@@ -1,4 +1,4 @@
-import { boxUnitsOf, isBoxProduct } from './product-pricing';
+import { boxUnitsOf, isPackProduct, PACK_UNITS } from './product-pricing';
 
 /**
  * Unidades del inventario (espejo de `backend/src/common/utils/packaging.util.ts`).
@@ -25,7 +25,7 @@ export const DECIMAL_SUB_UNITS: Record<
 };
 
 /** Unidades que representan una presentacion completa (caja, paquete). */
-export const BOX_UNITS: readonly string[] = ['CAJA', 'PAQUETE'];
+export const BOX_UNITS: readonly string[] = PACK_UNITS;
 
 /** Definicion minima de la presentacion de un producto. */
 export interface PackDefinition {
@@ -60,7 +60,7 @@ export function isPackUnit(unit: unknown): boolean {
 
 /** `true` cuando el producto se maneja por presentacion (cajas/paquetes). */
 export function isBoxPack(pack: PackDefinition): boolean {
-  return isBoxProduct(pack) || isPackUnit(pack.unit);
+  return isPackProduct(pack);
 }
 
 /** Etiqueta de la caja segun la unidad declarada del producto. */

@@ -140,7 +140,7 @@ export class CreateProductDto {
   @ApiPropertyOptional({
     example: 3.5,
     description:
-      'PRECIO DE VENTA de UNA unidad individual de la presentacion (caja/paquete), en `unitPriceCurrency` (por defecto la moneda de `priceCurrency`). 0 = sin definir: la interfaz reparte `price / unitsPerBox`.',
+      'PRECIO DE VENTA de UNA unidad individual de la presentacion (caja/paquete), en `unitPriceCurrency` (por defecto la moneda de `priceCurrency`). Si la presentacion es una caja/paquete de una sola unidad tambien se puede fijar. 0 = sin definir: la interfaz reparte `price / unitsPerBox`.',
   })
   @IsOptional()
   @Type(() => Number)
@@ -200,7 +200,7 @@ export class CreateProductDto {
 
   @ApiPropertyOptional({
     description:
-      'Unidades individuales que trae la presentacion (caja/paquete). El precio sigue siendo el de la presentacion completa y el stock se lleva en unidades, asi el POS vende sueltas a `price / unitsPerBox`. 1 = se vende suelto.',
+      'Unidades individuales que trae la presentacion (caja/paquete). El precio sigue siendo el de la presentacion completa y el stock se lleva en unidades, asi el POS vende sueltas a `price / unitsPerBox` (o a `unitPrice` si esta definido). 1 = caja/paquete de una sola unidad o producto suelto.',
     default: 1,
   })
   @IsOptional()

@@ -13,8 +13,9 @@ import { divMoney } from './format';
  *
  * Por eso el precio que cobra el POS por la unidad suelta es `unitPrice` y, si el
  * operador no lo definio, `price / unitsPerBox`: una caja de $ 24 con 24 unidades
- * se vende suelta a $ 1. Con `unitsPerBox = 1` (producto suelto) el precio no
- * cambia.
+ * se vende suelta a $ 1. Con `unitsPerBox = 1` el reparto no cambia el precio,
+ * pero si la unidad es CAJA/PAQUETE igual se puede fijar un `unitPrice` propio:
+ * una caja de 1 tambien se abre para vender su unidad.
  */
 
 /** Tipo minimo que necesitan las ayudas (sirve para `Product` y `ProductOption`). */
@@ -24,6 +25,16 @@ interface Presentation {
   unitsPerBox?: number | null;
   /** Precio de venta de una unidad suelta; 0 o ausente = repartir `price`. */
   unitPrice?: number | null;
+}
+
+/** Unidades que declaran una presentacion completa (caja, paquete). */
+export const PACK_UNITS: readonly string[] = ['CAJA', 'PAQUETE'];
+
+/** Normaliza el codigo de una unidad (`caja ` -> `CAJA`). */
+function unitCode(unit: unknown): string {
+  return String(unit ?? '')
+    .trim()
+    .toUpperCase();
 }
 
 /** Presentacion con el contexto de moneda del precio unitario (opcional). */
@@ -36,7 +47,7 @@ interface UnitPriceDetail extends Presentation {
   unitPriceRateKey?: string | null;
 }
 
-/** Unidades individuales de la presentacion: entero >= 1 (1 = se vende suelto). */
+/** Unidades individuales de la presentacion: entero >= 1 (1 = caja de una unidad o producto suelto). */
 export function boxUnitsOf(product: { unitsPerBox?: number | null }): number {
   const units = Math.floor(Number(product.unitsPerBox ?? 1));
   return units > 1 ? units : 1;
@@ -48,6 +59,21 @@ export function isBoxProduct(product: { unitsPerBox?: number | null }): boolean 
 }
 
 /**
+ * `true` cuando el producto declara una PRESENTACION (caja/paquete), aunque
+ * traiga una sola unidad.
+ *
+ * `isBoxProduct` solo mira las unidades por caja, asi que una caja de 1 se
+ * trataba como producto suelto y el catalogo no pedia su precio unitario. Una
+ * caja de 1 tambien es una presentacion: el negocio puede abrirla y vender la
+ * unidad a un precio propio.
+ */
+export function isPackProduct(
+  product: Pick<Presentation, 'unit' | 'unitsPerBox'>,
+): boolean {
+  return boxUnitsOf(product) > 1 || PACK_UNITS.includes(unitCode(product.unit));
+}
+
+/**
  * Precio de venta de UNA unidad individual.
  *
  * Si el operador fijo un precio unitario (`unitPrice > 0`) se cobra ese; si no,
@@ -55,7 +81,7 @@ export function isBoxProduct(product: { unitsPerBox?: number | null }): boolean 
  * unitsPerBox`). En un producto suelto (sin presentacion) el precio es el suyo.
  */
 export function unitPriceOf(product: Presentation): number {
-  if (boxUnitsOf(product) > 1) {
+  if (isPackProduct(product)) {
     const explicit = Number(product.unitPrice ?? 0);
     if (Number.isFinite(explicit) && explicit > 0) return explicit;
   }
@@ -95,7 +121,7 @@ export function enteredBoxPriceOf(product: UnitPriceDetail): EnteredPrice | null
  */
 export function enteredUnitPriceOf(product: UnitPriceDetail): EnteredPrice | null {
   const units = boxUnitsOf(product);
-  if (units > 1) {
+  if (isPackProduct(product)) {
     const explicit = Number(product.unitPrice ?? 0);
     const entered = Number(product.unitPriceEntered ?? 0);
     if (Number.isFinite(explicit) && explicit > 0) {
@@ -114,11 +140,12 @@ export function enteredUnitPriceOf(product: UnitPriceDetail): EnteredPrice | nul
 }
 
 /**
- * Unidad que se cobra en el POS: en los productos por caja siempre es la unidad
- * suelta (`UND`), porque el stock y el precio ya estan por unidad.
+ * Unidad que se cobra en el POS: en las presentaciones (cajas/paquetes) siempre
+ * es la unidad suelta (`UND`), porque el stock y el precio ya estan por unidad.
+ * Aplica tambien a la caja que trae una sola unidad.
  */
 export function soldUnitLabel(product: Pick<Presentation, 'unit' | 'unitsPerBox'>): string {
-  return isBoxProduct(product) ? 'UND' : product.unit;
+  return isPackProduct(product) ? 'UND' : product.unit;
 }
 
 /**
@@ -139,7 +166,7 @@ export function loadedUnitPrice(product: UnitPriceDetail): {
   currency: string;
   rateKey: string | null;
 } | null {
-  if (boxUnitsOf(product) <= 1) return null;
+  if (!isPackProduct(product)) return null;
   const explicit = Number(product.unitPrice ?? 0);
   const entered = Number(product.unitPriceEntered ?? 0);
   if (!Number.isFinite(explicit) || explicit <= 0) return null;

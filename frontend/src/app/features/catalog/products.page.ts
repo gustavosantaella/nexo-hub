@@ -33,6 +33,7 @@ import {
 import {
   boxUnitsOf,
   isBoxProduct,
+  isPackProduct,
   loadedUnitPrice,
   soldUnitLabel,
   unitPriceOf,
@@ -88,7 +89,7 @@ interface ProductForm {
   stock: number;
   minStock: number;
   unit: ProductUnit;
-  /** Unidades individuales que trae la presentacion (1 = producto suelto). */
+  /** Unidades individuales que trae la presentacion (1 = caja de una unidad o producto suelto). */
   unitsPerBox: number;
   trackStock: boolean;
   categoryId: string;
@@ -130,6 +131,8 @@ export class ProductsPage implements OnInit {
   readonly mediaUrl = resolveMediaUrl;
   /** `true` cuando el producto se vende por caja (precio de caja, stock por unidad). */
   readonly isBoxProduct = isBoxProduct;
+  /** `true` cuando el producto es una presentacion (caja/paquete), aunque traiga 1 unidad. */
+  readonly isPackProduct = isPackProduct;
   readonly boxUnitsOf = boxUnitsOf;
   readonly soldUnitLabel = soldUnitLabel;
   readonly auth = inject(AuthService);
@@ -239,6 +242,15 @@ export class ProductsPage implements OnInit {
     return this.boxUnits() > 1;
   }
 
+  /**
+   * `true` cuando hay que pedir el precio de venta de la unidad suelta: en toda
+   * presentacion (caja o paquete), incluso si trae una sola unidad. La caja de 1
+   * tambien se puede abrir para vender su unidad a un precio propio.
+   */
+  get asksUnitPrice(): boolean {
+    return isPackProduct(this.form);
+  }
+
   /** `true` cuando la unidad elegida es una presentacion (caja o paquete). */
   get isPackFormUnit(): boolean {
     return isPackUnit(this.form.unit);
@@ -338,7 +350,7 @@ export class ProductsPage implements OnInit {
     currency: string;
   } | null {
     const units = this.boxUnits();
-    if (units <= 1) return null;
+    if (!this.asksUnitPrice) return null;
     const explicit = Number(this.form.unitPrice) || 0;
     const price = Number(this.form.price) || 0;
     return {
@@ -359,7 +371,7 @@ export class ProductsPage implements OnInit {
    */
   get unitPriceReference(): { amount: number; units: number; currency: string } | null {
     const units = this.boxUnits();
-    if (units <= 1) return null;
+    if (!this.asksUnitPrice) return null;
     const price = Number(this.form.price) || 0;
     if (price <= 0) return null;
     const currency = this.form.unitPriceCurrency;
@@ -597,11 +609,11 @@ export class ProductsPage implements OnInit {
       supplierId: this.form.supplierId || null,
       active: this.form.active,
     };
-    // El precio unitario solo aplica a las presentaciones (cajas/paquetes) y lleva
-    // su propia moneda y tasa: el backend convierte cada monto por separado. Si el
-    // producto deja de ser una presentacion se envia 0 (sin definir) para que el
-    // POS vuelva a repartir el precio entre las unidades.
-    payload.unitPrice = this.isBoxForm ? Number(this.form.unitPrice) || 0 : 0;
+    // El precio unitario aplica a las presentaciones (cajas/paquetes, incluso de
+    // una sola unidad) y lleva su propia moneda y tasa: el backend convierte cada
+    // monto por separado. Si el producto deja de ser una presentacion se envia 0
+    // (sin definir) para que el POS vuelva a repartir el precio entre las unidades.
+    payload.unitPrice = this.asksUnitPrice ? Number(this.form.unitPrice) || 0 : 0;
     payload.unitPriceCurrency = this.form.unitPriceCurrency;
     payload.unitPriceRateKey = this.form.unitPriceRateKey;
     const sku = this.form.sku.trim();

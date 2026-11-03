@@ -276,8 +276,10 @@ describe('ProductsPage', () => {
 
     selectUnit(fixture, 'Caja');
     expect(hasPackUnitsField(fixture)).toBe(true);
-    // Con una sola unidad por caja no hay precio unitario que definir.
-    expect(hasUnitPriceField(fixture)).toBe(false);
+    // Una caja de 1 tambien es una presentacion: se puede abrir y vender su
+    // unidad a un precio propio, asi que el campo se pide desde el principio.
+    expect(hasUnitPriceField(fixture)).toBe(true);
+    expect(page.asksUnitPrice).toBe(true);
     expect(labelText(fixture.nativeElement, 'prod-units-per-box')).toBe('Unidades por caja');
 
     setUnitsPerBox(fixture, 12);
@@ -289,6 +291,38 @@ describe('ProductsPage', () => {
     selectUnit(fixture, 'Kilogramo');
     expect(hasPackUnitsField(fixture)).toBe(false);
     expect(hasUnitPriceField(fixture)).toBe(false);
+  });
+
+  it('guarda el precio unitario de una caja con una sola unidad', () => {
+    const fixture = mount([]);
+    const page = fixture.componentInstance;
+
+    page.openCreate();
+    fixture.detectChanges();
+    page.form.name = 'Caja individual';
+    page.form.price = 10;
+    selectUnit(fixture, 'Caja');
+
+    expect(page.form.unitsPerBox).toBe(1);
+    expect(page.boxPreview).toEqual({
+      units: 1,
+      unitLabel: 'Caja',
+      unitPrice: 10,
+      currency: 'USD',
+    });
+
+    page.onUnitPriceChange(12);
+    page.save();
+
+    const request = http.expectOne(
+      (candidate) => candidate.method === 'POST' && candidate.url === `${API}/products`,
+    );
+    expect(request.request.body.unit).toBe('CAJA');
+    expect(request.request.body.unitsPerBox).toBe(1);
+    expect(request.request.body.unitPrice).toBe(12);
+    expect(request.request.body.price).toBe(10);
+    request.flush(product({ id: 'p2', name: 'Caja individual', unit: 'CAJA' }));
+    expectReload([]);
   });
 
   it('limpia las unidades por caja al cambiar a una unidad que no es presentacion', () => {

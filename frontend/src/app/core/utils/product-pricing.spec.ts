@@ -1,6 +1,7 @@
 import {
   boxUnitsOf,
   isBoxProduct,
+  isPackProduct,
   soldUnitLabel,
   unitPriceOf,
 } from './product-pricing';
@@ -35,6 +36,16 @@ describe('product-pricing (venta por caja o suelta)', () => {
     });
   });
 
+  describe('isPackProduct', () => {
+    it('reconoce la presentacion por la unidad aunque traiga una sola unidad', () => {
+      expect(isPackProduct(box)).toBe(true);
+      expect(isPackProduct({ unit: 'CAJA', unitsPerBox: 1 })).toBe(true);
+      expect(isPackProduct({ unit: ' paquete ', unitsPerBox: 1 })).toBe(true);
+      expect(isPackProduct(loose)).toBe(false);
+      expect(isPackProduct({ unit: 'KG', unitsPerBox: 1 })).toBe(false);
+    });
+  });
+
   describe('unitPriceOf', () => {
     it('reparte el precio de la caja entre sus unidades', () => {
       expect(unitPriceOf(box)).toBe(1);
@@ -52,7 +63,7 @@ describe('product-pricing (venta por caja o suelta)', () => {
       expect(unitPriceOf({ price: 8.75, unit: 'KG' })).toBe(8.75);
     });
 
-    it('trata la presentacion sin unidades declaradas como producto suelto', () => {
+    it('sin unidades declaradas la unidad vale lo mismo que la presentacion', () => {
       expect(unitPriceOf({ price: 10, unit: 'CAJA', unitsPerBox: 0 })).toBe(10);
     });
 
@@ -61,6 +72,13 @@ describe('product-pricing (venta por caja o suelta)', () => {
       // su precio y la unidad suelta al suyo.
       expect(unitPriceOf({ ...box, unitPrice: 3.5 })).toBe(3.5);
       expect(unitPriceOf({ price: 10, unit: 'CAJA', unitsPerBox: 4, unitPrice: 3 })).toBe(3);
+    });
+
+    it('cobra el precio unitario de una caja que trae una sola unidad', () => {
+      // La caja de 1 se puede abrir y su unidad se vende al precio propio.
+      expect(unitPriceOf({ price: 10, unit: 'CAJA', unitsPerBox: 1, unitPrice: 12 })).toBe(12);
+      // Sin precio propio, la unidad vale lo mismo que la presentacion.
+      expect(unitPriceOf({ price: 10, unit: 'CAJA', unitsPerBox: 1 })).toBe(10);
     });
 
     it('ignora el precio unitario vacio, cero o invalido', () => {
@@ -79,6 +97,7 @@ describe('product-pricing (venta por caja o suelta)', () => {
   describe('soldUnitLabel', () => {
     it('cobra unidades sueltas en los productos por caja', () => {
       expect(soldUnitLabel(box)).toBe('UND');
+      expect(soldUnitLabel({ unit: 'CAJA', unitsPerBox: 1 })).toBe('UND');
     });
 
     it('conserva la unidad del producto suelto', () => {

@@ -129,7 +129,7 @@
                     @if (priceHint(item); as hint) {
                       <span class="block text-[11px] text-slate-400">{{ hint }}</span>
                     }
-                    @if (isBoxProduct(item)) {
+                    @if (isPackProduct(item)) {
                       <span class="block text-[11px] text-slate-400">
                         Caja de {{ boxUnitsOf(item) }} =
                         <app-money
@@ -150,7 +150,7 @@
                       [currency]="item.costCurrency"
                       [rateKey]="item.costRateKey"
                     />
-                    @if (isBoxProduct(item)) {
+                    @if (isPackProduct(item)) {
                       <span class="block text-[11px] text-slate-400">
                         Unidad:
                         <app-money
@@ -338,7 +338,7 @@
               (currencyChange)="onCostCurrencyChange($event)"
             />
           </div>
-          @if (isBoxForm) {
+          @if (asksUnitPrice) {
             <div>
               <app-currency-amount-input
                 id="prod-unit-price"
@@ -421,7 +421,7 @@
               />
               <p class="mt-1 text-[11px] text-slate-400">
                 El precio de arriba es el de la presentación; el stock se lleva en unidades sueltas.
-                Deja 1 si el producto se vende suelto.
+                Si la presentación trae una sola unidad, deja 1.
               </p>
               @if (boxPreview; as box) {
                 <p class="mt-1 text-[11px] font-medium text-brand-600">
