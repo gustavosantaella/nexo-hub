@@ -725,6 +725,45 @@ export class CashPage implements OnInit, OnDestroy {
   }
 
   /**
+   * Equivalente en USD (moneda base) de una fila, recortado a centavos.
+   *
+   * Es el valor que el backend acumula en los totales: cada movimiento aporta su
+   * equivalente ya recortado, así la suma de las filas visibles coincide con
+   * Ingresos/Ventas (Bs 15.680,00 al BCV son `$ 17,59`, no 17,5959…).
+   */
+  movementBaseDisplay(movement: CashMovement): number {
+    const sign = movement.type === 'IN' ? 1 : -1;
+    const baseRate = Number(movement.baseRate ?? 0);
+    const base =
+      Number.isFinite(baseRate) && baseRate > 0
+        ? Number(movement.amount ?? 0) / baseRate
+        : Number(movement.baseAmount ?? movement.amount ?? 0);
+    return sign * truncate(base, 2);
+  }
+
+  /**
+   * Monto que alimenta las conversiones de una fila.
+   *
+   * Con el ticket en bolívares (`localAmount`) las líneas BCV muestran ese monto
+   * exacto (Bs 15.680,00), sumando lo mismo que las tarjetas del arqueo. Sin
+   * ticket se conserva la conversión del monto en la moneda de visualización.
+   */
+  movementEntered(movement: CashMovement): number | null {
+    if (movement.localAmount != null) {
+      const sign = movement.type === 'IN' ? 1 : -1;
+      return sign * Number(movement.localAmount);
+    }
+    return this.movementDisplay(movement);
+  }
+
+  /** Moneda de `movementEntered`: bolívares con ticket, si no la de pantalla. */
+  movementEnteredCurrency(movement: CashMovement): string {
+    return movement.localAmount != null
+      ? LOCAL_CURRENCY_CODE
+      : this.moneyBaseCode();
+  }
+
+  /**
    * Neto de una fila del desglose por moneda, en la moneda de visualización.
    *
    * La moneda que se está mostrando conserva su monto físico; las demás usan el
@@ -741,17 +780,21 @@ export class CashPage implements OnInit, OnDestroy {
   /**
    * Neto de una fila del desglose por moneda para `<app-money>`.
    *
-   * Con la pantalla en dólares, la moneda local conserva sus bolívares físicos:
-   * el monto base sigue siendo el equivalente contable (`row.baseNet`) y los
-   * bolívares nativos alimentan la línea del BCV. Reconvertir el dólar recortado
-   * pintaba `Bs 15.518,91` para un neto real de `Bs 15.520,00`.
+   * Con la pantalla en dólares, cada moneda conserva el monto físico que entró o
+   * salió del cajón: el monto base sigue siendo el equivalente contable
+   * (`row.baseNet`) y los bolívares nativos alimentan la línea del BCV. Para la
+   * fila en dólares se usa el ticket exacto de sus cobros (`localNet`): los
+   * `$ 40,66` en efectivo valen `Bs 36.260,00` (Bs 20.580,00 + Bs 15.680,00), no
+   * los Bs 36.232,35 que salen de reconvertir el dólar a la tasa del BCV.
    */
   currencyNetCard(row: CurrencyBreakdown): CashCardMoney {
     const code = String(row.currency ?? '').trim().toUpperCase();
     const exact =
-      this.isUsdDisplay() && code === LOCAL_CURRENCY_CODE
-        ? Number(row.net ?? 0)
-        : null;
+      this.isUsdDisplay() && row.localNet != null
+        ? Number(row.localNet)
+        : this.isUsdDisplay() && code === LOCAL_CURRENCY_CODE
+          ? Number(row.net ?? 0)
+          : null;
     return this.cardMoney(this.currencyNetDisplay(row), exact);
   }
 
@@ -1453,10 +1496,9 @@ export class CashPage implements OnInit, OnDestroy {
    * moneda de visualización.
    *
    * Los agregados se pintan tal como los calcula el backend: cada movimiento
-   * entra con su equivalente exacto y el total se recorta una sola vez. Rehacer
-   * esa suma en el navegador —a la tasa del día y con el `baseAmount` guardado—
-   * dejaba la tarjeta del efectivo esperado un centavo por encima del número con
-   * el que se cierra la caja (41,72 contra 41,71).
+   * entra con su equivalente recortado a centavos y el total es la suma de esas
+   * filas. Rehacerla en el navegador a la tasa del día dejaba la tarjeta del
+   * efectivo esperado desalineada del listado de movimientos.
    */
   private aggregateDisplay(amount: number | null | undefined): number | null {
     if (amount == null) return null;

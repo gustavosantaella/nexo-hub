@@ -441,9 +441,9 @@
                   </td>
                   <td class="text-right" [class.text-emerald-600]="movement.type === 'IN'" [class.text-rose-600]="movement.type === 'OUT'">
                     <app-money displayRateKey="BCV_USD"
-                      [amount]="movement.type === 'IN' ? movement.baseAmount : -movement.baseAmount"
-                      [entered]="movementDisplay(movement)"
-                      [currency]="moneyBaseCode()"
+                      [amount]="movementBaseDisplay(movement)"
+                      [entered]="movementEntered(movement)"
+                      [currency]="movementEnteredCurrency(movement)"
                       alignEnd="true"
                     />
                   </td>
@@ -1371,9 +1371,9 @@
                       </td>
                       <td class="text-right font-medium">
                         <app-money displayRateKey="BCV_USD"
-                          [amount]="movement.type === 'IN' ? movement.baseAmount : -movement.baseAmount"
-                          [entered]="movementDisplay(movement)"
-                          [currency]="moneyBaseCode()"
+                          [amount]="movementBaseDisplay(movement)"
+                          [entered]="movementEntered(movement)"
+                          [currency]="movementEnteredCurrency(movement)"
                           alignEnd="true"
                         />
                       </td>
@@ -1438,9 +1438,9 @@
             <div class="rounded-lg bg-slate-50 px-3 py-2">
               <p class="text-slate-500">Equivalente ({{ moneyBaseCode() }})</p>
               <app-money displayRateKey="BCV_USD"
-                [amount]="movement.type === 'IN' ? movement.baseAmount : -movement.baseAmount"
-                [entered]="movementDisplay(movement)"
-                [currency]="moneyBaseCode()"
+                [amount]="movementBaseDisplay(movement)"
+                [entered]="movementEntered(movement)"
+                [currency]="movementEnteredCurrency(movement)"
               />
             </div>
             @if (movement.exchangeRate) {

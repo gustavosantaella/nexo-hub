@@ -196,6 +196,25 @@ describe('ProductsService.update', () => {
   });
 });
 
+describe('ProductsService.create', () => {
+  it('crea un producto sin foto cuando la imagen llega vacia', async () => {
+    const { service, prisma } = createService();
+
+    await service.create(COMPANY_ID, {
+      name: 'Pizza',
+      price: 12,
+      imageUrl: '',
+    } as never);
+
+    expect(prisma.product.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ imageUrl: null }),
+      }),
+    );
+  });
+});
+
+
 describe('ProductsService (moneda de los precios)', () => {
   it('crea el producto con el precio en USD y su contexto de moneda', async () => {
     const { service, prisma } = createService();

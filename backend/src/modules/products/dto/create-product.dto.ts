@@ -11,6 +11,7 @@ import {
   MaxLength,
   Min,
   MinLength,
+  ValidateIf,
 } from 'class-validator';
 import { PRODUCT_UNITS, type ProductUnit } from '../../../common/constants/enums';
 import {
@@ -39,9 +40,13 @@ export class CreateProductDto {
 
   @ApiPropertyOptional({
     description:
-      'Foto del producto para el POS: URL local `/media/...` devuelta por `POST /api/media/upload` (multipart) o URL publica heredada. Cadena vacia la elimina.',
+      'Foto del producto para el POS: URL local `/media/...` devuelta por `POST /api/media/upload` (multipart) o URL publica heredada. Es OPCIONAL: una cadena vacia la elimina (o crea el producto sin foto).',
   })
   @IsOptional()
+  // La foto es opcional: el formulario envia `''` cuando no hay imagen, y ese
+  // valor debe llegar al servicio (que lo guarda como `null`) en vez de fallar
+  // contra el patron de URL. Tambien se ignoran solo espacios en blanco.
+  @ValidateIf((_object, value) => String(value ?? '').trim().length > 0)
   @IsString()
   @MaxLength(MAX_IMAGE_URL_LENGTH, { message: 'La URL de la imagen es demasiado larga' })
   @Matches(IMAGE_URL_PATTERN, { message: IMAGE_URL_MESSAGE })

@@ -267,7 +267,7 @@
             ></textarea>
           </div>
           <div class="sm:col-span-2">
-            <span class="label">Foto para el punto de venta</span>
+            <span class="label">Foto para el punto de venta (opcional)</span>
             <div class="flex flex-wrap items-center gap-3">
               <div
                 class="flex h-20 w-20 shrink-0 items-center justify-center overflow-hidden rounded-xl border border-dashed border-slate-300 bg-slate-50"
@@ -305,8 +305,8 @@
               </div>
             </div>
             <p class="mt-1 text-xs text-slate-400">
-              La foto se reduce a {{ productImageMaxSize }} px y se sube al servidor. La grilla
-              del cajero usa la URL local guardada.
+              La foto es opcional: si no la subes, el cajero verá un ícono. Se reduce a
+              {{ productImageMaxSize }} px y se guarda en el servidor.
             </p>
             @if (imageError(); as error) {
               <p class="mt-1 text-xs text-rose-600">{{ error }}</p>

@@ -344,19 +344,24 @@ export class CashService {
   }
 
   /**
-   * Equivalente en USD (moneda base) de un movimiento, con toda su precision y
-   * expresado en centavos.
+   * Equivalente en USD (moneda base) de un movimiento, en centavos ENTEROS.
    *
    * Con `baseRate` (unidades de la moneda por 1 USD) se recalcula desde el monto
-   * original, sin perder los decimales que el redondeo de `baseAmount` descarta:
-   * Bs 15.520,00 al BCV son 17,5685 USD, no 17,57. Sin tasa (registros
-   * anteriores o montos ajustados al saldo) vale el `baseAmount` guardado, que
-   * es el valor contable del movimiento.
+   * original y se recorta a centavos en ese mismo movimiento: Bs 15.680,00 al
+   * BCV son 17,5959… USD, que la pantalla muestra como `$ 17,59`. Guardar los
+   * centavos fraccionarios y sumarlos dejaba los totales un centavo por encima de
+   * la suma de las filas visibles (Ingresos $ 65,95 con cuatro movimientos que
+   * suman $ 65,94).
+   *
+   * Sin tasa (registros anteriores o montos ajustados al saldo) vale el
+   * `baseAmount` guardado, que es el valor contable del movimiento.
    */
   private baseCentsOf(row: MovementLike): number {
     const amountCents = toCents(row.amount);
     const rate = Number(row.baseRate ?? 0);
-    if (Number.isFinite(rate) && rate > 0) return amountCents / rate;
+    if (Number.isFinite(rate) && rate > 0) {
+      return Math.trunc(amountCents / rate);
+    }
     const base = toCents(row.baseAmount ?? 0);
     return base > 0 ? base : amountCents;
   }
@@ -590,10 +595,11 @@ export class CashService {
   ): CashBreakdown {
     const fundLines = this.openingLinesOf(openingLines);
     const openingCents = this.openingCentsOf(openingAmount, fundLines);
-    // Los agregados en moneda base se acumulan en CENTAVOS SIN REDONDEAR: cada
-    // movimiento aporta su equivalente exacto y se recorta una sola vez al
-    // final, igual que la pantalla. Redondear movimiento por movimiento dejaba
-    // el esperado un centavo por encima de lo que se ve en el arqueo.
+    // Los agregados en moneda base se acumulan en CENTAVOS ENTEROS: cada
+    // movimiento aporta su equivalente recortado a centavos, exactamente el
+    // valor que muestra su fila. Sumar centavos fraccionarios y recortar solo al
+    // final hacia que Ingresos dijera $ 65,95 mientras los movimientos visibles
+    // sumaban $ 65,94.
     let cashIn = 0;
     let cashOut = 0;
     let totalIn = 0;
@@ -1336,9 +1342,9 @@ export class CashService {
     //
     // `baseAmount` es el valor contable del cobro (p. ej. el precio en USD del
     // pedido, recortado al centavo) y no lo que fisicamente entro al cajon. El
-    // arqueo necesita el dinero real: Bs 15.520,00 al BCV son 17,5686 USD, no
-    // los 17,56 del precio. Con la tasa guardada el turno suma sin perder
-    // decimales y recorta una sola vez al final, igual que la pantalla.
+    // arqueo necesita el dinero real: Bs 15.520,00 al BCV son 17,5686 USD, que se
+    // recortan a 17,56 en la fila del movimiento. Sumar esos centavos visibles
+    // mantiene los totales iguales a la suma del listado.
     const baseRate = conversion.unitsPerBase;
 
     const sessionId =

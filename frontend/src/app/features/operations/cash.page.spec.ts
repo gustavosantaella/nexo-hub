@@ -646,10 +646,10 @@ describe('CashPage (fondo inicial multimoneda)', () => {
 
   /**
    * El efectivo esperado es el número con el que se cierra la caja: el backend
-   * acumula cada movimiento con su equivalente exacto y recorta una sola vez, así
-   * que la pantalla lo pinta tal cual (convertido a la moneda que se ve) en vez de
-   * rehacer la suma por moneda. Rehacerla dejaba la tarjeta un centavo por encima
-   * del cierre (41,72 contra 41,71) y el cajero veía una diferencia que no existe.
+   * acumula cada movimiento con su equivalente recortado a centavos y la pantalla
+   * lo pinta tal cual (convertido a la moneda que se ve) en vez de rehacer la suma
+   * por moneda. Rehacerla a la tasa del día desalineaba la tarjeta del listado de
+   * movimientos.
    *
    * La fila del desglose sí conserva los bolívares que entraron al cajón: esos son
    * los billetes que se cuentan, no su equivalente contable.
@@ -1039,6 +1039,160 @@ describe('CashPage (fondo inicial multimoneda)', () => {
     expect(page.currencyNetDisplay(ves)! + page.currencyNetDisplay(usd)!).toBe(41.72);
     expect(page.byMethodRows[0].inDisplay).toBe(41.72);
     expect(page.cashInDisplay).toBe(41.72);
+  });
+
+  /**
+   * Los totales del turno tienen que ser la suma exacta de las filas visibles:
+   * cuatro cobros de $ 23,07 + $ 7,69 + $ 17,59 + $ 17,59 suman $ 65,94, y sus
+   * tickets en bolívares (Bs 20.580,00 + 6.860,00 + 15.680,00 + 15.680,00) suman
+   * Bs 58.800,00, el mismo número de las tarjetas del arqueo.
+   */
+  it('valora cada movimiento con su ticket y suma exactamente las filas', () => {
+    const page = mount();
+    setDisplayCurrency(null);
+
+    const movements: CashMovement[] = [
+      {
+        id: 'mv1',
+        sessionId: 's1',
+        type: 'IN',
+        category: 'SALE',
+        paymentMethod: 'CASH',
+        amount: 23.07,
+        currency: 'USD',
+        exchangeRate: 891.1054,
+        baseRate: 1,
+        baseAmount: 23.07,
+        localAmount: 20_580,
+        createdAt: '2026-10-13T10:00:00.000Z',
+      },
+      {
+        id: 'mv2',
+        sessionId: 's1',
+        type: 'IN',
+        category: 'SALE',
+        paymentMethod: 'TRANSFER',
+        amount: 6_860,
+        currency: 'VES',
+        exchangeRate: 1,
+        baseRate: 891.1054,
+        baseAmount: 7.69,
+        localAmount: 6_860,
+        createdAt: '2026-10-13T10:01:00.000Z',
+      },
+      {
+        id: 'mv3',
+        sessionId: 's1',
+        type: 'IN',
+        category: 'SALE',
+        paymentMethod: 'TRANSFER',
+        amount: 15_680,
+        currency: 'VES',
+        exchangeRate: 1,
+        baseRate: 891.1054,
+        baseAmount: 17.59,
+        localAmount: 15_680,
+        createdAt: '2026-10-13T10:02:00.000Z',
+      },
+      {
+        id: 'mv4',
+        sessionId: 's1',
+        type: 'IN',
+        category: 'SALE',
+        paymentMethod: 'CASH',
+        amount: 17.59,
+        currency: 'USD',
+        exchangeRate: 891.1054,
+        baseRate: 1,
+        baseAmount: 17.59,
+        localAmount: 15_680,
+        createdAt: '2026-10-13T10:03:00.000Z',
+      },
+    ];
+    page.movItems.set(movements);
+    page.summary.set({
+      cashIn: 40.66,
+      cashOut: 0,
+      expectedCash: 40.66,
+      totalIn: 65.94,
+      totalOut: 0,
+      net: 65.94,
+      salesTotal: 65.94,
+      tipsTotal: 0,
+      movementCount: 4,
+      localIn: 58_800,
+      localOut: 0,
+      localNet: 58_800,
+      localCashIn: 36_260,
+      localCashOut: 0,
+      localOpening: 0,
+      localSales: 58_800,
+      localTips: 0,
+      byMethod: [],
+      byCategory: [],
+      byCurrency: [],
+    });
+    fixture.detectChanges();
+
+    // Cada fila muestra su equivalente recortado y el ticket en bolívares.
+    expect(page.movementBaseDisplay(movements[0])).toBe(23.07);
+    expect(page.movementBaseDisplay(movements[1])).toBe(7.69);
+    expect(page.movementBaseDisplay(movements[2])).toBe(17.59);
+    expect(page.movementBaseDisplay(movements[3])).toBe(17.59);
+    expect(
+      page.movItems().reduce((total, item) => total + page.movementBaseDisplay(item), 0),
+    ).toBe(65.94);
+    expect(page.totalInDisplay).toBe(65.94);
+    expect(page.salesTotalDisplay).toBe(65.94);
+
+    // Las conversiones usan el ticket exacto, no el dólar recortado.
+    movements.forEach((item) => {
+      expect(page.movementEnteredCurrency(item)).toBe('VES');
+    });
+    expect(movements.map((item) => page.movementEntered(item))).toEqual([
+      20_580, 6_860, 15_680, 15_680,
+    ]);
+    expect(
+      page.movItems().reduce((total, item) => total + Number(page.movementEntered(item)), 0),
+    ).toBe(58_800);
+    expect(page.incomeCard.amount).toBe(58_800);
+
+    // La fila USD del desglose por moneda conserva el ticket de sus cobros:
+    // $ 40,66 en efectivo son Bs 36.260,00, no la reconversión a la tasa del día.
+    const usdRow = {
+      currency: 'USD',
+      in: 40.66,
+      out: 0,
+      net: 40.66,
+      baseIn: 40.66,
+      baseOut: 0,
+      baseNet: 40.66,
+      cashIn: 40.66,
+      cashOut: 0,
+      baseCashIn: 40.66,
+      baseCashOut: 0,
+      sales: 40.66,
+      tips: 0,
+      change: 0,
+      baseSales: 40.66,
+      baseTips: 0,
+      baseChange: 0,
+      localIn: 36_260,
+      localOut: 0,
+      localNet: 36_260,
+      methods: [],
+    } as CurrencyBreakdown;
+    expect(page.currencyNetCard(usdRow)).toEqual({
+      amount: 36_260,
+      currency: 'VES',
+      rateKey: 'BCV_USD',
+    });
+
+    const table = fixture.nativeElement.querySelector('table.table') as HTMLElement;
+    expect(table.textContent).toContain('Bs 20,580.00');
+    expect(table.textContent).toContain('Bs 15,680.00');
+    expect(table.textContent).not.toContain('Bs 20,557.80');
+    expect(table.textContent).not.toContain('Bs 15,674.54');
   });
 
   it('valora cada movimiento con la tasa con la que se registró', () => {
